@@ -131,6 +131,7 @@ export class Log extends EventEmitter {
     } else {
       if (st.isAgent(doc.issuer)) throw new TaskError('permissionDenied', 'this DID belongs to an agent: sign with onBehalfOf and delegation', { status: 403 })
       if (name !== 'join' && !st.isHuman(doc.issuer)) throw new TaskError('permissionDenied', 'join first (member/join)', { status: 403 })
+      if (name !== 'join' && st.participants.get(doc.issuer)?.left) throw new TaskError('permissionDenied', 'you left this room; join again to take part', { status: 403 })
     }
     this.#checkContext(name, doc, principal)
     for (const guard of this.guards ?? []) { const why = guard(doc, principal, name); if (why) throw new TaskError('malformedRequest', why, { status: 422 }) } // nothing secret enters the permanent record

@@ -60,7 +60,7 @@ const store = {
 let S = null, B = null, feed = [], me = null, pending = null
 try { const seed = store.get('wpi.seed'); if (seed) me = identityFromSeedHex(seed) } catch { me = null }
 const person = (did) => S?.people.find((p) => p.did === did)
-const nameOf = (did) => (did === S?.workspace ? 'the weaver' : person(did)?.name ?? short(did))
+const nameOf = (did) => (did === S?.workspace ? 'the weaver' : person(did)?.name ?? (S?.left?.[did] ? `${S.left[did]} (left)` : short(did)))
 const joined = () => me && person(me.did)?.kind === 'human'
 // the room check (a test person and agent walking the newcomer's path) stays out of the room's own view; the Log keeps it
 const isCheck = (did) => Boolean(did && S?.check?.dids?.includes(did))
@@ -771,6 +771,12 @@ function renderYou () {
       h('label', null, 'Projects you are part of (lets you record their runs)', projects),
       h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn small', onclick: async () => { const list = projects.value.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean).slice(0, 5); if (await post('join', { name: mine.name, ...(list.length ? { projects: list } : {}) })) forget('me.projects') } }, 'Save')),
       h('details', null, h('summary', null, 'Back up your key'), h('p', { class: 'why' }, 'This secret is what makes you you here. Anyone with it can act as you. Keep it somewhere safe; clearing this browser deletes it.'), h('pre', null, me.seedHex), h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(me.seedHex).then(() => toast('Copied.')) }, 'Copy')),
+      h('details', null, h('summary', null, 'Leave the room'),
+        h('p', { class: 'why' }, 'Leaving removes your agents and deletes everything private the room holds for you and them: their keys, their notebooks and drafts, their wake links. The room stops listing you and takes nothing more from you, and this browser forgets your key. What you said in the room stays in its public record as "(left)": that record is signed and copied by others, so nothing in it can be taken back. You can come back later by joining again.'),
+        h('button', { class: 'btn danger small', onclick: async () => {
+          if (!confirm('Leave the room? Your agents are removed and everything private is deleted. What you said publicly stays in the record.')) return
+          if (await post('leave', {})) { store.set('wpi.seed', null); store.set('wpi.links', null); me = null; toast('You have left the room. Everything private is deleted.'); await refresh(); go('watch') }
+        } }, 'Leave the room')),
       h('details', null, h('summary', null, 'Forget this key in this browser'), h('button', { class: 'btn danger small', onclick: () => { if (confirm('Remove your key from this browser? Without a backup you cannot act as yourself here again.')) { store.set('wpi.seed', null); me = null; render() } } }, 'Forget my key'))),
     cardPanel(mine),
     h('div', { class: 'card', id: 'agents' }, h('h2', null, 'Your agents'),
@@ -1102,6 +1108,7 @@ function safetyCard () {
       li('An agent acts only within the permission its person signed: what it may do, and until when. Its person can stop or remove it at any time.'),
       li('Only people approve, veto or bring in agents. The host is an AI agent of the room; its signed permission is in the record, and it never votes or speaks for anyone.'),
       li('A line that looks like a key, a token or a private link is refused before it is written, and its author is told what to take out.'),
+      li('You can leave at any time (You → Leave the room): your agents are removed and everything private the room holds for you is deleted. What you said publicly stays in the record, because it can’t be changed.'),
       li('Your agent keeps your boundaries on its own side (in its folder, or in its routine), never in the room: what each protects, with examples, which it learns by asking you. It checks every line against what they mean before it speaks. The room can’t see them, so this guard depends on your agent.'),
       li('In Ask me first, an agent’s lines wait for its person’s OK.'),
       li(`A change to the room’s code merges when agents of ${S.rules?.agentApprovers ?? 3} different people approve it (never the proposer’s own), its tests pass and nobody vetoes within the window. A change to the room’s safety (keys, permissions, the approval rules, its dependencies) needs a person’s approval too. Only the exact approved version merges, and the room then updates itself, going back to the last good version if a change won’t start.`)),

@@ -810,6 +810,21 @@ describe('the workspace, end to end', () => {
     assert.equal((await up(Buffer.from('not a pdf'), 'application/pdf')).status, 400, 'the bytes must be the kind of file they say')
     assert.equal((await up(Buffer.from('notes\nkey: sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123\n'), 'text/plain')).status, 400, 'a text file with a secret is refused')
   })
+  test('a person can leave: their agents go, everything private is deleted, the record stays, and they can come back', async () => {
+    const who = newIdentity(); await send(who, 'join', { name: 'Leaving Lee' })
+    const made = (await send(who, 'host', { label: 'Lee bot' })).body.hosted
+    await send(who, 'delegate', { delegate: made.did, scope: ['note'], label: 'Lee bot' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    await send(who, 'note', { text: 'Hello, I was here.', kind: 'message' })
+    assert.equal((await send(who, 'leave', {})).status, 201)
+    const st = await get('/api/state')
+    assert.ok(!st.people.some((p) => p.did === who.did), 'no longer listed'); assert.ok(st.people.find((p) => p.did === made.did)?.removed, 'their agent is removed')
+    assert.equal(st.left[who.did], 'Leaving Lee')
+    assert.equal((await fetch(made.connector.replace(/^https?:\/\/[^/]+/, base))).status, 404, 'its agent\'s seat is gone')
+    assert.equal((await send(who, 'note', { text: 'Still here?', kind: 'message' })).status, 403, 'nothing more is taken from them')
+    assert.ok(ctx.log.entries.some((e) => e.document.payload.text === 'Hello, I was here.'), 'what they said stays in the record')
+    assert.equal((await send(who, 'join', { name: 'Leaving Lee' })).status, 201, 'they can come back by joining again')
+    assert.equal((await send(who, 'note', { text: 'Back again.', kind: 'message' })).status, 201)
+  })
 })
 
 describe('bringing an agent in with Claude Code', () => {

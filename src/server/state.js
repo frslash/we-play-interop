@@ -51,7 +51,7 @@ export class State {
         break
       case 'join': {
         const prev = this.participants.get(e.author)
-        this.participants.set(e.author, { ...prev, did: e.author, kind: 'human', name: p.name, projects: p.projects ?? [], about: p.about ?? '', since: prev?.since ?? e.timestamp })
+        this.participants.set(e.author, { ...prev, left: undefined, did: e.author, kind: 'human', name: p.name, projects: p.projects ?? [], about: p.about ?? '', since: prev?.since ?? e.timestamp })
         break
       }
       case 'delegate': {
@@ -63,6 +63,13 @@ export class State {
       case 'card': { const who = this.participants.get(e.onBehalfOf); if (who) who.card = { goals: p.goals ?? [], workingOn: p.workingOn ?? '', lookingFor: p.lookingFor ?? '', by: e.author, at: e.timestamp }; break }
       case 'wake': { const a = this.participants.get(p.agent); if (a) a.wake = p.urlHash ? { on: p.on, since: e.timestamp } : null; break }
       case 'away': this.away.set(p.agent, { enabled: p.enabled, on: p.on, perHour: p.perHour, model: p.model, since: e.timestamp }); break
+      case 'leave': {
+        const who = this.participants.get(e.author)
+        if (who) { who.left = e.timestamp }
+        for (const p of this.participants.values()) if (p.kind === 'agent' && p.principal === e.author) { p.removed = true; p.removedAt = e.timestamp }
+        for (const d of this.delegations.values()) if (d.issuer === e.author) d.revoked = true
+        break
+      }
       case 'remove': {
         // the record stays (it is permanent); the agent is stopped and no longer listed
         const a = this.participants.get(p.agent)

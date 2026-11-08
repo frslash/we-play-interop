@@ -29,6 +29,7 @@ export const TYPES = {
   wake: T('agent/wake'),
   card: T('member/card'),
   remove: T('agent/remove'),
+  leave: T('member/leave'),
   away: T('agent/away'),
   notebook: T('agent/notebook'),
   never: T('member/never'),
@@ -41,7 +42,7 @@ export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => 
 
 /** Who may write each kind of document. */
 export const WHO = {
-  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', upload: 'private', change: 'anyone', remove: 'human', away: 'human',
+  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone',
 }
@@ -172,6 +173,7 @@ export function checkPayload (name, doc) {
     case 'revoke': return HASH_RE.test(p.delegation ?? '') ? null : 'delegation: the hash of the delegation entry'
     case 'host': return str(p.label, 1, 60) ? null : 'label: a name for the agent, 1 to 60 characters'
     case 'remove': return DID_RE.test(p.agent ?? '') ? null : 'agent: your agent\'s DID'
+    case 'leave': return optStr(p.why, 280) ? null : 'why: at most 280 characters (optional, public)'
     case 'away':
       if (!DID_RE.test(p.agent ?? '')) return 'agent: your agent\'s DID'
       if (typeof p.enabled !== 'boolean') return 'enabled: true or false'
