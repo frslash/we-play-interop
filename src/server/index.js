@@ -25,6 +25,7 @@ import { closeVotes } from './votes.js'
 import { NeverLists } from './never.js'
 import { Drafts } from './drafts.js'
 import { Host } from './host.js'
+import { Media } from './media.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { createResolver } from './resolver.js'
@@ -89,6 +90,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.check = new RoomCheck({ ctx, db, sealer: hosted, everyMinutes: config.checkEveryMinutes ?? 180 })
   await ctx.check.load()
   ctx.host = new Host({ ctx, welcomeAfterMs: hostWelcomeMs })
+  ctx.media = new Media({ dataDir: config.dataDir })
   log.on('entry', (e) => ctx.host.onEntry(e))
   ctx.drafts = new Drafts({ db, sealer: hosted })
   await ctx.drafts.load()
@@ -99,7 +101,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
 
   const page = readFileSync(join(root, 'public/index.html'), 'utf8')
   const importMap = /<script type="importmap">([\s\S]*?)<\/script>/.exec(page)?.[1] ?? ''
-  const csp = `default-src 'self'; script-src 'self' 'sha256-${createHash('sha256').update(importMap).digest('base64')}'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`
+  const csp = `default-src 'self'; script-src 'self' 'sha256-${createHash('sha256').update(importMap).digest('base64')}'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`
 
   const sse = new Set()
   log.on('entry', (e) => { const msg = `event: entry\ndata: ${JSON.stringify(e)}\n\n`; for (const res of sse) res.write(msg) })
@@ -176,6 +178,25 @@ export async function createApp (config = defaultConfig, { resolver = createReso
         if (asAgent && op === 'read') await ctx.notebooks.markRead(agent)
         return send(res, 200, { agent, notes, readUpTo: await ctx.notebooks.readAt(agent), card: log.state.participants.get(who.principal)?.card ?? null })
       } catch (err) { return refuse(res, err, doc) }
+    }
+    if (path === '/api/media' && req.method === 'POST') { // a photo: its bytes, with a signed upload naming its hash (x-wpi-upload)
+      let doc
+      try {
+        doc = await log.verifyPrivate(JSON.parse(String(req.headers['x-wpi-upload'] ?? '{}')), 'upload')
+        const who = log.state.participants.get(doc.issuer)
+        if (!who || (who.kind !== 'human' && who.kind !== 'agent')) throw new TaskError('permissionDenied', 'join first', { status: 403 })
+        const chunks = []; let size = 0
+        for await (const c of req) { size += c.length; if (size > 3 * 1024 * 1024 + 1) throw new TaskError('malformedRequest', 'a photo is at most 3 MB', { status: 413 }); chunks.push(c) }
+        const bytes = Buffer.concat(chunks)
+        if (createHash('sha256').update(bytes).digest('hex') !== doc.payload.sha256) throw new TaskError('malformedRequest', 'the photo does not match the hash you signed')
+        try { return send(res, 201, ctx.media.put(who.principal ?? doc.issuer, doc.payload.type, bytes)) } catch (err) { throw new TaskError('malformedRequest', err.message) }
+      } catch (err) { return refuse(res, err, doc) }
+    }
+    if (path.startsWith('/media/') && req.method === 'GET') {
+      const m = /^\/media\/([0-9a-f]{64})$/.exec(path), got = m && ctx.media.get(m[1])
+      if (!got) return send(res, 404, { error: 'no photo with that hash' })
+      res.writeHead(200, { 'content-type': got.type, 'cache-control': 'public, max-age=31536000, immutable', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; sandbox", 'access-control-allow-origin': '*' })
+      return res.end(got.bytes)
     }
     if (path === '/api/drafts' && req.method === 'POST') { // an agent's lines waiting for its person: list, send (maybe changed) or drop
       let doc

@@ -7,6 +7,7 @@ import { sha256, toHex } from '/shared/crypto.js'
 import { AGENT_SCOPES, DEFAULT_WAKE_ON, MODES, NAME_OF, TYPES, WAKE_ON, signedDocument } from '/shared/types.js'
 import { createGraph } from '/graph.js'
 import { neverKey, phrases, secretIn, textsOf } from '/shared/guard.js'
+import { splitLayers } from '/shared/layers.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
 
 // ---------- tiny DOM helpers (user text only ever goes in as text) ----------
@@ -285,7 +286,7 @@ function draftBubble (d) {
     talk.drafts = r.body.drafts; toast(op === 'drop' ? 'Dropped. It was never posted.' : 'Sent, as your agent.'); await refresh(); renderTalk(true)
   }
   return h('div', { class: 'msg mine private draft' }, h('div', { class: 'who' }, `🔒 ${agent?.name ?? 'Your agent'} wants to ${d.kind === 'note' ? 'say' : d.kind} · waiting for you · `, h('span', { class: 'time' }, ago(d.at))),
-    h('div', { class: 'text' }, words), d.payload.tech ? tech(h('div', { class: 'text deeper' }, d.payload.tech)) : null,
+    layered('draft-' + d.id, words, d.payload.tech),
     h('div', { class: 'row' }, h('button', { class: 'btn small primary', onclick: () => act('send') }, 'Send'),
       d.kind === 'note' ? h('button', { class: 'btn small', onclick: () => { const t = prompt('Change it before it goes out (it is public and permanent):', d.payload.text); if (t && t.trim()) act('send', t.trim()) } }, 'Change') : null,
       h('button', { class: 'btn small', onclick: () => act('drop') }, 'Don’t')))
@@ -298,10 +299,53 @@ function noteBubble (n) {
   return h('div', { class: 'msg mine private' }, h('div', { class: 'who' }, `🔒 to ${agent?.name ?? 'your agent'} · `, h('span', { class: read ? 'read' : 'unread' }, status), ' ', h('span', { class: 'time' }, ago(n.at))), h('div', { class: 'text' }, n.text))
 }
 function autoGrow () { talk.input.style.height = 'auto'; talk.input.style.height = Math.min(160, talk.input.scrollHeight) + 'px' }
+// photos: re-drawn here before they leave (which drops location and camera data), stored by their hash
+talk.photos = []
+const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
+async function addPhotos (files) {
+  for (const f of files.slice(0, 4 - talk.photos.length)) {
+    try {
+      const bmp = await createImageBitmap(f), k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height))
+      const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k)
+      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height)
+      const type = f.type === 'image/png' ? 'image/png' : 'image/jpeg'
+      const blob = await new Promise((r) => c.toBlob(r, type, 0.85))
+      if (!blob || blob.size > 3 * 1024 * 1024) { toast('That photo is too large, even made smaller.'); continue }
+      talk.photos.push({ blob, type, w: c.width, h: c.height, sha256: hex(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())), url: URL.createObjectURL(blob) })
+    } catch { toast('That file could not be read as a photo.') }
+  }
+  drawTray()
+}
+function drawTray () {
+  if (!talk.tray) return
+  talk.tray.hidden = !talk.photos.length
+  fill(talk.tray, talk.photos.map((ph, i) => h('span', { class: 'tray-item' }, h('img', { src: ph.url, alt: 'a photo to send' }), h('button', { class: 'btn tiny', 'aria-label': 'Remove this photo', onclick: () => { URL.revokeObjectURL(ph.url); talk.photos.splice(i, 1); drawTray() } }, '✕'))),
+    talk.photos.length ? h('span', { class: 'meta' }, 'Photos are public and permanent too. Check they show nothing private.') : null)
+}
+async function uploadPhotos () {
+  const out = []
+  for (const ph of talk.photos) {
+    const doc = signedDocument(me, { type: TYPES.upload, payload: { sha256: ph.sha256, type: ph.type } })
+    const r = await fetch('/api/media', { method: 'POST', headers: { 'content-type': ph.type, 'x-wpi-upload': JSON.stringify(doc) }, body: ph.blob })
+    if (!r.ok) { const b = await r.json().catch(() => ({})); toast(b?.payload?.message ?? 'a photo was refused'); return null }
+    out.push({ sha256: ph.sha256, type: ph.type, w: ph.w, h: ph.h })
+  }
+  return out
+}
 async function sendChat () {
-  const text = talk.input.value.trim()
+  const text = talk.input.value.trim() || (talk.photos.length && talk.to === 'room' ? '(a photo)' : '')
   if (!text) return
   if (!joined()) { openBring(); return toast('First, pick a name.') }
+  if (talk.photos.length && talk.to === 'room') {
+    const media = await uploadPhotos()
+    if (!media) return
+    const target = talk.replyTo
+    const ok = await post('note', { text, kind: 'message', media }, target ? { threadId: target.document.threadId ?? target.document.id, recipient: target.author } : {})
+    if (!ok) return
+    talk.photos.forEach((ph) => URL.revokeObjectURL(ph.url)); talk.photos = []; drawTray()
+    talk.input.value = ''; forget('chat.text'); autoGrow(); setReply(null); renderTalk(true)
+    return
+  }
   if (talk.to === 'agent') {
     const agent = myLiveAgents()[0]
     if (!agent) return toast('Bring your agent first.')
@@ -362,8 +406,9 @@ function chatItem (e) {
     return h('div', { class: 'msg' + (e.author === me?.did ? ' mine' : '') + (agent ? ' agent' : '') },
       h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${colorFor(e.author)}` }), nameOf(e.author), agent ? listenDot(e.author) : null, agent && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
         d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, ' ', time, actions),
-      parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${(parent.document.payload.text ?? parent.document.payload.title ?? '').slice(0, 100)}`) : null,
-      h('div', { class: 'text' }, p.text), p.tech ? tech(h('div', { class: 'text deeper' }, p.tech)) : null, techLine)
+      parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${splitLayers(parent.document.payload.text ?? parent.document.payload.title ?? '').short.slice(0, 100)}`) : null,
+      p.media?.length ? h('div', { class: 'photos' }, p.media.map((m) => h('a', { href: `/media/${m.sha256}`, target: '_blank', rel: 'noopener' }, h('img', { src: `/media/${m.sha256}`, loading: 'lazy', width: m.w, height: m.h, alt: 'a photo' })))) : null,
+      p.media?.length && p.text === '(a photo)' ? null : layered(e.hash, p.text, p.tech), techLine)
   }
   if (name === 'propose') return proposalBubble(e)
   if (name === 'round') {
@@ -390,6 +435,18 @@ function chatItem (e) {
   if (name === 'result') return system(p.status === 'agreed' || p.status === 'not agreed' ? `The vote closed: ${p.status} (${p.detail ?? ''}).` : `${p.status === 'prepared' ? 'Ready for a person to open' : 'Done'}: ${p.detail ?? ''}`)
   return ['vote', 'approve', 'score', 'hosted', 'genesis', 'wake', 'way'].includes(name) ? (name === 'way' || name === 'vote' ? tech(system(says(e))) : null) : null
 }
+// a two-layer message: a card for the short of it, a card for the depth, and a switch between them
+const flipped = new Map() // message -> the card someone chose, over the page's view
+function layered (key, text, techText) {
+  const L = splitLayers(text, techText)
+  if (!L.depth) return h('div', { class: 'text' }, L.short)
+  const showing = flipped.get(key) ?? (document.body.dataset.view === 'tech' ? 'depth' : 'short')
+  const pick = (v) => { flipped.set(key, v); renderTalk() }
+  return h('div', { class: 'layers' },
+    h('div', { class: 'layer-tabs', role: 'tablist' }, [['short', 'In short'], ['depth', 'In depth']].map(([v, label]) => h('button', { class: 'btn tiny' + (showing === v ? ' on' : ''), role: 'tab', 'aria-selected': String(showing === v), onclick: () => pick(v) }, label))),
+    showing === 'short' ? h('div', { class: 'layer card-short' }, h('div', { class: 'text' }, L.short))
+      : h('div', { class: 'layer card-depth' }, L.title ? h('div', { class: 'layer-title' }, L.title) : null, h('div', { class: 'text' }, L.depth)))
+}
 function holdingChat () {
   if (!talk.list) return false
   if (talk.dragging) return true
@@ -410,7 +467,10 @@ function renderTalk (scrollDown) {
     talk.input = keep(h('textarea', { rows: 1, maxlength: 2000, placeholder: 'Say something…' }), 'chat.text')
     talk.input.addEventListener('input', autoGrow)
     talk.input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && matchMedia('(min-width: 760px)').matches) { ev.preventDefault(); sendChat() } })
-    talk.composer = h('div', { class: 'composer' }, talk.reply, h('div', { class: 'composer-row' }, talk.input, h('button', { class: 'btn primary send', onclick: sendChat, 'aria-label': 'Send' }, '↑')), talk.toggle)
+    talk.picker = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true, onchange: (ev) => addPhotos([...ev.target.files]).finally(() => { ev.target.value = '' }) })
+    talk.tray = h('div', { class: 'photo-tray', hidden: true })
+    talk.composer = h('div', { class: 'composer' }, talk.reply, talk.tray, h('div', { class: 'composer-row' }, h('button', { class: 'btn attach', 'aria-label': 'Add a photo', title: 'Add a photo (its location and camera data are removed)', onclick: () => talk.picker.click() }, '📎'), talk.picker, talk.input, h('button', { class: 'btn primary send', onclick: sendChat, 'aria-label': 'Send' }, '↑')), talk.toggle)
+    talk.input.addEventListener('paste', (ev) => { const files = [...(ev.clipboardData?.files ?? [])].filter((f) => f.type.startsWith('image/')); if (files.length) { ev.preventDefault(); addPhotos(files) } })
     fill(root, talk.goals, talk.list, talk.composer)
   }
   const held = S.proposals.filter((p) => p.kind === 'goal' && p.status !== 'vetoed' && p.tally.for > p.tally.against)
@@ -653,7 +713,7 @@ function weaveEntry (e, { fast = false, age = 0, speak = !fast } = {}) {
   const label = e.author === e.onBehalfOf || nameOf(from).includes(nameOf(e.onBehalfOf)) ? nameOf(from) : `${nameOf(from)} (for ${nameOf(e.onBehalfOf)})`
   if (name === 'note') {
     loom.thread(from, d.recipient ?? (d.threadId ? authorOfDoc(d.threadId) : null), { fast, age })
-    if (speak) loom.say(from, label, p.text)
+    if (speak) loom.say(from, label, splitLayers(p.text, p.tech).short)
   } else if (['vote', 'approve', 'veto'].includes(name)) {
     loom.thread(from, S.proposals.find((x) => x.hash === (p.proposal ?? p.target))?.author ?? null, { fast, age })
   } else if (['propose', 'project', 'run', 'way', 'mode'].includes(name)) {
@@ -693,7 +753,7 @@ function caption (e, age = 0) {
   }
   const to = d.recipient ? ` → ${nameOf(d.recipient)}` : d.threadId && authorOfDoc(d.threadId) ? ` ↩ ${nameOf(authorOfDoc(d.threadId))}` : ''
   const whoSaid = e.author === e.onBehalfOf ? nameOf(e.author) : `${nameOf(e.author)}`
-  return h('li', { class: 'cap fading', style: fade }, dot, h('span', null, h('strong', null, whoSaid + to), ' ', name === 'note' ? d.payload.text : says(e)))
+  return h('li', { class: 'cap fading', style: fade }, dot, h('span', null, h('strong', null, whoSaid + to), ' ', name === 'note' ? splitLayers(d.payload.text, d.payload.tech).short : says(e)))
 }
 function renderWatch () {
   const root = $('#tab-watch')

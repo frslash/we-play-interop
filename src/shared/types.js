@@ -33,13 +33,14 @@ export const TYPES = {
   notebook: T('agent/notebook'),
   never: T('member/never'),
   draft: T('agent/draft'),
+  upload: T('media/upload'),
   hosted: T('agent/hosted'),
 }
 export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v, k]))
 
 /** Who may write each kind of document. */
 export const WHO = {
-  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', remove: 'human', away: 'human',
+  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', upload: 'private', remove: 'human', away: 'human',
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone',
 }
@@ -181,6 +182,9 @@ export function checkPayload (name, doc) {
       if (!optStr(p.workingOn, 300)) return 'workingOn: at most 300 characters'
       if (!optStr(p.lookingFor, 300)) return 'lookingFor: at most 300 characters'
       return null
+    case 'upload':
+      if (!/^[0-9a-f]{64}$/.test(p.sha256 ?? '')) return 'sha256: the photo\'s sha256'
+      return ['image/jpeg', 'image/png', 'image/webp'].includes(p.type) ? null : 'type: image/jpeg, image/png or image/webp'
     case 'draft':
       if (!DID_RE.test(p.agent ?? '')) return 'agent: your agent\'s DID'
       if (!['list', 'send', 'drop'].includes(p.op)) return 'op: list | send | drop'
@@ -201,6 +205,7 @@ export function checkPayload (name, doc) {
       return null
     case 'note':
       if (!str(p.text, 1, 2000)) return 'text: 1 to 2000 characters'
+      if (p.media !== undefined && (!Array.isArray(p.media) || p.media.length > 4 || !p.media.every((m) => isObj(m) && /^[0-9a-f]{64}$/.test(m.sha256 ?? '') && ['image/jpeg', 'image/png', 'image/webp'].includes(m.type) && Number.isInteger(m.w) && Number.isInteger(m.h) && m.w > 0 && m.h > 0 && m.w <= 8000 && m.h <= 8000))) return 'media: up to 4 photos, each { sha256, type, w, h }'
       if (p.tech !== undefined && !str(p.tech, 1, 4000)) return 'tech: the technical layer, 1 to 4000 characters'
       if (!NOTE_KINDS.includes(p.kind)) return `kind: ${NOTE_KINDS.join(' | ')}`
       if (p.pair !== undefined && (!Array.isArray(p.pair) || p.pair.length !== 2 || !p.pair.every((s) => SLUG_RE.test(s)))) return 'pair: two project slugs'

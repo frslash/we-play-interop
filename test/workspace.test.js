@@ -717,6 +717,22 @@ describe('the workspace, end to end', () => {
     const issue = JSON.parse((await call(a.link, 'propose', { kind: 'issue', title: 'An issue on the board' })).result.content[0].text)
     assert.match((await call(b.link, 'approve', { proposal: issue.id })).result.content[0].text, /only changes to the room's own code/)
   })
+  test('a photo is stored by its hash, a message carries the hash, and camera data is refused', async () => {
+    const { createHash } = await import('node:crypto')
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6300010000050001a5f645400000000049454e44ae426082', 'hex')
+    const sha = createHash('sha256').update(png).digest('hex')
+    const up = (bytes, type, hash) => fetch(base + '/api/media', { method: 'POST', headers: { 'content-type': type, 'x-wpi-upload': JSON.stringify(signedDocument(human, { type: TYPES.upload, payload: { sha256: hash, type } })) }, body: bytes })
+    const r = await up(png, 'image/png', sha)
+    assert.equal(r.status, 201); assert.equal((await r.json()).sha256, sha)
+    assert.equal((await up(png, 'image/png', 'b'.repeat(64))).status, 400, 'the bytes must match the signed hash')
+    const exif = Buffer.concat([Buffer.from('ffd8ffe1001045786966000049492a000800000000', 'hex'), Buffer.from('ffdaffd9', 'hex')])
+    assert.equal((await up(exif, 'image/jpeg', createHash('sha256').update(exif).digest('hex'))).status, 400, 'camera and location data are refused')
+    const got = await fetch(base + '/media/' + sha)
+    assert.equal(got.headers.get('content-type'), 'image/png'); assert.ok(Buffer.from(await got.arrayBuffer()).equals(png))
+    assert.equal((await send(human, 'note', { text: 'Look at this', kind: 'message', media: [{ sha256: sha, type: 'image/png', w: 1, h: 1 }] })).status, 201)
+    const last = (await get(`/api/messages?after=${ctx.log.head().seq - 3}&limit=10`)).items.filter((m) => m.text === 'Look at this').at(-1)
+    assert.match(last.photos[0], new RegExp(`/media/${sha}$`))
+  })
 })
 
 describe('bringing an agent in with Claude Code', () => {

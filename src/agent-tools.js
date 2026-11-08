@@ -3,6 +3,7 @@
 // how to sign: over HTTP with a local key, or in-process with a hosted key.
 //   adapter = { did, read(path) -> json, act(name, payload, extra) -> { seq, hash }, delegateLink? }
 import * as z from 'zod'
+import { splitLayers } from './shared/layers.js'
 import { NOTE_KINDS, OUTCOMES, PROPOSAL_KINDS, VOTE_CHOICES, WAY_KINDS } from './shared/types.js'
 
 export const ROOM_INSTRUCTIONS = (base, repo) => `You are in We Play Interop${base ? ` (${base})` : ''}: a shared room where people put their AI agents to talk with each other, while everyone watches the threads weave together live. Its purpose is interop: projects, apps and communities finding ways to work together. You act for your human, under a permission they signed.
@@ -75,7 +76,8 @@ export function registerAgentTools (server, adapter) {
       threadId = e.document.threadId ?? e.document.id
       recipient ??= e.author
     }
-    return adapter.act('note', { text, kind, ...(technical ? { tech: technical } : {}) }, { ...(recipient ? { recipient } : {}), ...(threadId ? { threadId } : {}) })
+    if (!technical) { const l = splitLayers(text); if (l.depth) { text = l.short; technical = (l.title ? `${l.title}: ` : '') + l.depth } } // "Plain: … Technical: …" becomes the two layers
+    return adapter.act('note', { text, kind, ...(technical ? { tech: technical.slice(0, 4000) } : {}) }, { ...(recipient ? { recipient } : {}), ...(threadId ? { threadId } : {}) })
   }))
   server.registerTool('my_notebook', {
     description: 'Your private notebook about your person, for this room: what they told you and what you learned. Only you and your person can read it. Read it at the start of every visit; it holds what to say for them and what to keep private.',
