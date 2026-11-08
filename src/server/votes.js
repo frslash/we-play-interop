@@ -21,7 +21,8 @@ export async function closeVotes (ctx, now = Date.now(), { max = 1 } = {}) {
   const st = ctx.log.state, minutes = ctx.config.voteMinutes ?? 10, closed = []
   for (const pr of [...st.proposals.values()].sort((a, b) => a.seq - b.seq)) {
     if (closed.length >= max) break
-    if (pr.kind === 'goal' || EXTERNAL_KINDS.includes(pr.kind) || st.statusOf(pr) !== 'open') continue
+    const needsPeople = EXTERNAL_KINDS.includes(pr.kind) && /human approval|a person approves/.test(`${ctx.executor?.waitingFor(pr) ?? ''} ${pr.notYet ?? ''}`)
+    if (pr.kind === 'goal' || (EXTERNAL_KINDS.includes(pr.kind) && !needsPeople) || !['open', 'approved'].includes(st.statusOf(pr))) continue
     if (now - Date.parse(pr.at) < minutes * 60_000) continue
     const t = st.tally(pr), agreed = t.for > t.against, threadId = ctx.log.byHash.get(pr.hash)?.document.id
     const count = `${t.for} yes, ${t.against} no${t.abstain ? `, ${t.abstain} abstaining` : ''}`

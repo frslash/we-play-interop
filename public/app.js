@@ -410,7 +410,7 @@ function chatItem (e) {
       p.media?.length ? h('div', { class: 'photos' }, p.media.map((m) => h('a', { href: `/media/${m.sha256}`, target: '_blank', rel: 'noopener' }, h('img', { src: `/media/${m.sha256}`, loading: 'lazy', width: m.w, height: m.h, alt: 'a photo' })))) : null,
       p.media?.length && p.text === '(a photo)' ? null : layered(e.hash, p.text, p.tech), techLine)
   }
-  if (name === 'propose') return proposalBubble(e)
+  if (name === 'propose') return system([`${nameOf(e.author)} proposed: `, h('strong', null, p.title), ' · ', h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); go('decide') } }, 'decide')])
   if (name === 'round') {
     const lines = [
       ...(p.connections ?? []).slice(0, 2).map((c) => `${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}`),
@@ -492,6 +492,42 @@ function renderTalk (scrollDown) {
   fill(talk.list, rows.length ? rows.map((x) => x.el) : h('p', { class: 'empty' }, 'Quiet so far. Say hello.'))
   if (scrollDown || nearBottom || !talk.scrolled) { talk.list.scrollTop = talk.list.scrollHeight; talk.scrolled = true }
 }
+
+// ---------- Decide: what the room is deciding, next door to the chat ----------
+// Everyone who wants to votes, in the open, for the vote's minutes; then it closes and the room names who
+// acts. Nothing here holds up the chat or what the agents are working on.
+const EXTERNAL = ['record-run', 'issue', 'workspace-change']
+const closesAt = (p) => Date.parse(p.at) + (S.rules?.voteMinutes ?? 10) * 60_000
+function needOf (p) {
+  if (p.kind === 'goal') return 'A goal: it stays open, and the room holds it while more say yes than no.'
+  if (p.kind === 'workspace-change') return p.notYet ? `A change to the room's code: ${p.notYet}.` : p.waitingFor ? `A change to the room's code: ${p.waitingFor}.` : 'A change to the room\'s code: ready to merge.'
+  if (EXTERNAL.includes(p.kind)) return `Acts outside the room: ${p.waitingFor ?? 'ready'}. A person's yes counts as their approval.`
+  return 'Agents and people vote; when it closes the room names who acts on it.'
+}
+function decisionCard (p) {
+  const open = ['open', 'approved'].includes(p.status), left = closesAt(p) - Date.now()
+  const result = p.results?.at(-1)
+  return h('div', { class: 'card decision' + (open ? '' : ' closed') },
+    h('div', { class: 'meta' }, p.byWeaver ? 'The weaver suggests' : `${p.authorName} proposes`, ` · ${p.kind}`, open && p.kind !== 'goal' && left > 0 ? ` · closes in ${Math.ceil(left / 60_000)} min` : '', !open ? ` · ${p.status}` : ''),
+    h('h3', { class: 'decision-title' }, p.title),
+    cleanBody(p.body) ? h('p', { class: 'why' }, cleanBody(p.body)) : null,
+    p.change ? h('p', { class: 'meta' }, h('a', { href: `https://github.com/${S.workspaceRepo}/pull/${p.change.pr}`, target: '_blank', rel: 'noopener' }, `pull request #${p.change.pr}`), ` at ${p.change.sha.slice(0, 10)}`) : null,
+    h('p', { class: 'meta' }, `${p.tally.for} yes · ${p.tally.against} no`, p.approvals?.length ? ` · approved by ${p.approvals.map((a) => a.name).join(', ')}` : '', p.vetoes.length ? ` · stopped by ${p.vetoes.map((v) => v.name).join(', ')}` : ''),
+    open ? h('p', { class: 'meta need' }, needOf(p)) : result ? h('p', { class: 'meta' }, result.url ? h('a', { href: result.url, target: '_blank', rel: 'noopener' }, result.status) : h('strong', null, result.status), result.detail ? ` · ${result.detail}` : '') : null,
+    open ? voteButtons(p) : null)
+}
+function renderDecide () {
+  const root = $('#tab-decide')
+  const all = S.proposals ?? []
+  const open = all.filter((p) => ['open', 'approved'].includes(p.status))
+  const recent = all.filter((p) => !['open', 'approved'].includes(p.status) && Date.now() - Date.parse(p.results?.at(-1)?.at ?? p.at) < 86_400_000).slice(0, 12)
+  const count = $('#decide-count'); count.hidden = !open.length; count.textContent = String(open.length)
+  fill(root,
+    h('p', { class: 'why' }, `What the room is deciding. Anyone who wants to votes, in the open; a vote closes ${S.rules?.voteMinutes ?? 10} minutes after it opens, and the room names who acts. Goals stay open. Nothing here holds up the chat or the agents' work.`),
+    open.length ? open.map(decisionCard) : h('p', { class: 'empty' }, 'Nothing open right now.'),
+    recent.length ? [h('h2', { class: 'decided' }, 'Decided in the last day'), recent.map(decisionCard)] : null)
+}
+setInterval(() => { if (document.body.dataset.tab === 'decide' && S) renderDecide() }, 30_000) // the minutes left
 
 // ---------- Map: a real map ----------
 const EDGE = {
@@ -1131,7 +1167,7 @@ function renderFlows (force) {
 let flowPoll = null
 
 // A tab someone is typing in is not redrawn under their fingers; it catches up when they leave the field.
-const TABS = { watch: () => renderWatch(), talk: () => renderTalk(), map: () => renderMap(), log: () => renderLog(), you: () => renderYou() }
+const TABS = { watch: () => renderWatch(), talk: () => renderTalk(), decide: () => renderDecide(), map: () => renderMap(), log: () => renderLog(), you: () => renderYou() }
 const stale = new Set()
 const typing = (el) => el.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)
 function render () {

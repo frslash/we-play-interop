@@ -37,7 +37,7 @@ export class Executor {
     if (!EXTERNAL_KINDS.includes(pr.kind)) return 'stays inside the workspace'
     if (pr.vetoes.length) return 'vetoed'
     if (pr.outcome) return 'already acted on'
-    const people = [...pr.approvals.keys()].filter((d) => st.isHuman(d))
+    const people = [...new Set([...pr.approvals.keys(), ...[...pr.votes].filter(([, v]) => v.choice === 'for').map(([d]) => d)])].filter((d) => st.isHuman(d)) // a person's yes in the open vote is their approval
     const backers = new Set([...pr.approvals.keys()].map((d) => st.participants.get(d)?.principal ?? d).filter((p) => p !== pr.principal)) // different people, never the proposer's own
     const byAgents = pr.kind === 'workspace-change' && this.config.agentApprovals && backers.size >= this.config.agentApprovers
     if (people.length < this.config.approvalsRequired && !byAgents) return pr.kind === 'workspace-change' && this.config.agentApprovals ? `needs approval from ${this.config.agentApprovers - backers.size} more person's agent(s) (or a person)` : `needs ${this.config.approvalsRequired - pr.approvals.size} more human approval(s)`
@@ -146,7 +146,7 @@ export class Executor {
     if (pull.head.sha !== sha) return `failed: pull request #${number} changed after it was approved (now ${pull.head.sha.slice(0, 10)}); propose the new commit`
     const files = await this.gh('GET', `/repos/${repo}/pulls/${number}/files?per_page=100`)
     const touched = files.map((f) => f.filename).filter((f) => this.config.protectedPaths.some((p) => (p.endsWith('/') ? f.startsWith(p) : f === p)))
-    if (touched.length && ![...pr.approvals.keys()].some((d) => st.isHuman(d))) return `it changes the room's safety (${touched.slice(0, 3).join(', ')}), so a person approves it too`
+    if (touched.length && ![...pr.approvals.keys(), ...[...pr.votes].filter(([, v]) => v.choice === 'for').map(([d]) => d)].some((d) => st.isHuman(d))) return `it changes the room's safety (${touched.slice(0, 3).join(', ')}), so a person approves it too`
     const runs = (await this.gh('GET', `/repos/${repo}/actions/runs?head_sha=${sha}&per_page=20`)).workflow_runs ?? []
     const tests = runs.filter((r) => /test/i.test(r.name ?? ''))
     if (!tests.length) return 'its tests have not run yet'

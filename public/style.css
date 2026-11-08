@@ -280,6 +280,12 @@ body[data-view="tech"] .plain-only { display: none !important; }
 @media (max-width: 520px) { .welcome h2 { margin-right: 0; margin-top: 28px; } }
 .chip.me { flex-shrink: 0; }
 @media (max-width: 700px) { .repo-word { display: none; } .chip.repo { padding: 3px 7px; } }
+.tabs .count { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 11px; line-height: 18px; }
+.tabs .count[hidden] { display: none; }
+.decision h3.decision-title { margin: 4px 0; font-size: 16px; text-transform: none; letter-spacing: 0; color: var(--ink); }
+.decision.closed { opacity: 0.8; }
+.decision .need { color: var(--accent); }
+h2.decided { font-size: 15px; margin: 18px 0 8px; color: var(--muted); }
 .check-line { font-size: 13px; margin: 8px 0; padding: 6px 10px; border-radius: 8px; }
 .check-line.ok { background: var(--good-soft); color: var(--good); }
 .check-line.bad { background: var(--warn-soft); color: var(--warn); }

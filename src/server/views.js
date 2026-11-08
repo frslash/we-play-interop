@@ -43,7 +43,7 @@ export function state (ctx) {
     people,
     check: ctx.check?.view() ?? null,
     comingIn,
-    proposals: [...st.proposals.values()].reverse().map((pr) => ({ ...st.proposalView(pr), waitingFor: executor.waitingFor(pr) })),
+    proposals: [...st.proposals.values()].reverse().map((pr) => ({ ...st.proposalView(pr), waitingFor: executor.waitingFor(pr), notYet: pr.notYet ?? null })),
     rounds: [...st.rounds].reverse(),
     score: board.score(),
     board: { fetchedAt: board.fetchedAt, error: board.error },
