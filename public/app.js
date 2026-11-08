@@ -1223,7 +1223,8 @@ await loadFeed()
 render()
 live()
 const fromHash = () => { const q = new URLSearchParams(location.hash.slice(1)); return q.get('delegate') ? 'you' : q.get('tab') }
-const start = fromHash() ?? store.get('wpi.tab')
+// a newcomer who has not joined yet starts on You, where joining is; a link that names a tab still wins
+const start = fromHash() ?? (joined() ? store.get('wpi.tab') : 'you')
 go(TABS[start] ? start : 'watch')
 // an agent's link (#delegate=did:…) opened on a page that is already open
 window.addEventListener('hashchange', () => { const tab = fromHash(); if (tab) { renderYou(); go(tab) } })
