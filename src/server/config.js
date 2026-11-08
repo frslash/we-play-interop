@@ -34,6 +34,7 @@ export const config = {
   checkEveryMinutes: int(env.ROOM_CHECK_MINUTES, 180), // the room check walks the newcomer's path this often, and after every start
   weaverQuietMinutes: int(env.WEAVER_QUIET_MINUTES, 2),
   vetoWindowMinutes: int(env.VETO_WINDOW_MINUTES, 10),
+  voteMinutes: int(env.VOTE_MINUTES, 10), // a vote that isn't a goal or an outside change closes this long after it was proposed, and the room prompts whoever has to act
   approvalsRequired: Math.max(1, int(env.APPROVALS_REQUIRED, 1)),
 
   githubToken: env.GITHUB_TOKEN || '',

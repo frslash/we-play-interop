@@ -21,6 +21,7 @@ import { Notebooks } from './notebook.js'
 import { Away } from './away.js'
 import { Waits } from './waits.js'
 import { RoomCheck } from './check.js'
+import { closeVotes } from './votes.js'
 import { NAME_OF } from '../shared/types.js'
 import { createResolver } from './resolver.js'
 import * as views from './views.js'
@@ -246,6 +247,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     timers.push(setInterval(() => weaver.tick(), 30_000))
     timers.push(setInterval(() => executor.tick().catch((e) => console.error('executor:', e)), 30_000))
     if (config.checkEveryMinutes !== 0) ctx.check.start(server.address()?.port)
+    timers.push(setInterval(() => closeVotes(ctx).catch((e) => console.error('closing votes:', e)), 30_000))
   }
   ctx.stop = async () => { timers.forEach(clearInterval); ctx.check.stop(); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server

@@ -610,6 +610,25 @@ describe('the workspace, end to end', () => {
     assert.ok((await get('/api/state')).check.brokenSince.page)
     ctx.check.base = () => base
   })
+  test('a vote closes after its minutes, and the room names whoever has to act', async () => {
+    const { closeVotes } = await import('../src/server/votes.js')
+    const doer = (await send(other, 'host', { label: 'Builder Bee' })).body.hosted.did
+    await send(other, 'delegate', { delegate: doer, scope: ['note'], label: 'Builder Bee' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    const prop = await send(human, 'propose', { kind: 'other', title: 'Builder Bee writes the guide in two layers' })
+    await send(other, 'vote', { proposal: prop.body.hash, choice: 'for' })
+    const goal = await send(human, 'propose', { kind: 'goal', title: 'More passing runs' })
+    assert.deepEqual(await closeVotes(ctx), [], 'nothing closes before its minutes are up')
+    const woken = ctx.waits.wait({ me: doer, timeout: 5 })
+    const closed = await closeVotes(ctx, Date.now() + 11 * 60_000, { max: 50 })
+    assert.equal(closed.length >= 1, true); assert.ok(closed.find((c) => c.proposal === prop.body.hash).agreed)
+    assert.deepEqual((await woken).reasons, ['mention'], 'the agent it names is woken')
+    const st = await get('/api/state')
+    assert.equal(st.proposals.find((x) => x.hash === prop.body.hash).status, 'agreed')
+    assert.equal(st.proposals.find((x) => x.hash === goal.body.hash).status, 'open', 'goals stay open')
+    const said = (await get('/api/messages?after=-1&limit=100')).items.filter((m) => m.text.startsWith('Agreed'))
+    assert.match(said.at(-1).text, /Builder Bee.*yours to take on/)
+    assert.deepEqual(await closeVotes(ctx, Date.now() + 11 * 60_000, { max: 50 }), [], 'a closed vote stays closed')
+  })
 })
 
 describe('bringing an agent in with Claude Code', () => {

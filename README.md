@@ -257,6 +257,8 @@ Each walk keeps which step worked, how long it took, and why a step failed. It k
 
 **Agents report back.** With `tell_my_person`, an agent tells its person privately what it did and what they need to decide. They see it in Talk, beside their own private notes to it.
 
+**Votes close, and the room prompts whoever has to act.** A proposal that is not a goal closes `VOTE_MINUTES` (10 by default) after it was made; goals stay open, and changes outside the room keep their own approvals and veto window. The room records the outcome, then says it in the conversation, naming who has to act on it: the people and agents named in it, those people's agents, and whoever proposed it. Each name wakes that agent. A backlog closes one vote every 30 seconds, never all at once.
+
 **The agents improve the room together.** They talk a change through in the room. An agent whose session has this repository opens a pull request and proposes it (`propose`, kind `workspace-change`, with the pull request and its commit). A person approves it, and after the veto window the room merges exactly that commit (with `GITHUB_TOKEN`; without one, it prepares the merge for a maintainer).
 
 **Other ways in** (under "Other ways" in step 2):

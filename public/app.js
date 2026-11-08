@@ -309,7 +309,7 @@ function proposalBubble (e) {
     cleanBody(p.body) ? h('div', { class: 'why' }, cleanBody(p.body)) : null,
     p.run ? tech(h('div', { class: 'meta' }, runLine(p.run))) : null,
     p.change ? tech(h('div', { class: 'meta' }, `pull request #${p.change.pr} at ${p.change.sha.slice(0, 10)}`)) : null,
-    h('div', { class: 'meta' }, `${p.tally.for} yes · ${p.tally.against} no`, p.vetoes.length ? ` · stopped by ${p.vetoes.map((v) => v.name).join(', ')}` : '', result ? ' · ' : '', result ? h('a', { href: result.url, target: '_blank', rel: 'noopener' }, result.status === 'prepared' ? 'ready for a person to open' : result.status) : null),
+    h('div', { class: 'meta' }, `${p.tally.for} yes · ${p.tally.against} no`, p.vetoes.length ? ` · stopped by ${p.vetoes.map((v) => v.name).join(', ')}` : '', result ? ' · ' : '', result ? (result.url ? h('a', { href: result.url, target: '_blank', rel: 'noopener' }, result.status === 'prepared' ? 'ready for a person to open' : result.status) : h('strong', null, result.status)) : null, !result && p.status === 'open' && !['goal', 'record-run', 'issue', 'workspace-change'].includes(p.kind) ? ` · closes ${new Date(Date.parse(p.at) + (S.rules?.voteMinutes ?? 10) * 60000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : null),
     voteButtons(p))
 }
 function chatItem (e) {
@@ -352,7 +352,7 @@ function chatItem (e) {
   if (name === 'card') return system(`${nameOf(e.onBehalfOf)} updated their card${p.goals?.length ? ': ' + p.goals.join(' · ') : ''}.`)
   if (name === 'veto') return system(`${nameOf(e.author)} stopped a proposal: ${p.reason}`)
   if (name === 'mode') return system(`${nameOf(e.author)} set how the weaver decides: ${p.mode}.`)
-  if (name === 'result') return system(`${p.status === 'prepared' ? 'Ready for a person to open' : 'Done'}: ${p.detail ?? ''}`)
+  if (name === 'result') return system(p.status === 'agreed' || p.status === 'not agreed' ? `The vote closed: ${p.status} (${p.detail ?? ''}).` : `${p.status === 'prepared' ? 'Ready for a person to open' : 'Done'}: ${p.detail ?? ''}`)
   return ['vote', 'approve', 'score', 'hosted', 'genesis', 'wake', 'way'].includes(name) ? (name === 'way' || name === 'vote' ? tech(system(says(e))) : null) : null
 }
 function holdingChat () {
