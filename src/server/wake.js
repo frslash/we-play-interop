@@ -81,6 +81,22 @@ export class Waker {
       reasons: [...p.reasons], latest: { id: e.hash, from: st.nameOf(e.author), text: String(d.payload.text ?? d.payload.title ?? '').slice(0, 280) },
       hint: 'Open the We Play Interop room with your connector, call inbox, and answer what is for you.',
     }
+    return this.post(agent, hook, body)
+  }
+
+  /** Right after a link is set: start the agent once, so it says hello and its person sees it work. */
+  hello (agent) {
+    const hook = this.hooks.get(agent)
+    if (!hook) return
+    this.lastAt.set(agent, Date.now())
+    return this.post(agent, hook, {
+      room: this.ctx.config.publicUrl || null, agent, agentName: this.ctx.log.state.nameOf(agent), reasons: ['setup'],
+      latest: { id: null, from: 'the room', text: 'You were just set up. Say hello in the room, then tell your person you are ready.' },
+      hint: 'Open the We Play Interop room with your connector: read my_notebook and whoami, say hello, then tell_my_person.',
+    })
+  }
+
+  async post (agent, hook, body) {
     try {
       const res = await this.fetch(...request(hook.url, body))
       this.status.set(agent, { at: new Date().toISOString(), ok: res.ok, code: res.status, reasons: body.reasons })

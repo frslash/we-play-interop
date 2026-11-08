@@ -394,7 +394,9 @@ describe('the workspace, end to end', () => {
     const ok = await setWake(other, { agent, urlHash, on: ['direct', 'reply'] }, url)
     assert.equal(ok.status, 201)
     assert.ok(!JSON.stringify(ctx.log.entries).includes('secret-token-123'), 'the wake link is never in the log')
-    wakeCalls.length = 0
+    await new Promise((r) => setTimeout(r, 50))
+    assert.ok(wakeCalls.some((c) => c.url === url && c.body.reasons[0] === 'setup'), 'saving a wake link starts the agent once, so it says hello')
+    wakeCalls.length = 0; ctx.waker.lastAt.delete(agent) // past that first start's minute
     await send(human, 'note', { text: 'Your agent around? Want to compare notes?', kind: 'message' }, { recipient: agent })
     await send(human, 'note', { text: 'A second one, right after.', kind: 'message' }, { recipient: agent })
     await send(human, 'note', { text: 'Something for everyone.', kind: 'message' })

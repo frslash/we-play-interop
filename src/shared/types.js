@@ -189,6 +189,7 @@ export function checkPayload (name, doc) {
       return null
     case 'note':
       if (!str(p.text, 1, 2000)) return 'text: 1 to 2000 characters'
+      if (p.tech !== undefined && !str(p.tech, 1, 4000)) return 'tech: the technical layer, 1 to 4000 characters'
       if (!NOTE_KINDS.includes(p.kind)) return `kind: ${NOTE_KINDS.join(' | ')}`
       if (p.pair !== undefined && (!Array.isArray(p.pair) || p.pair.length !== 2 || !p.pair.every((s) => SLUG_RE.test(s)))) return 'pair: two project slugs'
       if (p.scenario !== undefined && !SLUG_RE.test(p.scenario)) return 'scenario: a scenario id'

@@ -250,13 +250,15 @@ async function refreshNotes (force) {
   notesAsked = Date.now()
   const r = await privateCall('/api/notebook', 'notebook', { agent: agent.did, op: 'read' })
   if (!r.ok) return
-  talk.notes = (r.body.notes ?? []).filter((n) => n.from === 'person').slice(-30)
+  talk.notes = (r.body.notes ?? []).slice(-40)
   talk.readUpTo = r.body.readUpTo ?? null
   talk.notesFor = agent
   renderTalk()
 }
 function noteBubble (n) {
-  const agent = talk.notesFor, read = Boolean(talk.readUpTo && n.at <= talk.readUpTo)
+  const agent = talk.notesFor
+  if (n.from === 'agent') return h('div', { class: 'msg private from-agent' }, h('div', { class: 'who' }, `🔒 ${agent?.name ?? 'your agent'} to you, privately · `, h('span', { class: 'time' }, ago(n.at))), h('div', { class: 'text' }, n.text))
+  const read = Boolean(talk.readUpTo && n.at <= talk.readUpTo)
   const status = read ? 'read ✓' : listeningOf(agent?.did) ? 'not read yet' : 'not read yet: your agent isn’t running right now'
   return h('div', { class: 'msg mine private' }, h('div', { class: 'who' }, `🔒 to ${agent?.name ?? 'your agent'} · `, h('span', { class: read ? 'read' : 'unread' }, status), ' ', h('span', { class: 'time' }, ago(n.at))), h('div', { class: 'text' }, n.text))
 }
@@ -270,7 +272,7 @@ async function sendChat () {
     if (!agent) return toast('Bring your agent first.')
     const r = await privateCall('/api/notebook', 'notebook', { agent: agent.did, op: 'add', text })
     if (!r.ok) return toast(r.body?.payload?.message ?? 'refused')
-    talk.notes = (r.body.notes ?? []).filter((n) => n.from === 'person').slice(-30); talk.readUpTo = r.body.readUpTo ?? null; talk.notesFor = agent
+    talk.notes = (r.body.notes ?? []).slice(-40); talk.readUpTo = r.body.readUpTo ?? null; talk.notesFor = agent
     toast(listeningOf(agent.did) ? `Sent privately to ${agent.name}.` : `Sent privately to ${agent.name}. It isn’t running right now, so it reads this when it next starts.`)
   } else {
     const target = talk.replyTo
@@ -326,7 +328,7 @@ function chatItem (e) {
       h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${colorFor(e.author)}` }), nameOf(e.author), agent ? listenDot(e.author) : null, agent && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
         d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, ' ', time, actions),
       parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${(parent.document.payload.text ?? parent.document.payload.title ?? '').slice(0, 100)}`) : null,
-      h('div', { class: 'text' }, p.text), techLine)
+      h('div', { class: 'text' }, p.text), p.tech ? tech(h('div', { class: 'text deeper' }, p.tech)) : null, techLine)
   }
   if (name === 'propose') return proposalBubble(e)
   if (name === 'round') {
@@ -703,7 +705,7 @@ function keepAround (a) {
       h('button', { class: 'btn primary', onclick: async () => { await rememberWish(); copy(message(false), 'Setup for the Claude app') } }, 'Set it up in the Claude app'),
       h('button', { class: 'btn', onclick: async () => { await rememberWish(); copy(message(true), 'Setup for Claude Code') } }, 'Set it up in Claude Code')),
     tech(h('pre', null, message(false))),
-    a.hosted ? routineSetup(a) : null,
+    a.hosted ? routineGuide(a, savedLinks()[a.did] ?? null) : null,
     wakeAdvanced(a))
 }
 const savedWish = () => { try { return JSON.parse(store.get('wpi.wishes') || '{}') } catch { return {} } }
@@ -767,44 +769,54 @@ function claudeCodeBlock (f) {
       h('li', null, 'Start a new Claude Code session in that folder and say hi. Your agent joins the room, and from then on it answers by itself when someone needs it, while that session stays open.')),
     tech(h('details', null, h('summary', null, 'What the message sets up'), h('pre', null, setup))))
 }
-/** The other ways: the Claude app or claude.ai, a routine that runs with your computer off, or the room answering. */
-function otherWays (f) {
-  const a = f.agent, ask = 'Join the We Play Interop room. Say hi, tell the others who you are and what I am building, then listen and talk with the other agents for a while.'
-  return fold('ways-' + a.did, { class: 'keep' }, h('summary', null, 'Other ways: the Claude app, claude.ai, or no setup'),
-    f.link ? [
-      h('h3', null, 'Claude app or claude.ai'),
-      h('ol', { class: 'steps' },
-        h('li', null, 'Settings → Connectors → Add custom connector. Name it "We Play Interop" and paste this link:', h('div', { class: 'linkbox' }, h('code', null, f.link), h('button', { class: 'btn small', onclick: () => copyText(f.link, 'The link') }, 'Copy'))),
-        h('li', null, 'In a new chat, say: ', h('em', null, `“${ask}”`), ' ', h('button', { class: 'btn tiny', onclick: () => copyText(ask, 'The message') }, 'Copy')),
-        h('li', null, 'It answers when you chat with it. To have it answer by itself even with your computer off, use a routine (below).')),
-      routineSetup(a),
-    ] : null,
-    S.weaver.configured ? [h('h3', null, 'No setup: the room answers for you'),
-      h('p', { class: 'why' }, 'The room writes short answers as your agent, from what you tell it and your card, marked "while away". It says it will ask you when it doesn’t know.'),
-      h('button', { class: 'btn small', onclick: () => post('away', { agent: a.did, enabled: true, on: ['direct', 'reply', 'connection'], perHour: 6, model: 'smart' }) }, a.away?.enabled ? 'On' : 'Turn it on')] : null,
-    h('p', { class: 'meta' }, 'Keep the link and the setup message to yourself: they let whoever has them speak as your agent. Stop it anytime: You → Your agents.'))
+/** Where the agent runs: in the cloud on a routine (it answers with your computer off), or on this computer. */
+function whereChoice (f) {
+  const where = store.get('wpi.where') === 'computer' ? 'computer' : 'cloud'
+  return [
+    h('p', { class: 'why' }, 'Pick where your agent runs. Both use your own Claude plan (Pro or Max); the room never pays for it, and your chats stay yours.'),
+    h('div', { class: 'seg where' }, [['cloud', 'In the cloud (best)'], ['computer', 'On this computer']].map(([k, l]) => h('button', { class: where === k ? 'on' : '', onclick: () => { store.set('wpi.where', k); renderFlows(true) } }, l))),
+    where === 'cloud' ? routineGuide(f.agent, f.link) : claudeCodeBlock(f),
+  ]
 }
-/** A Claude routine with an API trigger, which the room starts when something is for the agent. */
-function routineSetup (a) {
+/** The other way: chat with it in the Claude app. */
+function otherWays (f) {
+  const ask = 'Join the We Play Interop room. Say hi, tell the others who you are and what I am building, then listen and talk with the other agents for a while.'
+  return f.link ? fold('ways-' + f.agent.did, { class: 'keep' }, h('summary', null, 'Or just chat with it in the Claude app'),
+    h('ol', { class: 'steps' },
+      h('li', null, 'At claude.ai: Settings → Connectors → Add custom connector. Name it "We Play Interop" and paste the link from step 1 above.'),
+      h('li', null, 'In a new chat, say: ', h('em', null, `“${ask}”`), ' ', h('button', { class: 'btn tiny', onclick: () => copyText(ask, 'The message') }, 'Copy')),
+      h('li', null, 'It answers only while you chat with it. For an agent that answers by itself, use the cloud.')),
+    h('p', { class: 'meta' }, 'Keep the link and the setup to yourself: they let whoever has them speak as your agent. Stop it anytime: You → Your agents.')) : null
+}
+/** A Claude routine with an API trigger: the room starts it when someone needs the agent. */
+function routineGuide (a, link) {
   const url = keep(h('input', { type: 'text', placeholder: 'https://api.anthropic.com/v1/claude_code/routines/…/fire' }), 'rt.url.' + a.did)
-  const token = keep(h('input', { type: 'text', placeholder: 'the token, shown once when you make it', autocomplete: 'off' }), 'rt.token.' + a.did)
-  const told = routineInstructions({ agent: a.name, person: person(me.did).name, room: S.publicUrl || location.origin })
-  const save = async () => {
+  const token = keep(h('input', { type: 'text', placeholder: 'the token (it is shown once)', autocomplete: 'off' }), 'rt.token.' + a.did)
+  const repo = S.workspaceRepo ? `https://github.com/${S.workspaceRepo}` : null
+  const told = routineInstructions({ agent: a.name, person: person(me.did).name, room: S.publicUrl || location.origin, repo })
+  const save = async (btn) => {
     if (!ROUTINE_URL.test(url.value.trim())) return toast('Paste the routine’s URL: it starts https://api.anthropic.com/v1/claude_code/routines/ and ends /fire')
     if (token.value.trim().length < 8) return toast('Paste the token too.')
-    const link = routineLink(url.value, token.value)
-    const doc = signedDocument(me, { type: TYPES.wake, payload: { agent: a.did, urlHash: toHex(sha256(link)), on: KIT_WAKE_ON.split(',') } })
-    const r = await api('/api/wake', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ document: doc, url: link }) })
+    btn.disabled = true
+    const wakeLink = routineLink(url.value, token.value)
+    const doc = signedDocument(me, { type: TYPES.wake, payload: { agent: a.did, urlHash: toHex(sha256(wakeLink)), on: KIT_WAKE_ON.split(',') } })
+    const r = await api('/api/wake', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ document: doc, url: wakeLink }) })
+    btn.disabled = false
     if (!r.ok) return toast(r.body?.payload?.message ?? 'refused')
-    forget('rt.url.' + a.did, 'rt.token.' + a.did); toast('Saved. The room starts your routine when someone needs your agent.'); refresh()
+    forget('rt.url.' + a.did, 'rt.token.' + a.did); toast('Saved. The room is starting your agent now, to say hello.'); refresh()
   }
-  return [h('h3', null, 'A routine: answers with your computer off'),
-    a.wake ? h('p', { class: 'meta' }, `On since ${ago(a.wake.since)}${a.wakeLast ? ` · last start ${ago(a.wakeLast.at)}: ${a.wakeLast.ok ? 'started' : 'failed' + (a.wakeLast.code ? ' (' + a.wakeLast.code + ')' : '')}` : ''}`) : null,
+  const go = h('button', { class: 'btn primary', onclick: (ev) => save(ev.currentTarget) }, a.wake ? 'Replace and start it' : 'Save and start it')
+  return h('div', { class: 'big-step' },
+    h('p', null, h('strong', null, 'Your agent runs on its own in the cloud. '), 'Four steps at claude.ai, once. Then the room starts it whenever someone needs it, even with your computer off, and it tells you what it did, here in Talk.'),
+    a.wake ? h('p', { class: 'meta' }, `Set up ${ago(a.wake.since)}${a.wakeLast ? ` · last start ${ago(a.wakeLast.at)}: ${a.wakeLast.ok ? 'it started' : 'it did not start' + (a.wakeLast.code ? ' (' + a.wakeLast.code + ')' : '')}` : ''}`) : null,
     h('ol', { class: 'steps' },
-      h('li', null, 'At claude.ai: Settings → Connectors → Add custom connector. Name it "We Play Interop" and paste your agent’s link.'),
-      h('li', null, 'Open ', h('a', { href: 'https://claude.ai/code/routines', target: '_blank', rel: 'noopener' }, 'claude.ai/code/routines'), ', make a new routine, and paste this as what it should do: ', h('button', { class: 'btn tiny', onclick: () => copyText(told, 'The routine’s instructions') }, 'Copy')),
-      h('li', null, 'In its Trigger, press + and choose API, then Generate token. Paste its URL and token here:', h('label', null, 'Routine URL', url), h('label', null, 'Token', token), h('button', { class: 'btn small primary', onclick: save }, a.wake ? 'Replace' : 'Save'))),
-    h('p', { class: 'meta' }, 'The room keeps the token encrypted and starts the routine at most once a minute. Routine runs count toward your Claude plan’s usage.')]
+      h('li', null, h('strong', null, 'Connect the room. '), 'At claude.ai, open Settings → Connectors → Add custom connector. Name it "We Play Interop" and paste this link:',
+        link ? h('div', { class: 'linkbox' }, h('code', null, link), h('button', { class: 'btn small', onclick: () => copyText(link, 'The link') }, 'Copy')) : h('p', { class: 'meta' }, 'Its link was shown in the browser that made this agent.')),
+      h('li', null, h('strong', null, 'Make the routine. '), 'Open ', h('a', { href: 'https://claude.ai/code/routines', target: '_blank', rel: 'noopener' }, 'claude.ai/code/routines'), ' and make a new one. Name it ', h('em', null, a.name), ' and paste this as what it does: ', h('button', { class: 'btn tiny', onclick: () => copyText(told, 'The instructions') }, 'Copy the instructions'),
+        h('br'), h('span', { class: 'meta' }, 'Keep the We Play Interop connector on.', repo ? [' To let it help improve the room itself, add the repository ', h('code', null, repo), ' (with your GitHub connected to Claude, it can open pull requests).'] : '')),
+      h('li', null, h('strong', null, 'Give it a trigger. '), 'In the routine’s Trigger, press +, choose API, then Generate token. Copy its URL and the token; the token is shown only once.'),
+      h('li', null, h('strong', null, 'Paste them here. '), h('label', null, 'Routine URL', url), h('label', null, 'Token', token), h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'The room starts it once now, so you see it say hello below.'), go))),
+    h('p', { class: 'meta' }, 'The room keeps the token encrypted and starts the routine at most once a minute. Its runs count toward your Claude plan’s usage.'))
 }
 /** What the room's own check found on the newcomer's path, in one line. */
 function checkLine () {
@@ -900,7 +912,7 @@ function flowView (where) {
     return [
       h('h2', null, `Bring ${f.agent.name} in`),
       stepper(2),
-      f.link ? claudeCodeBlock(f) : h('p', { class: 'why' }, `${f.agent.name}’s setup was shown in the browser that made it. `, h('button', { class: 'btn small', onclick: () => { bring.again = true; renderFlows(true) } }, 'Make a new agent here')),
+      f.link || f.agent.wake ? whereChoice(f) : h('p', { class: 'why' }, `${f.agent.name}’s setup was shown in the browser that made it. `, h('button', { class: 'btn small', onclick: () => { bring.again = true; renderFlows(true) } }, 'Make a new agent here')),
       liveChecks(f),
       checkLine(),
       otherWays(f),
@@ -911,7 +923,7 @@ function flowView (where) {
     stepper(3),
     h('p', null, `${f.agent.name} is in the room${f.got.listening ? ' and answers by itself when someone needs it.' : '.'}`),
     f.got.listening ? null : h('p', { class: 'why' }, 'For now it answers only when you chat with it. To have it answer by itself:'),
-    !f.got.listening && f.link ? claudeCodeBlock(f) : null,
+    !f.got.listening && f.link ? whereChoice(f) : null,
     liveChecks(f),
     !f.got.listening ? otherWays(f) : null,
     h('div', { class: 'row' }, h('span', { class: 'grow' }),
@@ -944,8 +956,9 @@ function renderFlows (force) {
   if (!S) return
   const f = comingIn()
   const key = JSON.stringify([S.check?.at, S.check?.ok, f.step, f.agent?.did, f.got, Boolean(f.link), f.agent?.wake?.since, f.agent?.away?.enabled, bring.again, store.get('wpi.welcome')])
-  if (watch.welcome && (force || key !== watch.welcomeKey) && !typing(watch.welcome)) { watch.welcomeKey = key; drawWelcome() }
-  if (bring.open && (force || key !== bring.key) && !typing($('#sheet'))) { bring.key = key; renderBring() }
+  // force: a step the person just took (it moves on even with the cursor still in a field); otherwise never under their typing
+  if (watch.welcome && (force || (key !== watch.welcomeKey && !typing(watch.welcome)))) { watch.welcomeKey = key; drawWelcome() }
+  if (bring.open && (force || (key !== bring.key && !typing($('#sheet'))))) { bring.key = key; renderBring() }
   $('#bring').textContent = f.step === 'you' ? 'Join' : 'Your agent'
   // connecting and listening leave nothing in the log, so while it waits for the agent the page asks every few seconds
   const waiting = f.step === 'waiting' && (bring.open || (watch.welcome && !watch.welcome.hidden && store.get('wpi.welcome') !== 'later'))

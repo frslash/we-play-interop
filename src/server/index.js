@@ -182,6 +182,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
         if (url && createHash('sha256').update(url).digest('hex') !== doc.payload.urlHash) throw new TaskError('malformedRequest', 'the wake link does not match the hash you signed')
         const { entry } = await log.accept(doc, { ip: ipOf(req) })
         await waker.set(doc.payload.agent, url, doc.payload.on)
+        if (url) waker.hello(doc.payload.agent) // starts it once now, so its person sees it come in
         return send(res, 201, entry)
       } catch (err) { return refuse(res, err, doc) }
     }
