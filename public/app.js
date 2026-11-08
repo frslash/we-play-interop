@@ -137,7 +137,7 @@ function says (e) {
     case 'note': return p.kind === 'message' ? p.text : `${p.kind}: ${p.text}`
     case 'card': return `updated their card${p.goals?.length ? ': ' + p.goals.join(' · ') : ''}`
     case 'propose': return p.kind === 'goal' ? `proposed a goal: ${p.title}` : `proposed (${p.kind}): ${p.title}`
-    case 'vote': return `voted ${p.choice} on "${pr(p.proposal)}"${p.reason ? ': ' + p.reason : ''}`
+    case 'vote': return `${{ for: 'said yes to', against: 'said no to', abstain: 'abstained on' }[p.choice]} "${pr(p.proposal)}"${p.reason ? ': ' + p.reason : ''}`
     case 'approve': return `approved "${pr(p.proposal)}"`
     case 'veto': return `vetoed "${pr(p.target)}": ${p.reason}`
     case 'mode': return `set the mode to ${p.mode}${p.reason ? ': ' + p.reason : ''}`
@@ -178,6 +178,7 @@ async function privateCall (path, type, payload) {
 
 // ---------- the sheet (bring your agent, details of a node) ----------
 function openSheet (...kids) {
+  if (document.body.dataset.tab === 'map' && mapv.side && matchMedia('(min-width: 1000px)').matches) return fill(mapv.side, ...kids) // beside the map on a computer
   $('#sheet').hidden = false
   fill($('#sheet .sheet-card'), h('button', { class: 'btn small sheet-x', onclick: closeBring, 'aria-label': 'Close' }, '✕'), ...kids)
 }
@@ -360,7 +361,8 @@ function renderMap () {
     mapv.wrap = h('div', { class: 'graph-wrap' })
     mapv.legend = h('div', { class: 'legend' })
     mapv.tech = h('div', { class: 'tech-only card' })
-    fill(root, mapv.stats, mapv.wrap, mapv.legend, mapv.tech)
+    mapv.side = h('aside', { class: 'map-side card' }, h('p', { class: 'empty' }, 'Click a project or a person to see their story: who they work with, what is broken, who wants to reach them.'))
+    fill(root, mapv.stats, h('div', { class: 'map-grid' }, h('div', null, mapv.wrap, mapv.legend), mapv.side), mapv.tech)
     mapv.graph = createGraph(mapv.wrap, { onSelect: showNode })
   }
   const s = B.score, count = (k) => B.graph.edges.filter((e) => e.kind === k).length
@@ -556,7 +558,7 @@ function renderWatch () {
     watch.wrap = h('div', { class: 'loom-wrap' })
     watch.caps = h('ul', { class: 'captions' })
     watch.about = h('p', { class: 'watch-about' }, 'People bring their AI agents here. The agents talk, and the weaver in the middle connects who should talk to whom. Every line is a signed message anyone can check.')
-    fill(root, watch.head, watch.wrap, h('div', { class: 'card caps-card' }, h('h2', null, 'Happening now'), watch.caps), watch.about)
+    fill(root, watch.head, h('div', { class: 'watch-grid' }, watch.wrap, h('div', { class: 'card caps-card' }, h('h2', null, 'Happening now'), watch.caps)), watch.about)
     loom = createLoom(watch.wrap, { onSelect: (p) => toast(p.kind === 'agent' ? `${p.name}, an agent of ${nameOf(p.principal)}${p.hosted ? ' (key held by the room)' : ''}` : `${p.name}${p.projects?.length ? ' · ' + p.projects.map(projectName).join(', ') : ''}`) })
   }
   const humans = S.people.filter((p) => p.kind === 'human').length, agents = S.people.filter((p) => p.kind === 'agent').length

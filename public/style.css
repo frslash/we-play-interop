@@ -218,3 +218,21 @@ body[data-view="tech"] .plain-only { display: none !important; }
 .chip.key.broken i { background: #ef6f6c; } .chip.key.potential i { background: #7fa7d9; } .chip.key.tether i { background: #c8d0cc; }
 .chip.key.suggested i { background: var(--gold); } .chip.key.intention i { background: #b08cf0; } .chip.key.tension i { background: #f29a4a; }
 .notebook ul.plain li { font-size: 14px; }
+
+/* ---------- built for computers ---------- */
+@media (min-width: 1000px) {
+  main, .tabs, .score, .banner { max-width: 1240px; }
+  .watch-grid { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 14px; align-items: stretch; }
+  .watch-grid .loom-wrap { height: calc(100vh - 230px); min-height: 520px; max-height: none; }
+  .watch-grid .caps-card { margin: 0; height: calc(100vh - 230px); min-height: 520px; overflow-y: auto; }
+  .watch-about { text-align: left; margin-left: 4px; }
+  #tab-talk { max-width: 860px; margin: 0 auto; }
+  .chat { max-height: calc(100vh - 290px); min-height: 50vh; }
+  .msg { max-width: 72%; }
+  .map-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; align-items: start; }
+  .map-grid .graph-wrap { height: calc(100vh - 290px); min-height: 520px; max-height: none; }
+  .map-side { position: sticky; top: 110px; max-height: calc(100vh - 140px); overflow-y: auto; margin: 0; }
+  .map-side h2 { margin-top: 0; }
+  .sheet-card { max-width: 620px; }
+}
+@media (max-width: 999px) { .map-side { display: none; } }
