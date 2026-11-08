@@ -30,8 +30,24 @@ cat > "$PROFILE" <<EOF
 (allow file-read-metadata (literal "$HOME"))
 (allow file-read* file-write* (subpath "$ROOT"))
 EOF
-# run something inside the sandbox, from a folder of the sandbox
-boxed () { local dir="$1"; shift; (cd "$dir" && HOME="$ROOT/home" npm_config_cache="$ROOT/.npm" exec sandbox-exec -f "$PROFILE" "$@"); }
+# tests run stricter still: no secrets in their environment, no reading the room's settings or record,
+# and no network beyond this machine (the tests start their own rooms on localhost)
+TESTPROFILE="$ROOT/tests.sb"
+{
+  echo '(version 1)'
+  echo '(allow default)'
+  echo "(deny file-read* file-write* (subpath \"$HOME\"))"
+  echo "(allow file-read-metadata (literal \"$HOME\"))"
+  echo "(allow file-read* file-write* (subpath \"$ROOT\"))"
+  echo "(deny file-read* file-write* (literal \"$ROOT/.env\") (subpath \"$ROOT/data\"))"
+  echo '(deny network-outbound)'
+  echo '(allow network-outbound (remote ip "localhost:*"))'
+  echo '(allow network-outbound (remote unix-socket))'
+} > "$TESTPROFILE"
+CLEAN=(env -i HOME="$ROOT/home" PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" npm_config_cache="$ROOT/.npm")
+# run something inside the sandbox, from a folder of the sandbox, with nothing of the room's in its environment
+boxed () { local dir="$1"; shift; (cd "$dir" && exec "${CLEAN[@]}" sandbox-exec -f "$PROFILE" "$@"); }
+tested () { local dir="$1"; shift; (cd "$dir" && exec "${CLEAN[@]}" sandbox-exec -f "$TESTPROFILE" "$@"); }
 
 tunnel () {
   if [ "$MODE" = live ]; then URL="$(grep -E '^PUBLIC_URL=' "$ROOT/.env" | cut -d= -f2- | tr -d "\"'")"; return; fi # the live room keeps the address it has
@@ -48,11 +64,10 @@ tunnel () {
 stop_room () { [ -n "${ROOM_PID:-}" ] && kill "$ROOM_PID" 2>/dev/null; pkill -f "$LIVE/src/server/index.js" 2>/dev/null; ROOM_PID=; sleep 1; }
 start_room () {
   stop_room
-  set -a; [ -f "$ROOT/.env" ] && . "$ROOT/.env"; set +a
   if [ "$MODE" = live ]; then
-    (cd "$LIVE" && HOME="$ROOT/home" PORT="$PORT" DATA_DIR="$ROOT/data" exec sandbox-exec -f "$PROFILE" caffeinate -is node "$LIVE/src/server/index.js") >> "$ROOT/room.log" 2>&1 &
+    (set -a; [ -f "$ROOT/.env" ] && . "$ROOT/.env"; set +a; cd "$LIVE" && HOME="$ROOT/home" PORT="$PORT" DATA_DIR="$ROOT/data" exec sandbox-exec -f "$PROFILE" caffeinate -is node "$LIVE/src/server/index.js") >> "$ROOT/room.log" 2>&1 &
   else
-    (cd "$LIVE" && HOME="$ROOT/home" SANDBOX=1 PORT="$PORT" DATA_DIR="$ROOT/data" PUBLIC_URL="$URL" WORKSPACE_NAME="We Play Interop sandbox" \
+    (set -a; [ -f "$ROOT/.env" ] && . "$ROOT/.env"; set +a; cd "$LIVE" && HOME="$ROOT/home" SANDBOX=1 PORT="$PORT" DATA_DIR="$ROOT/data" PUBLIC_URL="$URL" WORKSPACE_NAME="We Play Interop sandbox" \
       WORKSPACE_REPO="$(echo "$REPO" | sed -E 's#^https://github.com/##; s#\.git$##')" WORKSPACE_BRANCH="$BRANCH" VETO_WINDOW_MINUTES=2 APPROVALS_REQUIRED=1 \
       exec sandbox-exec -f "$PROFILE" node "$LIVE/src/server/index.js") >> "$ROOT/room.log" 2>&1 &
   fi
@@ -77,7 +92,7 @@ while sleep 60; do
   log "new commit ${new:0:7}: testing it inside the sandbox"
   git -C "$LIVE" worktree remove --force "$STAGE" 2>/dev/null; rm -rf "$STAGE"
   git -C "$LIVE" worktree add -q --detach "$STAGE" "$new" 2>>"$LOG"
-  if boxed "$STAGE" npm ci --no-audit --no-fund --loglevel=error >> "$LOG" 2>&1 && boxed "$STAGE" npm test >> "$ROOT/tests.log" 2>&1; then
+  if boxed "$STAGE" npm ci --no-audit --no-fund --loglevel=error >> "$LOG" 2>&1 && tested "$STAGE" npm test >> "$ROOT/tests.log" 2>&1; then
     git -C "$LIVE" checkout -q --detach "$new" && boxed "$LIVE" npm ci --no-audit --no-fund --loglevel=error >> "$LOG" 2>&1
     if start_room; then log "updated to ${new:0:7}"; else
       log "rolling back to ${cur:0:7}"; git -C "$LIVE" checkout -q --detach "$cur"; boxed "$LIVE" npm ci --no-audit --no-fund --loglevel=error >> "$LOG" 2>&1; start_room
