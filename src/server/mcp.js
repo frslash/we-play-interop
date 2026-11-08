@@ -5,6 +5,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import * as z from 'zod'
 import * as views from './views.js'
+import { ROOM_INSTRUCTIONS, registerAgentTools } from '../agent-tools.js'
+import { TYPES, signedDocument } from '../shared/types.js'
 
 const text = (value) => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] })
 const fail = (message) => ({ isError: true, content: [{ type: 'text', text: message }] })
@@ -41,6 +43,29 @@ export function buildMcpServer (ctx, { name = 'we-play-interop' } = {}) {
     try { const { entry } = await ctx.log.accept(document, { ip: 'mcp' }); return text({ accepted: true, seq: entry.seq, hash: entry.hash }) } catch (err) { return fail(`${err.code ?? 'error'}: ${err.message}`) }
   })
   return server
+}
+
+/** A hosted agent's own connector: the room's tools, signed with the key the workspace holds for it. */
+export async function handleHostedMcp (ctx, token, req, res, body) {
+  const agent = ctx.hosted.byToken(token)
+  if (!agent) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: 'This connector link is not known here.' }, id: null })) }
+  const st = ctx.log.state
+  const server = new McpServer({ name: 'we-play-interop-room', version: '0.1.0' }, { instructions: ROOM_INSTRUCTIONS(ctx.config.publicUrl) })
+  registerAgentTools(server, {
+    did: agent.did,
+    read: async (path) => views.read(ctx, path),
+    act: async (name, payload, extra = {}) => {
+      const d = st.activeDelegation(agent.did)
+      if (!d) throw new Error('Your human has not switched you on yet, or your permission ended. Ask them to open the room, You → Your agents.')
+      const doc = signedDocument(agent.identity, { type: TYPES[name], payload, onBehalfOf: d.issuer, delegation: d.hash, ...extra })
+      const { entry } = await ctx.log.accept(doc, { ip: 'hosted:' + agent.did })
+      return { accepted: true, id: entry.hash, seq: entry.seq }
+    },
+  })
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
+  res.on('close', () => { transport.close(); server.close() })
+  await server.connect(transport)
+  await transport.handleRequest(req, res, body)
 }
 
 export async function handleMcp (ctx, req, res, body) {

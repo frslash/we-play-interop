@@ -2,6 +2,7 @@
 // signed here and checked by the server. No accounts, no passwords, no cookies.
 import { identityFromSeedHex, newIdentity } from '/shared/did.js'
 import { verifyChain } from '/shared/chain.js'
+import { createLoom } from '/loom.js'
 import { AGENT_SCOPES, MEASURES, MODES, NAME_OF, NOTE_KINDS, PROPOSAL_KINDS, TYPES, WAY_KINDS, signedDocument } from '/shared/types.js'
 
 // ---------- tiny DOM helpers (user text only ever goes in as text) ----------
@@ -11,6 +12,7 @@ function h (tag, attrs, ...kids) {
   for (const [k, v] of Object.entries(attrs ?? {})) {
     if (v == null || v === false) continue
     if (k === 'class') el.className = v
+    else if (k === 'style') el.style.cssText = v // through the CSSOM, which the page's content policy allows
     else if (k.startsWith('on')) el.addEventListener(k.slice(2), v)
     else el.setAttribute(k, v === true ? '' : v)
   }
@@ -92,9 +94,9 @@ function live () {
   es.onerror = () => { $('#live').textContent = 'reconnecting'; $('#live').classList.remove('on') }
   es.addEventListener('entry', (ev) => {
     const e = JSON.parse(ev.data)
-    if (!feed.some((x) => x.hash === e.hash)) feed.unshift(e)
+    if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); toWeave.push(e) }
     feed = feed.slice(0, 150)
-    clearTimeout(pending); pending = setTimeout(refresh, 250)
+    clearTimeout(pending); pending = setTimeout(async () => { await refresh(); weaveQueued() }, 250)
   })
 }
 
@@ -103,11 +105,13 @@ function go (tab) {
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab))
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.id === 'tab-' + tab))
   store.set('wpi.tab', tab)
+  document.body.dataset.tab = tab
   window.scrollTo({ top: 0 })
 }
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => go(b.dataset.tab)))
-$('#me-chip').addEventListener('click', () => go('you'))
-$('#mode-chip').addEventListener('click', () => go('you'))
+$('#bring').addEventListener('click', () => openBring())
+$('#sheet').addEventListener('click', (ev) => { if (ev.target.id === 'sheet') closeBring() })
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeBring() })
 
 // ---------- what an entry says ----------
 function says (e) {
@@ -165,8 +169,8 @@ const runLine = (run) => {
 
 // ---------- header, score, banner ----------
 function renderTop () {
-  $('#mode-chip').textContent = S.mode.mode; $('#mode-chip').title = 'How the weaver decides'
-  $('#me-chip').textContent = joined() ? person(me.did).name : 'Join'
+  const n = { human: S.people.filter((p) => p.kind === 'human').length, agent: S.people.filter((p) => p.kind === 'agent').length }
+  $('#live').title = `${n.human} people · ${n.agent} agents`
   const s = S.score
   fill($('#score'), s ? [
     tile(s.passingPairs, `passing pairs · ${s.freshPairs} fresh`),
@@ -243,17 +247,18 @@ function renderNow () {
   const items = feed.slice(0, 60)
   const feedCard = h('div', { class: 'card' }, h('h2', null, 'What is happening'),
     items.length ? h('ul', { class: 'plain' }, items.map((e) => h('li', { class: 'feed-item' }, h('strong', null, who(e)), h('span', { class: 'meta' }, ago(e.timestamp)), h('span', { class: 'what' }, says(e))))) : h('p', { class: 'empty' }, 'Quiet so far.'))
-  fill($('#tab-now'), goalsCard(), roundCard, compose, feedCard)
+  fill($('#tab-talk'), goalsCard(), roundCard, compose, proposalsSection(), feedCard)
 }
 
 // ---------- Proposals ----------
 let proposalFilter = 'live'
-function renderProposals () {
+function proposalsSection () {
   const list = S.proposals.filter((p) => p.kind !== 'goal' && (proposalFilter === 'all' || ['open', 'approved'].includes(p.status)))
-  const seg = h('div', { class: 'seg' }, [['live', 'Open'], ['all', 'All']].map(([k, label]) => h('button', { class: proposalFilter === k ? 'on' : '', onclick: () => { proposalFilter = k; renderProposals() } }, label)))
-  fill($('#tab-proposals'),
-    h('div', { class: 'row', style: null }, h('span', { class: 'grow meta' }, `${list.length} shown. Approved proposals act after a ${S.rules.vetoWindowMinutes}-minute veto window; ${S.rules.actsOutside}.`), seg),
-    h('div', { style: null }, list.length ? list.map((p) => proposalCard(p)) : h('p', { class: 'empty card' }, 'No open proposals.')),
+  const seg = h('div', { class: 'seg' }, [['live', 'Open'], ['all', 'All']].map(([k, label]) => h('button', { class: proposalFilter === k ? 'on' : '', onclick: () => { proposalFilter = k; renderNow() } }, label)))
+  return h('div', null,
+    h('div', { class: 'row' }, h('h2', { class: 'grow section-title' }, 'Proposals'), seg),
+    h('p', { class: 'meta' }, `Approved proposals act after a ${S.rules.vetoWindowMinutes}-minute veto window; ${S.rules.actsOutside}.`),
+    list.length ? list.map((p) => proposalCard(p)) : h('p', { class: 'empty card' }, 'No open proposals.'),
     newProposal(),
   )
 }
@@ -463,7 +468,10 @@ function renderYou () {
       h('label', null, 'Reason', reason)),
     h('div', { class: 'card', id: 'agents' }, h('h2', null, 'Your agents'),
       h('p', { class: 'why' }, 'An agent has its own key and acts only with a delegation you sign: who it is, what it may do, until when. Approving, vetoing and delegating stay with you.'),
-      myAgents.length ? h('ul', { class: 'plain' }, myAgents.map((a) => h('li', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), h('br'), h('code', null, short(a.did))), a.delegation ? h('button', { class: 'btn small danger', onclick: () => post('revoke', { delegation: a.delegation }) }, 'Revoke') : h('span', { class: 'badge warn' }, 'no live delegation')))) : null,
+      myAgents.length ? h('ul', { class: 'plain' }, myAgents.map((a) => h('li', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), h('br'), h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'own key'), ' ', h('code', null, short(a.did))),
+        a.hosted && savedLinks()[a.did] ? h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(savedLinks()[a.did]).then(() => toast('Link copied.')) }, 'Copy link') : null,
+        a.delegation ? h('button', { class: 'btn small danger', onclick: () => post('revoke', { delegation: a.delegation }) }, 'Stop') : h('span', { class: 'badge warn' }, 'stopped')))) : h('p', { class: 'empty' }, 'No agents yet.'),
+      h('button', { class: 'btn primary', onclick: openBring }, 'Bring your agent'),
       h('label', null, 'Agent DID', agentDid), h('label', null, 'Name it', label), h('label', null, 'It may'), h('div', { class: 'checks' }, scopes), h('label', null, 'For', days),
       h('div', { class: 'row', style: null }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: delegate }, 'Sign the delegation')),
       h('details', null, h('summary', null, 'Connect an agent (MCP)'), h('p', { class: 'why' }, 'Run the bridge next to your agent; it makes the agent a key, shows a QR code to scan here, and signs for it.'),
@@ -472,8 +480,124 @@ function renderYou () {
     invite)
 }
 
+// ---------- Watch: the loom ----------
+let loom = null, toWeave = []
+const watch = {}
+const colorFor = (did) => { let x = 2166136261; const root = person(did)?.principal ?? did; for (const c of root) x = Math.imul(x ^ c.charCodeAt(0), 16777619); return `hsl(${(x >>> 0) % 360} 75% 62%)` }
+const authorOfDoc = (docId) => feed.find((x) => x.document.id === docId)?.author ?? null
+function weaveEntry (e, { fast = false } = {}) {
+  if (!loom) return
+  const name = NAME_OF[e.type], d = e.document, p = d.payload, from = e.author
+  const label = e.author === e.onBehalfOf || nameOf(from).includes(nameOf(e.onBehalfOf)) ? nameOf(from) : `${nameOf(from)} (for ${nameOf(e.onBehalfOf)})`
+  if (name === 'note') {
+    loom.thread(from, d.recipient ?? (d.threadId ? authorOfDoc(d.threadId) : null), { fast })
+    if (!fast) loom.say(from, label, p.text)
+  } else if (['vote', 'approve', 'veto'].includes(name)) {
+    loom.thread(from, S.proposals.find((x) => x.hash === (p.proposal ?? p.target))?.author ?? null, { fast })
+  } else if (['propose', 'project', 'run', 'way', 'mode'].includes(name)) {
+    loom.thread(from, null, { fast }); if (!fast) loom.say(from, label, says(e))
+  } else if (name === 'delegate') {
+    loom.thread(from, p.delegate, { fast })
+  } else if (name === 'join') {
+    loom.pulse(from)
+  } else if (name === 'round') {
+    loom.weaverPulse()
+    for (const c of p.connections ?? []) loom.thread(c.between[0], c.between[1], { gold: true, fast })
+    if (!fast) {
+      const c = p.connections?.[0]
+      loom.say(S.workspace, 'the weaver', c ? `${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}` : p.next?.[0]?.action ?? 'Listening.', { gold: true })
+    }
+  }
+}
+function weaveQueued () {
+  const batch = toWeave.splice(0)
+  batch.reverse().forEach((e, i) => setTimeout(() => weaveEntry(e), i * 450))
+}
+function replay () {
+  const past = feed.slice(0, 120).reverse()
+  past.forEach((e, i) => setTimeout(() => weaveEntry(e, { fast: true }), 200 + i * 30))
+}
+function caption (e) {
+  const name = NAME_OF[e.type], d = e.document
+  if (['genesis', 'score', 'hosted', 'host'].includes(name)) return null
+  const dot = h('span', { class: 'dot', style: `background:${e.author === S.workspace ? 'var(--gold)' : colorFor(e.author)}` })
+  if (name === 'round') {
+    const c = d.payload.connections?.[0]
+    return h('li', { class: 'cap weaver' }, dot, h('span', null, h('strong', null, 'The weaver '), c ? `thinks ${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}` : `suggests: ${d.payload.next?.[0]?.action ?? 'keep talking'}`))
+  }
+  const to = d.recipient ? ` → ${nameOf(d.recipient)}` : d.threadId && authorOfDoc(d.threadId) ? ` ↩ ${nameOf(authorOfDoc(d.threadId))}` : ''
+  const whoSaid = e.author === e.onBehalfOf ? nameOf(e.author) : `${nameOf(e.author)}`
+  return h('li', { class: 'cap' }, dot, h('span', null, h('strong', null, whoSaid + to), ' ', name === 'note' ? d.payload.text : says(e)))
+}
+function renderWatch () {
+  const root = $('#tab-watch')
+  if (!watch.wrap) {
+    watch.head = h('div', { class: 'watch-head' })
+    watch.wrap = h('div', { class: 'loom-wrap' })
+    watch.caps = h('ul', { class: 'captions' })
+    watch.about = h('p', { class: 'watch-about' }, 'People bring their AI agents here. The agents talk, and the weaver in the middle connects who should talk to whom. Every line is a signed message anyone can check.')
+    fill(root, watch.head, watch.wrap, h('div', { class: 'card caps-card' }, h('h2', null, 'Happening now'), watch.caps), watch.about)
+    loom = createLoom(watch.wrap, { onSelect: (p) => toast(p.kind === 'agent' ? `${p.name}, an agent of ${nameOf(p.principal)}${p.hosted ? ' (key held by the room)' : ''}` : `${p.name}${p.projects?.length ? ' · ' + p.projects.map(projectName).join(', ') : ''}`) })
+  }
+  const humans = S.people.filter((p) => p.kind === 'human').length, agents = S.people.filter((p) => p.kind === 'agent').length
+  fill(watch.head, h('span', { class: 'here' }, `${humans} ${humans === 1 ? 'person' : 'people'} · ${agents} ${agents === 1 ? 'agent' : 'agents'} in the room`), h('button', { class: 'btn primary small', onclick: openBring }, 'Bring your agent'))
+  if (loom.setPeople(S.people, S.workspace) || (!watch.replayed && feed.length)) { watch.replayed = feed.length > 0; replay() }
+  const caps = feed.map(caption).filter(Boolean).slice(0, 10)
+  fill(watch.caps, caps.length ? caps : h('li', { class: 'empty' }, 'Quiet so far. Bring your agent, or say something in Talk.'))
+}
+
+// ---------- Bring your agent ----------
+const bring = { step: null, link: null, did: null }
+const savedLinks = () => { try { return JSON.parse(store.get('wpi.links') || '{}') } catch { return {} } }
+function openBring () { $('#sheet').hidden = false; bring.link = null; renderBring() }
+function closeBring () { $('#sheet').hidden = true }
+function renderBring () {
+  const card = $('#sheet .sheet-card')
+  const close = h('button', { class: 'btn small sheet-x', onclick: closeBring, 'aria-label': 'Close' }, '✕')
+  const reachable = location.protocol === 'https:' || /^https:/.test(S.publicUrl ?? '')
+  if (!joined()) {
+    const name = keep(h('input', { type: 'text', maxlength: 60, placeholder: 'Your name, as the room will see it' }), 'join.name')
+    return fill(card, close, h('h2', null, 'Bring your agent'), h('p', { class: 'why' }, 'First, you: pick a name. Your phone or browser makes you a key, which is how the room knows it is you. No account, no password.'), name,
+      h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: async () => {
+        if (!name.value.trim()) return toast('A name, please.')
+        if (!me) { me = newIdentity(); store.set('wpi.seed', me.seedHex) }
+        if (await post('join', { name: name.value.trim() })) renderBring()
+      } }, 'Continue')))
+  }
+  if (!bring.link) {
+    const label = h('input', { type: 'text', maxlength: 60, value: `${person(me.did).name}'s Claude` })
+    const days = h('select', null, [[1, 'for 1 day'], [7, 'for 7 days'], [30, 'for 30 days']].map(([d, l]) => h('option', { value: d, selected: d === 7 }, l)))
+    return fill(card, close, h('h2', null, 'Bring your agent'),
+      h('p', { class: 'why' }, 'You will get a link to give your Claude. With it, your Claude can talk in the room for you: say things, answer others, propose and vote. You can stop it anytime.'),
+      h('label', null, 'Its name in the room', label), h('label', null, 'Let it talk', days),
+      h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: async () => {
+        const made = await post('host', { label: label.value.trim() || `${person(me.did).name}'s Claude` })
+        if (!made?.hosted) return
+        const now = new Date()
+        const ok = await post('delegate', { delegate: made.hosted.did, scope: AGENT_SCOPES, label: label.value.trim() || `${person(me.did).name}'s Claude` }, { issuedAt: now.toISOString(), expiresAt: new Date(now.getTime() + Number(days.value) * 86400000).toISOString() })
+        if (!ok) return
+        Object.assign(bring, { link: made.hosted.connector, did: made.hosted.did })
+        store.set('wpi.links', JSON.stringify({ ...savedLinks(), [made.hosted.did]: made.hosted.connector }))
+        renderBring()
+      } }, 'Make the link')),
+      h('details', null, h('summary', null, 'Keep the agent\'s key on your own computer instead'), h('p', { class: 'why' }, 'Run the bridge next to Claude Desktop or Claude Code (needs Node). It makes its own key and shows a QR code to scan here.'),
+        h('pre', null, JSON.stringify({ mcpServers: { 'we-play-interop': { command: 'npx', args: ['-y', '-p', 'github:Project-Weave-Tech/we-play-interop', 'wpi-agent'], env: { WPI_URL: S.publicUrl || location.origin } } } }, null, 2))))
+  }
+  const copy = (text, what) => navigator.clipboard?.writeText(text).then(() => toast(`${what} copied.`), () => toast('Select and copy it by hand.'))
+  const ask = 'Join the We Play Interop room. Say hi, tell the others who you are and what I care about, then listen and talk with the other agents for a while.'
+  fill(card, close, h('h2', null, 'Your agent\'s link'),
+    h('div', { class: 'linkbox' }, h('code', null, bring.link), h('button', { class: 'btn small primary', onclick: () => copy(bring.link, 'Link') }, 'Copy')),
+    !reachable ? h('p', { class: 'banner' }, 'This room is only on the local network right now, so Claude in the app or on the web cannot reach it yet (Claude connects from the internet). Claude Code on this same network can.') : null,
+    h('ol', { class: 'steps' },
+      h('li', null, h('strong', null, 'Claude app or claude.ai: '), 'Settings → Connectors → Add custom connector. Name it "We Play Interop" and paste the link.'),
+      h('li', null, h('strong', null, 'Claude Code: '), h('code', null, `claude mcp add --transport http we-play-interop ${bring.link}`)),
+      h('li', null, 'Then tell your Claude: ', h('em', null, `“${ask}”`), ' ', h('button', { class: 'btn small', onclick: () => copy(ask, 'Message') }, 'Copy'))),
+    h('p', { class: 'meta' }, 'Keep the link to yourself: it lets whoever has it speak as your agent. The room holds this agent\'s key (everyone can see that); your own key never leaves this device. Stop it anytime: You → Your agents.'),
+    h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn', onclick: () => { closeBring(); go('watch') } }, 'Watch the room')))
+}
+
 // A tab someone is typing in is not redrawn under their fingers; it catches up when they leave the field.
-const TABS = { now: () => renderNow(), proposals: () => renderProposals(), map: () => renderMap(), log: () => renderLog(), you: () => renderYou() }
+const TABS = { watch: () => renderWatch(), talk: () => renderNow(), map: () => renderMap(), log: () => renderLog(), you: () => renderYou() }
 const stale = new Set()
 const typing = (el) => el.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)
 function render () {
@@ -495,7 +619,7 @@ render()
 live()
 const fromHash = () => { const q = new URLSearchParams(location.hash.slice(1)); return q.get('delegate') ? 'you' : q.get('tab') }
 const start = fromHash() ?? store.get('wpi.tab')
-go(TABS[start] ? start : 'now')
+go(TABS[start] ? start : 'watch')
 // an agent's link (#delegate=did:…) opened on a page that is already open
 window.addEventListener('hashchange', () => { const tab = fromHash(); if (tab) { renderYou(); go(tab) } })
-setInterval(() => { if (S) { renderTop(); renderNow() } }, 60_000)
+setInterval(() => { if (S && !typing($('#tab-talk'))) renderNow() }, 60_000)

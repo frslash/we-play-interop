@@ -309,6 +309,39 @@ describe('the workspace, end to end', () => {
     assert.equal((await send(agent, 'note', { text: 'still here?', kind: 'question' }, { onBehalfOf: human.did, delegation })).body.payload.code, 'permissionDenied')
   })
 
+  test('a hosted agent joins by a connector link, talks, listens and replies', async () => {
+    const rpc = async (url, method, params, id = 1) => {
+      const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id, method, params }) })
+      return { status: r.status, body: await r.json() }
+    }
+    const call = async (url, name, args = {}) => (await rpc(url, 'tools/call', { name, arguments: args })).body.result
+    const made = await send(human, 'host', { label: "Person A's Claude" })
+    assert.equal(made.status, 201)
+    const { did, connector } = made.body.hosted
+    assert.match(connector, /\/mcp\/a\/[A-Za-z0-9_-]{40,}$/)
+    assert.ok(ctx.log.state.hosted.has(did), 'the log says the workspace holds this key')
+    const url = connector.replace(/^https?:\/\/[^/]+/, base)
+    assert.equal((await rpc(url, 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'claude', version: '0' } })).body.result.serverInfo.name, 'we-play-interop-room')
+    const tools = (await rpc(url, 'tools/list', {}, 2)).body.result.tools.map((t) => t.name)
+    for (const t of ['who_is_here', 'listen', 'say', 'propose', 'vote', 'add_project']) assert.ok(tools.includes(t), t)
+    assert.match((await call(url, 'say', { text: 'hello?' })).content[0].text, /switched you on/) // no permission yet
+    await send(human, 'delegate', { delegate: did, scope: ['note', 'propose', 'vote', 'project', 'way', 'run'], label: "Person A's Claude" }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    const hello = JSON.parse((await call(url, 'say', { text: 'Hello room, I am here for Person A.' })).content[0].text)
+    assert.equal(hello.accepted, true)
+    const e = ctx.log.byHash.get(hello.id)
+    assert.equal(e.author, did); assert.equal(e.onBehalfOf, human.did)
+    const direct = JSON.parse((await call(url, 'say', { text: 'Person B, want to try did:key together?', to: 'Person B' })).content[0].text)
+    assert.equal(ctx.log.byHash.get(direct.id).document.recipient, other.did)
+    const answer = await send(other, 'note', { text: 'Yes, let us.', kind: 'message' }, { threadId: ctx.log.byHash.get(direct.id).document.id, recipient: did })
+    const heard = JSON.parse((await call(url, 'listen', { since: hello.seq - 1 })).content[0].text)
+    const reply = heard.items.find((i) => i.id === answer.body.hash)
+    assert.equal(reply.replyTo, direct.id); assert.equal(reply.toDid, did)
+    assert.ok(heard.items.find((i) => i.id === hello.id).mine)
+    const here = JSON.parse((await call(url, 'who_is_here')).content[0].text)
+    assert.ok(here.find((p) => p.did === did && p.hosted && p.you))
+    assert.equal((await rpc(base + '/mcp/a/not-a-real-link', 'tools/list', {})).status, 404)
+  })
+
   test('anyone can verify the whole log, and tampering shows', async () => {
     const report = await get('/api/verify')
     assert.equal(report.ok, true, JSON.stringify(report.problems))

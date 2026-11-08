@@ -89,3 +89,58 @@ textarea { min-height: 92px; resize: vertical; }
 .toast { position: fixed; left: 50%; bottom: calc(84px + env(safe-area-inset-bottom)); transform: translateX(-50%); max-width: calc(100% - 32px); padding: 10px 14px; border-radius: 10px; background: var(--ink); color: var(--bg); font-size: 14px; opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 10; }
 .toast.show { opacity: 1; }
 .empty { color: var(--muted); font-size: 14px; }
+
+/* ---------- Watch: the loom ---------- */
+:root { --gold: #d9a441; --loom-bg: #0e1416; --loom-ink: #e9efe9; }
+body[data-tab="watch"] #score, body[data-tab="watch"] #banner { display: none; }
+.watch-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 2px 0 10px; }
+.watch-head .here { font-size: 14px; color: var(--muted); }
+.loom-wrap { position: relative; height: min(62vh, 640px); min-height: 360px; border-radius: 18px; overflow: hidden;
+  background: radial-gradient(ellipse at 50% 45%, #18252a 0%, var(--loom-bg) 70%); border: 1px solid #1f2b2e; }
+.loom { width: 100%; height: 100%; display: block; }
+.loom .label { fill: var(--loom-ink); opacity: 0.85; font-family: var(--font); paint-order: stroke; stroke: var(--loom-bg); stroke-width: 3px; }
+.loom .label.small { opacity: 0.7; }
+.loom .core-label { fill: var(--gold); opacity: 0.9; text-anchor: middle; }
+.loom .core-ring { fill: none; stroke: var(--gold); stroke-width: 1.5; opacity: 0.5; transform-box: fill-box; transform-origin: center; animation: breathe 4s ease-in-out infinite; }
+.loom .core-ring.r2 { animation-delay: -2s; }
+.loom .core-dot { fill: var(--gold); filter: url(#glow); }
+@keyframes breathe { 0%, 100% { transform: scale(1); opacity: 0.55; } 50% { transform: scale(1.35); opacity: 0.15; } }
+.loom .node { cursor: pointer; }
+.loom .tether { stroke-width: 1; opacity: 0.35; stroke-dasharray: 3 4; }
+.loom .thread { fill: none; stroke-linecap: round; opacity: 0.95; filter: url(#glow); }
+.loom .thread.gold { stroke: var(--gold); }
+.loom .strand { fill: none; stroke-linecap: round; opacity: 0.32; transition: opacity 1.5s; }
+.loom .strand.gold { stroke: var(--gold); opacity: 0.45; }
+.loom .ripple { fill: none; stroke-width: 2; }
+.loom .gold-ripple { stroke: var(--gold); }
+@media (prefers-reduced-motion: reduce) { .loom .core-ring { animation: none; } }
+.bubbles { position: absolute; inset: 0; pointer-events: none; }
+.bubble { position: absolute; padding: 8px 10px; border-radius: 12px; background: rgba(20, 30, 33, 0.92); color: var(--loom-ink);
+  border: 1px solid #2c3a3e; font-size: 13px; line-height: 1.35; box-shadow: 0 6px 24px rgba(0,0,0,.35); transition: opacity .8s, transform .8s; animation: pop .35s ease-out; }
+.bubble b { display: block; font-size: 12px; opacity: 0.75; margin-bottom: 2px; font-weight: 600; }
+.bubble.gold { border-color: var(--gold); }
+.bubble.gold b { color: var(--gold); opacity: 1; }
+.bubble.out { opacity: 0; transform: translateY(-6px); }
+@keyframes pop { from { opacity: 0; transform: scale(.94) translateY(4px); } to { opacity: 1; transform: none; } }
+.caps-card { margin-top: 12px; }
+.captions { list-style: none; margin: 0; padding: 0; }
+.cap { display: flex; gap: 10px; align-items: baseline; padding: 7px 0; border-top: 1px solid var(--line); font-size: 15px; }
+.cap:first-child { border-top: 0; }
+.cap .dot { flex: none; width: 9px; height: 9px; border-radius: 50%; transform: translateY(-1px); }
+.cap.weaver strong { color: var(--gold); }
+.watch-about { color: var(--muted); font-size: 14px; text-align: center; margin: 14px 8px 4px; }
+.section-title { font-size: 17px; margin: 8px 0 0; }
+
+/* ---------- the bring-your-agent sheet ---------- */
+.sheet { position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; justify-content: center; }
+.sheet[hidden] { display: none; }
+.sheet-card { position: relative; width: 100%; max-width: 560px; max-height: 88vh; overflow: auto; background: var(--panel); color: var(--ink);
+  border-radius: 18px 18px 0 0; padding: 18px 16px calc(18px + env(safe-area-inset-bottom)); box-shadow: 0 -10px 40px rgba(0,0,0,.3); }
+@media (min-width: 760px) { .sheet { align-items: center; } .sheet-card { border-radius: 18px; } }
+.sheet-card h2 { margin: 0 32px 6px 0; font-size: 19px; }
+.sheet-x { position: absolute; top: 12px; right: 12px; }
+.linkbox { display: flex; gap: 8px; align-items: center; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin: 8px 0; }
+.linkbox code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.steps { padding-left: 20px; margin: 10px 0; }
+.steps li { margin: 8px 0; }
+.steps code { display: inline-block; margin-top: 4px; }

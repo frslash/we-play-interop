@@ -25,12 +25,14 @@ export const TYPES = {
   run: T('map/run'),
   score: T('score/snapshot'),
   result: T('action/result'),
+  host: T('agent/host'),
+  hosted: T('agent/hosted'),
 }
 export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v, k]))
 
 /** Who may write each kind of document. */
 export const WHO = {
-  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace',
+  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human',
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone',
 }
@@ -43,7 +45,7 @@ export const BOARD_WAY_PREFIXES = ['credential:', 'task:', 'ceremony:', 'basic:'
 export const WAY_RE = /^[A-Za-z0-9][A-Za-z0-9._:/+#-]{0,199}$/
 
 export const MODES = ['anarchy', 'democracy', 'weave']
-export const NOTE_KINDS = ['intention', 'idea', 'observation', 'question']
+export const NOTE_KINDS = ['message', 'intention', 'idea', 'observation', 'question']
 export const VOTE_CHOICES = ['for', 'against', 'abstain']
 /**
  * Proposal kinds. Only three ever act outside the workspace, and only after
@@ -79,8 +81,9 @@ const uuid = () => {
 }
 
 /** An unsigned document. */
-export function buildDocument ({ type, issuer, payload, onBehalfOf, delegation, threadId, expiresAt, issuedAt = new Date().toISOString() }) {
+export function buildDocument ({ type, issuer, recipient, payload, onBehalfOf, delegation, threadId, expiresAt, issuedAt = new Date().toISOString() }) {
   const doc = { id: 'urn:uuid:' + uuid(), type, issuer, issuedAt, payload }
+  if (recipient) doc.recipient = recipient
   if (threadId) doc.threadId = threadId
   if (expiresAt) doc.expiresAt = expiresAt
   if (onBehalfOf) { doc.onBehalfOf = onBehalfOf; doc.delegation = delegation }
@@ -150,6 +153,7 @@ export function checkPayload (name, doc) {
       return null
     }
     case 'revoke': return HASH_RE.test(p.delegation ?? '') ? null : 'delegation: the hash of the delegation entry'
+    case 'host': return str(p.label, 1, 60) ? null : 'label: a name for the agent, 1 to 60 characters'
     case 'note':
       if (!str(p.text, 1, 2000)) return 'text: 1 to 2000 characters'
       if (!NOTE_KINDS.includes(p.kind)) return `kind: ${NOTE_KINDS.join(' | ')}`
@@ -221,6 +225,7 @@ export function checkShape (doc) {
   if (!RFC3339.test(doc.issuedAt ?? '')) return 'issuedAt: an RFC 3339 timestamp'
   if (doc.expiresAt !== undefined && !RFC3339.test(doc.expiresAt)) return 'expiresAt: an RFC 3339 timestamp'
   if (doc.threadId !== undefined && !str(doc.threadId, 1, 200)) return 'threadId: a string'
+  if (doc.recipient !== undefined && (!DID_RE.test(doc.recipient) || doc.recipient.length > 4096)) return 'recipient: a DID'
   if (!isObj(doc.payload)) return 'payload: an object'
   if (doc.onBehalfOf !== undefined || doc.delegation !== undefined) {
     if (!DID_RE.test(doc.onBehalfOf ?? '')) return 'onBehalfOf: the DID of the human the agent acts for'

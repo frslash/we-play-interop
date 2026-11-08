@@ -19,6 +19,7 @@ export class State {
     this.mapProjects = new Map() // slug -> project the workspace added or extended
     this.mapWays = new Map() // id -> a way of doing interop, defined in the workspace
     this.mapRuns = [] // runs recorded in the workspace
+    this.hosted = new Set() // agent DIDs whose key the workspace holds (shown to everyone)
     this.counts = {}
     this.seq = -1
   }
@@ -52,9 +53,10 @@ export class State {
       case 'delegate': {
         this.delegations.set(e.hash, { hash: e.hash, issuer: e.author, delegate: p.delegate, scope: p.scope, label: p.label ?? '', expiresAt: doc.expiresAt, revoked: false, seq: e.seq })
         const prev = this.participants.get(p.delegate)
-        this.participants.set(p.delegate, { ...prev, did: p.delegate, kind: 'agent', name: p.label || `agent of ${this.nameOf(e.author)}`, principal: e.author, since: prev?.since ?? e.timestamp })
+        this.participants.set(p.delegate, { ...prev, did: p.delegate, kind: 'agent', name: p.label || `agent of ${this.nameOf(e.author)}`, principal: e.author, hosted: this.hosted.has(p.delegate), since: prev?.since ?? e.timestamp })
         break
       }
+      case 'hosted': { this.hosted.add(p.agent); const a = this.participants.get(p.agent); if (a) a.hosted = true; break }
       case 'revoke': { const d = this.delegations.get(p.delegation); if (d && d.issuer === e.author) d.revoked = true; break }
       case 'propose': this.addProposal(e); break
       case 'vote': {

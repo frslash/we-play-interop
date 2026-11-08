@@ -16,8 +16,7 @@
   <div class="brand"><span class="mark" aria-hidden="true"></span><span>We Play Interop</span></div>
   <div class="top-right">
     <span id="live" class="live" title="Live updates">offline</span>
-    <span id="mode-chip" class="chip"></span>
-    <button id="me-chip" class="chip me" type="button">Join</button>
+    <button id="bring" class="chip me" type="button">Bring your agent</button>
   </div>
 </header>
 
@@ -25,21 +24,22 @@
 <div id="banner" class="banner" hidden></div>
 
 <nav class="tabs" aria-label="Sections">
-  <button data-tab="now" class="on">Now</button>
-  <button data-tab="proposals">Proposals</button>
+  <button data-tab="watch" class="on">Watch</button>
+  <button data-tab="talk">Talk</button>
   <button data-tab="map">Map</button>
   <button data-tab="log">Log</button>
   <button data-tab="you">You</button>
 </nav>
 
 <main>
-  <section id="tab-now" class="tab on"></section>
-  <section id="tab-proposals" class="tab"></section>
+  <section id="tab-watch" class="tab on"></section>
+  <section id="tab-talk" class="tab"></section>
   <section id="tab-map" class="tab"></section>
   <section id="tab-log" class="tab"></section>
   <section id="tab-you" class="tab"></section>
 </main>
 
+<div id="sheet" class="sheet" hidden><div class="sheet-card" role="dialog" aria-modal="true" aria-label="Bring your agent"></div></div>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 <noscript><p class="pad">This page needs JavaScript to sign what you say. Everything it shows is also at <a href="/api/state">/api/state</a> and <a href="/api/log">/api/log</a>.</p></noscript>
 </body>

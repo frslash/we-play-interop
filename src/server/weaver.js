@@ -22,7 +22,9 @@ export function gist (e, st) {
     join: () => `joined${p.projects?.length ? ' for ' + p.projects.join(', ') : ''}`,
     delegate: () => `let an agent act for them (${p.scope.join(', ')})`,
     revoke: () => 'revoked an agent',
-    note: () => `${p.kind}: ${p.text}`,
+    note: () => `${p.kind === 'message' ? '' : p.kind + ': '}${e.document.recipient ? '(to ' + st.nameOf(e.document.recipient) + ') ' : ''}${p.text}`,
+    host: () => `asked the workspace to hold a key for an agent (${p.label})`,
+    hosted: () => `holds the key of ${p.label}, an agent of ${st.nameOf(p.for)}`,
     propose: () => `proposed (${p.kind}): ${p.title}${p.body ? ' — ' + p.body : ''}`,
     vote: () => `voted ${p.choice} on "${title(p.proposal)}"${p.reason ? ': ' + p.reason : ''}`,
     approve: () => `approved "${title(p.proposal)}"`,
@@ -73,6 +75,7 @@ export class Weaver {
       openProposals: open.filter((pr) => pr.kind !== 'goal').map((pr) => ({ hash: pr.hash, kind: pr.kind, title: pr.title, body: clip(pr.body, 400), run: pr.run, by: st.nameOf(pr.principal), byWeaver: pr.byWeaver, tally: st.tally(pr), approvals: pr.approvals.size, status: st.statusOf(pr) })),
       intentions: intentions.map((e) => ({ entry: e.hash, who: st.nameOf(e.onBehalfOf), text: clip(e.document.payload.text, 300) })),
       people: [...st.participants.values()].filter((p) => p.kind === 'human').map((p) => ({ name: p.name, projects: p.projects })),
+      inRoom: [...st.participants.values()].filter((p) => p.kind !== 'workspace').map((p) => ({ did: p.did, name: p.name, kind: p.kind, ...(p.principal ? { actsFor: st.nameOf(p.principal) } : { projects: p.projects }) })),
       map: {
         score: this.board.score(),
         fadingSoon: m.fadingSoon.slice(0, 10),
@@ -130,11 +133,36 @@ export class Weaver {
       const offered = [...st.proposals.values()].some((pr) => pr.byWeaver && pr.kind === 'goal')
       if (!offered) next.push({ ...SUGGESTED_GOAL })
     }
-    return { heard: ctx.newInputs.map((i) => ({ entry: i.entry, gist: clip(`${i.who} ${i.text}`, 200) })), threads: [...threads.values()].slice(0, 12), agreements, conflicts, next }
+    return { heard: ctx.newInputs.map((i) => ({ entry: i.entry, gist: clip(`${i.who} ${i.text}`, 200) })), threads: [...threads.values()].slice(0, 12), agreements, conflicts, next, connections: this.connections(ctx) }
+  }
+
+  /** People or agents who speak about the same project or way and have not talked to each other yet. */
+  connections (ctx) {
+    const st = this.log.state, about = new Map()
+    const terms = new Set([...(ctx.map.projects ?? []).flatMap((p) => [p.slug, p.name.toLowerCase()]), ...(ctx.map.ways ?? []).map((w) => w.id.toLowerCase())].filter((t) => t.length > 2))
+    const talked = new Set()
+    for (const e of this.log.entries) {
+      const name = NAME_OF[e.type], d = e.document
+      if (name === 'note' && d.recipient) talked.add([e.author, d.recipient].sort().join('|'))
+      if (name !== 'note' && name !== 'project') continue
+      const text = (name === 'note' ? d.payload.text : `${d.payload.slug} ${d.payload.ways.join(' ')}`).toLowerCase()
+      for (const t of terms) if (text.includes(t)) { const set = about.get(t) ?? new Set(); set.add(e.author); about.set(t, set) }
+    }
+    const out = [], seen = new Set()
+    for (const [t, who] of about) {
+      const list = [...who].filter((d) => st.participants.has(d))
+      for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+        const k = [list[i], list[j]].sort().join('|')
+        if (seen.has(k) || talked.has(k) || st.participants.get(list[i])?.principal === list[j] || st.participants.get(list[j])?.principal === list[i]) continue
+        seen.add(k); out.push({ between: [list[i], list[j]], why: `both talk about ${t}` })
+      }
+    }
+    return out.slice(-4)
   }
 
   prompt (ctx) {
-    const system = `You are the weaver of "We Play Interop", a public workspace where people and their AI agents work toward more interoperability between projects, by every way of doing interop: identifiers and DIDs, credentials, login (OIDC, passkeys), messaging, data formats, sync, networking, storage, governance, payments.
+    const system = `You are the weaver of "We Play Interop", a public room where people put their AI agents to talk with each other while everyone watches. You listen to everything and weave it together: you notice who is saying what, connect those who should talk ("connections"), and propose next steps. Write for people who are not technical: short, warm, concrete, plain words.
+The room works toward more interoperability between projects, by every way of doing interop: identifiers and DIDs, credentials, login (OIDC, passkeys), messaging, data formats, sync, networking, storage, governance, payments.
 The workspace keeps a map: projects, the ways each speaks, and runs (two projects tried one or more ways together, with an outcome). The DTG board (dtg-interop) is one source of the map, with its own scenarios; people add projects and ways from anywhere.
 How the map is kept (taken from the DTG board): a pair counts as working only through a run; a run is entered by one of its two sides; a run fades after 30 days; a DTG scenario with a "missing" piece cannot be played by anyone; never rank or compare projects; each project changes only its own entry, so a correction to another project's entry is a note or an issue, never an edit.
 What winning looks like is decided by the room, not by you: "goals.held" are the goals people back now (with support and, if they chose one, a number on the map to watch). Weave toward the held goals. If none is held, your first next step is kind "ask": invite people to say what winning looks like, and you may suggest a goal (kind "goal", with "measure" and "direction" if it watches a number). Do not assume a goal nobody holds. There is no end state.
@@ -145,6 +173,7 @@ Answer with one JSON object only:
  "threads":[{"title":"<short>","summary":"<one or two sentences>","entries":["<hash>"]}],
  "agreements":[{"point":"<what people agree on>","entries":["<hash>"]}],
  "conflicts":[{"point":"<where they differ>","entries":["<hash>"]}],
+ "connections":[{"between":["<did from inRoom>","<did from inRoom>"],"why":"<one short sentence: what they could do together>"}],
  "next":[{"action":"<one sentence>","why":"<one or two sentences>","kind":"ask|goal|run|issue|other","measure":"<for a goal, optional: one of ${MEASURES.join(', ')}>","direction":"up|down","proposal":"<hash of an existing open proposal, or null>","holds":["<hashes of intentions it serves>"],"run":{"sides":["<project slug>","<project slug>"],"ways":["<way id>"]},"issue":{"title":"<title>","body":"<body>"}}]}
 Use only hashes that appear in the input. Prefer an existing proposal over a new one. "ask" is a question to the room (it does not become a proposal); "goal" proposes what winning looks like; "run" is an invitation to a pair of projects on the map to try ways together; "issue" is an issue on the DTG board's repository; "other" is anything else, including inviting a project onto the map and ideas to improve this workspace. Plain words, no marketing language.`
     return [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(ctx) }]
@@ -177,6 +206,11 @@ Use only hashes that appear in the input. Prefer an existing proposal over a new
       agreements: list(out.agreements, (a) => (a?.point ? { point: clip(a.point, 300), entries: hashes(a.entries) } : null), 12),
       conflicts: list(out.conflicts, (c) => (c?.point ? { point: clip(c.point, 300), entries: hashes(c.entries) } : null), 12),
       next: next.length ? next : fallback.next,
+      connections: (() => {
+        const ok = (d) => this.log.state.participants.has(d) && d !== this.log.state.workspace
+        const got = list(out.connections, (c) => (Array.isArray(c?.between) && c.between.length === 2 && c.between[0] !== c.between[1] && c.between.every(ok) ? { between: c.between, why: clip(c.why, 200) } : null), 6)
+        return got.length ? got : fallback.connections
+      })(),
     }
   }
 

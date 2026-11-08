@@ -13,13 +13,16 @@ import { config as defaultConfig } from './config.js'
 import { openDb } from './db.js'
 import { Llm } from './llm.js'
 import { Log, TaskError } from './log.js'
-import { handleMcp } from './mcp.js'
+import { handleHostedMcp, handleMcp } from './mcp.js'
+import { HostedAgents } from './hosted.js'
+import { NAME_OF } from '../shared/types.js'
 import { createResolver } from './resolver.js'
 import * as views from './views.js'
 import { Weaver } from './weaver.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const MAX_BODY = 64 * 1024
+const MAX_HOSTED = 5 // a person's own assistants, not a crowd of puppets
 const TYPES_OF = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.png': 'image/png', '.webmanifest': 'application/manifest+json' }
 // what the browser may load: the page, the shared core, and two audited crypto libraries
 const STATIC = [
@@ -51,7 +54,9 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   const weaver = new Weaver({ config, log, board, llm })
   const executor = new Executor({ config, log, board, ...(gh ? { gh } : {}) })
   log.boardSlugs = () => board.projectSlugs()
-  const ctx = { config, log, board, llm, weaver, executor, identity, db }
+  const hosted = new HostedAgents({ db, identity })
+  await hosted.load()
+  const ctx = { config, log, board, llm, weaver, executor, identity, db, hosted }
 
   const page = readFileSync(join(root, 'public/index.html'), 'utf8')
   const importMap = /<script type="importmap">([\s\S]*?)<\/script>/.exec(page)?.[1] ?? ''
@@ -78,6 +83,11 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     const path = url.pathname, q = Object.fromEntries(url.searchParams)
     if (req.method === 'OPTIONS') return send(res, 204, '', { 'access-control-allow-methods': 'GET, POST', 'access-control-allow-headers': 'content-type, accept, mcp-protocol-version' })
 
+    if (path.startsWith('/mcp/a/')) {
+      if (req.method !== 'POST') return send(res, 405, { jsonrpc: '2.0', error: { code: -32000, message: 'POST only (stateless MCP)' }, id: null })
+      let body; try { body = JSON.parse(await readBody(req)) } catch { return send(res, 400, { jsonrpc: '2.0', error: { code: -32700, message: 'parse error' }, id: null }) }
+      return handleHostedMcp(ctx, decodeURIComponent(path.slice(7)), req, res, body)
+    }
     if (path === '/mcp') {
       if (req.method !== 'POST') return send(res, 405, { jsonrpc: '2.0', error: { code: -32000, message: 'POST only (stateless MCP)' }, id: null })
       const raw = await readBody(req)
@@ -89,6 +99,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (path === '/api/state') return send(res, 200, views.state(ctx))
     if (path === '/api/map' || path === '/api/board') return send(res, 200, views.mapView(ctx))
     if (path === '/api/log') return send(res, 200, views.entries(ctx, q))
+    if (path === '/api/messages') return send(res, 200, views.messages(ctx, q))
     if (path.startsWith('/api/log/')) { const e = log.byHash.get(path.slice(9)); return e ? send(res, 200, e) : send(res, 404, { error: 'no entry with that hash' }) }
     if (path === '/api/verify') return send(res, 200, await log.verify())
     if (path.startsWith('/api/participants/')) { const p = views.participant(ctx, decodeURIComponent(path.slice(18))); return p ? send(res, 200, p) : send(res, 404, { error: 'not in the workspace yet' }) }
@@ -112,7 +123,16 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       let doc
       try {
         doc = JSON.parse(await readBody(req))
+        const isHost = NAME_OF[doc?.type] === 'host'
+        if (isHost && hosted.liveFor(doc.issuer, log.state) >= MAX_HOSTED) throw new TaskError('permissionDenied', `you already have ${MAX_HOSTED} hosted agents; stop one first`, { status: 403 })
         const { entry, duplicate } = await log.accept(doc, { ip: ipOf(req) })
+        if (isHost && !duplicate) {
+          // the workspace makes and holds the agent's key, and says so in the log
+          const agent = await hosted.create(entry.author, doc.payload.label)
+          await log.appendAsWorkspace('hosted', { agent: agent.did, for: entry.author, label: doc.payload.label, request: entry.hash })
+          const base = config.publicUrl || `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`
+          return send(res, 201, { ...entry, hosted: { did: agent.did, connector: `${base}/mcp/a/${agent.token}` } })
+        }
         return send(res, duplicate ? 200 : 201, entry)
       } catch (err) {
         const e = err instanceof TaskError ? err : err instanceof SyntaxError ? new TaskError('malformedRequest', 'the body is not JSON') : new TaskError('internalError', 'something went wrong on our side', { status: 500, retryable: true })

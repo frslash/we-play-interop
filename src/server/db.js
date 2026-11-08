@@ -19,6 +19,14 @@ create table if not exists entries (
   entry        text not null
 );
 create index if not exists entries_type on entries (type);
+create table if not exists hosted_agents (
+  did        text primary key,
+  principal  text not null,
+  label      text not null,
+  token_hash text not null unique,
+  seed_enc   text not null,
+  created    timestamptz not null
+);
 `
 
 export async function openDb ({ databaseUrl, dataDir }) {

@@ -1,6 +1,7 @@
 // Read views shared by the HTTP API and the MCP server: everything is public.
 import { proofConfig, signingInputHex } from '../shared/proof.js'
 import { buildDocument, checkPayload, NAME_OF, TYPES } from '../shared/types.js'
+import { gist } from './weaver.js'
 
 export function info (ctx) {
   const { config, log, llm, weaver } = ctx, st = log.state
@@ -40,6 +41,41 @@ export function mapView (ctx) {
     dtg: d ? { score: d.score, generated: d.generated, scenarios: d.scenarios, plays: d.plays, missing: d.missing, readyToTry: d.opportunities, catalog: d.catalog } : null,
     history: log.state.scoreHistory, fetchedAt: board.fetchedAt, error: board.error,
   }
+}
+
+const HEARD = new Set(['note', 'propose', 'round', 'project', 'way', 'run', 'vote', 'approve', 'veto', 'mode', 'join', 'delegate', 'result'])
+/** What an agent hears: who said what, to whom, in reply to what, in plain words. */
+export function message (ctx, e, me) {
+  const st = ctx.log.state, doc = e.document, p = doc.payload, name = NAME_OF[e.type]
+  const base = { id: e.hash, seq: e.seq, at: e.timestamp, type: name, from: st.nameOf(e.author), fromDid: e.author, ...(e.onBehalfOf !== e.author ? { for: st.nameOf(e.onBehalfOf) } : {}), ...(me && e.author === me ? { mine: true } : {}) }
+  if (doc.recipient) Object.assign(base, { to: st.nameOf(doc.recipient), toDid: doc.recipient })
+  if (doc.threadId) { const parent = ctx.log.byDocId.get(doc.threadId); if (parent) base.replyTo = parent.hash }
+  if (name === 'note') return { ...base, kind: p.kind, text: p.text }
+  if (name === 'round') {
+    const next = (p.next ?? []).map((n) => n.action).join(' · ')
+    const links = (p.connections ?? []).map((c) => `${c.between.map((d) => st.nameOf(d)).join(' & ')}: ${c.why}`).join(' · ')
+    return { ...base, from: 'the weaver', text: [next && `Next: ${next}`, links && `Should talk: ${links}`].filter(Boolean).join('\n') || 'Listening.', ...(p.connections?.length ? { connections: p.connections } : {}) }
+  }
+  return { ...base, text: gist(e, st).text }
+}
+
+export function messages (ctx, { after = -1, limit = 40, me } = {}) {
+  const all = ctx.log.entries, items = []
+  let i = Math.max(0, Number(after) + 1)
+  for (; i < all.length && items.length < Math.min(Number(limit) || 40, 100); i++) if (HEARD.has(NAME_OF[all[i].type])) items.push(message(ctx, all[i], me))
+  return { items, more: i < all.length, head: ctx.log.head() }
+}
+
+/** In-process reads for the hosted connector (the same answers the HTTP API gives). */
+export function read (ctx, path) {
+  const url = new URL(path, 'http://local'), q = Object.fromEntries(url.searchParams), p = url.pathname
+  if (p === '/api/state') return state(ctx)
+  if (p === '/api/map') return mapView(ctx)
+  if (p === '/api/messages') return messages(ctx, q)
+  if (p === '/api/log') return entries(ctx, q)
+  if (p.startsWith('/api/log/')) return ctx.log.byHash.get(decodeURIComponent(p.slice(9))) ?? null
+  if (p.startsWith('/api/participants/')) return participant(ctx, decodeURIComponent(p.slice(18)))
+  throw new Error(`nothing at ${p}`)
 }
 
 export function participant (ctx, did) {
