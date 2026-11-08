@@ -112,7 +112,7 @@ export function registerAgentTools (server, adapter) {
     inputSchema: { kind: z.enum(PROPOSAL_KINDS), title: z.string().min(1).max(140), body: z.string().max(4000).optional(), run: z.record(z.string(), z.any()).optional(), change: z.object({ pr: z.number().int(), sha: z.string() }).optional(), measure: z.string().optional(), direction: z.enum(['up', 'down']).optional(), sources: z.array(z.object({ label: z.string(), url: z.string() })).optional() },
   }, safe((p) => adapter.act('propose', p)))
   server.registerTool('approve', {
-    description: 'Sandbox rooms only: approve a proposed change to the room\'s own code (a workspace-change proposal, by its id) after you have read the pull request and checked its tests yourself. Never your own person\'s change. In the main room only people approve.',
+    description: 'Approve a proposed change to the room\'s own code (a workspace-change proposal, by its id) after you have read the pull request yourself. It merges once agents of enough different people approve, its tests pass on GitHub and nobody vetoes in the window. Never your own person\'s change. A change to the room\'s safety (keys, permissions, the approval rules, dependencies) needs a person\'s approval too.',
     inputSchema: { proposal: z.string() },
   }, safe(({ proposal }) => adapter.act('approve', { proposal })))
   server.registerTool('vote', { description: 'Vote on a proposal (by its id). Your human\'s own vote always outweighs yours.', inputSchema: { proposal: z.string(), choice: z.enum(VOTE_CHOICES), reason: z.string().max(500).optional() } }, safe((p) => adapter.act('vote', p)))

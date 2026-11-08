@@ -37,7 +37,10 @@ export class Executor {
     if (!EXTERNAL_KINDS.includes(pr.kind)) return 'stays inside the workspace'
     if (pr.vetoes.length) return 'vetoed'
     if (pr.outcome) return 'already acted on'
-    if (pr.approvals.size < this.config.approvalsRequired) return `needs ${this.config.approvalsRequired - pr.approvals.size} more human approval(s)`
+    const people = [...pr.approvals.keys()].filter((d) => st.isHuman(d))
+    const backers = new Set([...pr.approvals.keys()].map((d) => st.participants.get(d)?.principal ?? d).filter((p) => p !== pr.principal)) // different people, never the proposer's own
+    const byAgents = pr.kind === 'workspace-change' && this.config.agentApprovals && backers.size >= this.config.agentApprovers
+    if (people.length < this.config.approvalsRequired && !byAgents) return pr.kind === 'workspace-change' && this.config.agentApprovals ? `needs approval from ${this.config.agentApprovers - backers.size} more person's agent(s) (or a person)` : `needs ${this.config.approvalsRequired - pr.approvals.size} more human approval(s)`
     const quietUntil = Date.parse(pr.lastApprovalAt) + this.config.vetoWindowMinutes * 60_000
     if (now < quietUntil) return `veto window open until ${new Date(quietUntil).toISOString()}`
     if (st.mode.mode === 'democracy') { const t = st.tally(pr); if (t.for <= t.against) return `democracy: ${t.for} for, ${t.against} against` }
@@ -50,6 +53,7 @@ export class Executor {
     try {
       for (const pr of [...this.log.state.proposals.values()]) {
         if (this.waitingFor(pr)) continue
+        if (pr.kind === 'workspace-change' && this.config.githubToken) { const why = await this.changeReady(pr).catch((e) => `could not check it: ${e.message}`); pr.notYet = why; if (why && !/^failed:/.test(why)) continue; if (why) { await this.log.appendAsWorkspace('result', { proposal: pr.hash, kind: pr.kind, status: 'failed', detail: why.slice(8, 500) }, { threadId: this.log.byHash.get(pr.hash).document.id }); continue } }
         let result
         try { result = await this.act(pr) } catch (err) { result = { status: 'failed', detail: err.message.slice(0, 500) } }
         await this.log.appendAsWorkspace('result', { proposal: pr.hash, kind: pr.kind, ...result }, { threadId: this.log.byHash.get(pr.hash).document.id })
@@ -132,6 +136,23 @@ export class Executor {
     await gh('PUT', `/repos/${me}/${name}/contents/runs.json`, { message: `${run.sides[0].project}: run with ${run.sides[1].project} (${run.outcome})`, content: b64(after), sha: forkFile.sha, branch })
     const pull = await gh('POST', `/repos/${repo}/pulls`, { title, head: `${me}:${branch}`, base: 'main', body, maintainer_can_modify: true })
     return { status: 'opened', url: pull.html_url, run, detail: `pull request #${pull.number}` }
+  }
+
+  /** null when a code change may merge now; a reason it waits; or "failed: …" when it never will as it is. */
+  async changeReady (pr) {
+    const repo = this.config.workspaceRepo, { pr: number, sha } = pr.change, st = this.log.state
+    const pull = await this.gh('GET', `/repos/${repo}/pulls/${number}`)
+    if (pull.state !== 'open') return `failed: pull request #${number} is ${pull.state}`
+    if (pull.head.sha !== sha) return `failed: pull request #${number} changed after it was approved (now ${pull.head.sha.slice(0, 10)}); propose the new commit`
+    const files = await this.gh('GET', `/repos/${repo}/pulls/${number}/files?per_page=100`)
+    const touched = files.map((f) => f.filename).filter((f) => this.config.protectedPaths.some((p) => (p.endsWith('/') ? f.startsWith(p) : f === p)))
+    if (touched.length && ![...pr.approvals.keys()].some((d) => st.isHuman(d))) return `it changes the room's safety (${touched.slice(0, 3).join(', ')}), so a person approves it too`
+    const runs = (await this.gh('GET', `/repos/${repo}/actions/runs?head_sha=${sha}&per_page=20`)).workflow_runs ?? []
+    const tests = runs.filter((r) => /test/i.test(r.name ?? ''))
+    if (!tests.length) return 'its tests have not run yet'
+    if (tests.some((r) => r.status !== 'completed')) return 'its tests are still running'
+    if (tests.some((r) => r.conclusion !== 'success')) return `failed: its tests did not pass (${tests.find((r) => r.conclusion !== 'success').html_url})`
+    return null
   }
 
   async mergeChange (pr) {

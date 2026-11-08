@@ -169,6 +169,8 @@ describe('the workspace, end to end', () => {
     if (method === 'POST' && path.endsWith('/issues')) return { html_url: 'https://github.com/x/issues/3', number: 3 }
     if (method === 'GET' && /\/pulls\/\d+$/.test(path)) return { state: 'open', title: 'Improve the weaver', head: { sha: 'a'.repeat(40) } }
     if (path.includes('/statuses/')) return {}
+    if (method === 'GET' && /\/pulls\/\d+\/files/.test(path)) return [{ filename: path.includes('/pulls/77/') ? 'src/server/log.js' : 'src/server/weaver.js' }]
+    if (method === 'GET' && path.includes('/actions/runs?head_sha=')) return { workflow_runs: [{ name: 'tests', status: 'completed', conclusion: 'success', html_url: 'https://github.com/x/actions/runs/1' }] }
     if (method === 'PUT' && path.endsWith('/merge')) return { sha: 'b'.repeat(40) }
     throw new Error('unexpected ' + method + ' ' + path)
   }
@@ -682,6 +684,38 @@ describe('the workspace, end to end', () => {
     const said = ctx.log.entries.at(-1).document.payload.text
     assert.match(said, /Welcome, New Nell\. I'm the room's host: an AI agent of the room itself, speaking for no one/); assert.match(said, /Guide Gus/)
     assert.deepEqual((await woken).reasons, ['mention'], 'the guide it names wakes to answer')
+  })
+  test('agents of three different people can approve a code change; it merges after its tests; safety changes need a person', async () => {
+    const call = (link, name, args) => fetch(link, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) }).then((r) => r.json())
+    const seat = async (name) => {
+      const who = newIdentity(); await send(who, 'join', { name: `${name}'s person` })
+      const made = (await send(who, 'host', { label: name })).body.hosted
+      await send(who, 'delegate', { delegate: made.did, scope: ['note', 'propose', 'vote'], label: name }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+      return { who, did: made.did, link: made.connector.replace(/^https?:\/\/[^/]+/, base) }
+    }
+    const [a, b, c, d] = [await seat('Ann bot'), await seat('Bo bot'), await seat('Cy bot'), await seat('Di bot')]
+    const proposed = JSON.parse((await call(a.link, 'propose', { kind: 'workspace-change', title: 'A faster weaver', change: { pr: 42, sha: 'a'.repeat(40) } })).result.content[0].text)
+    const own = await call(a.link, 'approve', { proposal: proposed.id })
+    assert.match(own.result.content[0].text, /never approves its own person/)
+    for (const x of [b, c]) await call(x.link, 'approve', { proposal: proposed.id })
+    const pr = () => ctx.log.state.proposals.get(proposed.id)
+    assert.match(ctx.executor.waitingFor(pr()), /1 more person's agent/)
+    await call(d.link, 'approve', { proposal: proposed.id })
+    assert.equal(ctx.executor.waitingFor(pr()), null)
+    await ctx.executor.tick()
+    assert.equal(ctx.log.state.statusOf(pr()), 'done', 'three different people\'s agents and passing tests: merged')
+    // a change to the room's safety waits for a person, without failing
+    const safety = JSON.parse((await call(a.link, 'propose', { kind: 'workspace-change', title: 'Loosen the guard', change: { pr: 77, sha: 'a'.repeat(40) } })).result.content[0].text)
+    for (const x of [b, c, d]) await call(x.link, 'approve', { proposal: safety.id })
+    await ctx.executor.tick()
+    const s2 = ctx.log.state.proposals.get(safety.id)
+    assert.equal(ctx.log.state.statusOf(s2), 'approved'); assert.match(s2.notYet, /safety .*a person approves it too/)
+    await send(human, 'approve', { proposal: safety.id })
+    await ctx.executor.tick()
+    assert.equal(ctx.log.state.statusOf(s2), 'done')
+    // agents approve only code changes; other outside actions stay with people
+    const issue = JSON.parse((await call(a.link, 'propose', { kind: 'issue', title: 'An issue on the board' })).result.content[0].text)
+    assert.match((await call(b.link, 'approve', { proposal: issue.id })).result.content[0].text, /only changes to the room's own code/)
   })
 })
 

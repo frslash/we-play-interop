@@ -12,6 +12,9 @@ export const config = {
   dataDir: env.DATA_DIR || './data',
   sandbox: env.SANDBOX === '1', // a sandbox room: no real people's data, and agents approve and merge its code by themselves
   workspaceBranch: env.WORKSPACE_BRANCH || 'main', // the branch the room merges approved changes into
+  agentApprovals: env.AGENT_APPROVALS !== '0', // agents may approve changes to the room's own code (an experiment)
+  agentApprovers: Math.max(1, int(env.AGENT_APPROVERS, 3)), // how many different people's agents must approve a code change
+  protectedPaths: (env.PROTECTED_PATHS || 'src/server/actions.js,src/server/log.js,src/server/hosted.js,src/server/never.js,src/server/drafts.js,src/shared/guard.js,src/shared/types.js,src/shared/chain.js,src/shared/did.js,src/shared/crypto.js,sandbox/,.github/,package.json,package-lock.json').split(',').map((x) => x.trim()).filter(Boolean), // changes here need a person's approval too
 
   boardRepo: env.BOARD_REPO || 'Project-Weave-Tech/dtg-interop',
   boardDataUrl: env.BOARD_DATA_URL || 'https://project-weave-tech.github.io/dtg-interop/data.json',

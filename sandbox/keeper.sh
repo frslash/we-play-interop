@@ -7,14 +7,16 @@
 #    sandbox first, then switched in; if the new version does not come up healthy, the last good one
 #    comes back.
 # Run it from the repo:  bash sandbox/keeper.sh      (stop it: kill the pid in ~/wpi-sandbox/keeper.pid)
+# The live room runs the same way, following main at its own address:  WPI_MODE=live bash sandbox/keeper.sh
+# (its folder is ~/wpi-live: its settings in ~/wpi-live/.env, its record in ~/wpi-live/data).
 # Secrets for the sandbox (only GITHUB_TOKEN, if you want its approved changes merged) go in
 # ~/wpi-sandbox/.env, one NAME=value per line.
 set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-ROOT="${WPI_SANDBOX:-$HOME/wpi-sandbox}"
+MODE="${WPI_MODE:-sandbox}"
+if [ "$MODE" = live ]; then ROOT="${WPI_ROOT:-$HOME/wpi-live}"; else ROOT="${WPI_SANDBOX:-$HOME/wpi-sandbox}"; fi
 REPO="${WPI_SANDBOX_REPO:-$(git -C "$HERE" remote get-url origin)}"
-BRANCH="${WPI_SANDBOX_BRANCH:-sandbox}"
-PORT="${WPI_SANDBOX_PORT:-3200}"
+if [ "$MODE" = live ]; then BRANCH="${WPI_BRANCH:-main}"; PORT="${WPI_PORT:-3000}"; else BRANCH="${WPI_SANDBOX_BRANCH:-sandbox}"; PORT="${WPI_SANDBOX_PORT:-3200}"; fi
 LIVE="$ROOT/live"; STAGE="$ROOT/stage"; LOG="$ROOT/keeper.log"
 mkdir -p "$ROOT/data" "$ROOT/home" "$ROOT/.npm"
 echo $$ > "$ROOT/keeper.pid"
@@ -32,6 +34,7 @@ EOF
 boxed () { local dir="$1"; shift; (cd "$dir" && HOME="$ROOT/home" npm_config_cache="$ROOT/.npm" exec sandbox-exec -f "$PROFILE" "$@"); }
 
 tunnel () {
+  if [ "$MODE" = live ]; then URL="$(grep -E '^PUBLIC_URL=' "$ROOT/.env" | cut -d= -f2- | tr -d "\"'")"; return; fi # the live room keeps the address it has
   if [ -n "${TUNNEL_PID:-}" ] && kill -0 "$TUNNEL_PID" 2>/dev/null && [ -n "${URL:-}" ]; then return; fi
   : > "$ROOT/tunnel.log"
   cloudflared tunnel --no-autoupdate --url "http://localhost:$PORT" >> "$ROOT/tunnel.log" 2>&1 &
@@ -46,9 +49,13 @@ stop_room () { [ -n "${ROOM_PID:-}" ] && kill "$ROOM_PID" 2>/dev/null; pkill -f 
 start_room () {
   stop_room
   set -a; [ -f "$ROOT/.env" ] && . "$ROOT/.env"; set +a
-  (cd "$LIVE" && HOME="$ROOT/home" SANDBOX=1 PORT="$PORT" DATA_DIR="$ROOT/data" PUBLIC_URL="$URL" WORKSPACE_NAME="We Play Interop sandbox" \
-    WORKSPACE_REPO="$(echo "$REPO" | sed -E 's#^https://github.com/##; s#\.git$##')" WORKSPACE_BRANCH="$BRANCH" VETO_WINDOW_MINUTES=2 APPROVALS_REQUIRED=1 \
-    exec sandbox-exec -f "$PROFILE" node "$LIVE/src/server/index.js") >> "$ROOT/room.log" 2>&1 &
+  if [ "$MODE" = live ]; then
+    (cd "$LIVE" && HOME="$ROOT/home" PORT="$PORT" DATA_DIR="$ROOT/data" exec sandbox-exec -f "$PROFILE" caffeinate -is node "$LIVE/src/server/index.js") >> "$ROOT/room.log" 2>&1 &
+  else
+    (cd "$LIVE" && HOME="$ROOT/home" SANDBOX=1 PORT="$PORT" DATA_DIR="$ROOT/data" PUBLIC_URL="$URL" WORKSPACE_NAME="We Play Interop sandbox" \
+      WORKSPACE_REPO="$(echo "$REPO" | sed -E 's#^https://github.com/##; s#\.git$##')" WORKSPACE_BRANCH="$BRANCH" VETO_WINDOW_MINUTES=2 APPROVALS_REQUIRED=1 \
+      exec sandbox-exec -f "$PROFILE" node "$LIVE/src/server/index.js") >> "$ROOT/room.log" 2>&1 &
+  fi
   ROOM_PID=$!
   for _ in $(seq 1 40); do curl -sf "http://localhost:$PORT/healthz" >/dev/null && { log "room up at $(git -C "$LIVE" rev-parse --short HEAD)"; return 0; }; sleep 0.5; done
   log "room did not come up at $(git -C "$LIVE" rev-parse --short HEAD)"; return 1
