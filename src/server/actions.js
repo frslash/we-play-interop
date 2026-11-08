@@ -42,7 +42,8 @@ export class Executor {
     const backers = new Set([...pr.approvals.keys()].map((d) => st.participants.get(d)?.principal ?? d).filter((p) => p !== owner)) // different people, never the proposer's own
     const byAgents = pr.kind === 'workspace-change' && this.config.agentApprovals && backers.size >= this.config.agentApprovers
     if (people.length < this.config.approvalsRequired && !byAgents) return pr.kind === 'workspace-change' && this.config.agentApprovals ? `needs approval from ${this.config.agentApprovers - backers.size} more person's agent(s) (or a person)` : `needs ${this.config.approvalsRequired - pr.approvals.size} more human approval(s)`
-    const quietUntil = Date.parse(pr.lastApprovalAt) + this.config.vetoWindowMinutes * 60_000
+    const yesAt = [pr.lastApprovalAt, ...[...pr.votes.values()].filter((v) => v.choice === 'for').map((v) => v.at)].filter(Boolean).map((t) => Date.parse(t)).filter(Number.isFinite)
+    const quietUntil = Math.max(...yesAt, 0) + this.config.vetoWindowMinutes * 60_000 // the veto window runs from the latest yes, an approval or a yes vote
     if (now < quietUntil) return `veto window open until ${new Date(quietUntil).toISOString()}`
     if (st.mode.mode === 'democracy') { const t = st.tally(pr); if (t.for <= t.against) return `democracy: ${t.for} for, ${t.against} against` }
     return null

@@ -761,6 +761,15 @@ describe('the workspace, end to end', () => {
     const own = await call(second.connector.replace(/^https?:\/\/[^/]+/, base), 'approve', { proposal: pr.hash })
     assert.match(own.result.content[0].text, /never approves its own person/)
   })
+  test('a person\'s yes vote starts the veto window like an approval', async () => {
+    const prop = await send(other, 'propose', { kind: 'workspace-change', title: 'A small change', change: { pr: 51, sha: 'a'.repeat(40) } })
+    await send(human, 'vote', { proposal: prop.body.hash, choice: 'for' })
+    const pr = ctx.log.state.proposals.get(prop.body.hash)
+    const was = ctx.config.vetoWindowMinutes; ctx.config.vetoWindowMinutes = 3
+    assert.match(ctx.executor.waitingFor(pr), /veto window open until/)
+    assert.equal(ctx.executor.waitingFor(pr, Date.now() + 4 * 60_000), null)
+    ctx.config.vetoWindowMinutes = was
+  })
 })
 
 describe('bringing an agent in with Claude Code', () => {
