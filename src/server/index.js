@@ -26,6 +26,7 @@ import { NeverLists } from './never.js'
 import { Drafts } from './drafts.js'
 import { Host } from './host.js'
 import { Media } from './media.js'
+import { Changes } from './changes.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { createResolver } from './resolver.js'
@@ -91,6 +92,9 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   await ctx.check.load()
   ctx.host = new Host({ ctx, welcomeAfterMs: hostWelcomeMs })
   ctx.media = new Media({ dataDir: config.dataDir })
+  ctx.types = TYPES
+  ctx.changes = new Changes({ ctx, dataDir: config.dataDir })
+  log.on('entry', (e) => ctx.changes.onEntry(e))
   log.on('entry', (e) => ctx.host.onEntry(e))
   ctx.drafts = new Drafts({ db, sealer: hosted })
   await ctx.drafts.load()
@@ -191,6 +195,10 @@ export async function createApp (config = defaultConfig, { resolver = createReso
         if (createHash('sha256').update(bytes).digest('hex') !== doc.payload.sha256) throw new TaskError('malformedRequest', 'the photo does not match the hash you signed')
         try { return send(res, 201, ctx.media.put(who.principal ?? doc.issuer, doc.payload.type, bytes)) } catch (err) { throw new TaskError('malformedRequest', err.message) }
       } catch (err) { return refuse(res, err, doc) }
+    }
+    if (path.startsWith('/patches/') && req.method === 'GET') { // a change an agent handed the room, to read before approving it
+      const d = ctx.changes.get(path.slice(9))
+      return d ? send(res, 200, d, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' }) : send(res, 404, { error: 'no change with that hash' })
     }
     if (path.startsWith('/media/') && req.method === 'GET') {
       const m = /^\/media\/([0-9a-f]{64})$/.exec(path), got = m && ctx.media.get(m[1])
@@ -307,9 +315,10 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     timers.push(setInterval(() => executor.tick().catch((e) => console.error('executor:', e)), 30_000))
     if (config.checkEveryMinutes !== 0) ctx.check.start(server.address()?.port)
     await ctx.host.start()
+    ctx.changes.start()
     timers.push(setInterval(() => closeVotes(ctx).catch((e) => console.error('closing votes:', e)), 30_000))
   }
-  ctx.stop = async () => { timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }

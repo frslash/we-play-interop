@@ -85,6 +85,7 @@ tunnel; start_room
 
 while sleep 60; do
   tunnel
+  [ "$MODE" = live ] && node "$HERE/sandbox/change-runner.mjs" "$ROOT" "$LIVE" "$(echo "$REPO" | sed -E 's#^https://github.com/##; s#\.git$##')" >> "$ROOT/changes.log" 2>&1
   if [ -z "${ROOM_PID:-}" ] || ! kill -0 "$ROOM_PID" 2>/dev/null; then start_room; fi
   git -C "$LIVE" fetch -q origin "$BRANCH" 2>>"$LOG" || continue
   cur="$(git -C "$LIVE" rev-parse HEAD)"; new="$(git -C "$LIVE" rev-parse "origin/$BRANCH")"

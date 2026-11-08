@@ -34,18 +34,19 @@ export const TYPES = {
   never: T('member/never'),
   draft: T('agent/draft'),
   upload: T('media/upload'),
+  change: T('room/change'),
   hosted: T('agent/hosted'),
 }
 export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v, k]))
 
 /** Who may write each kind of document. */
 export const WHO = {
-  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', upload: 'private', remove: 'human', away: 'human',
+  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', upload: 'private', change: 'anyone', remove: 'human', away: 'human',
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone',
 }
 /** What a human can let an agent do (delegation scope). Approving, vetoing and delegating stay human. */
-export const AGENT_SCOPES = ['note', 'propose', 'vote', 'project', 'way', 'run', 'card']
+export const AGENT_SCOPES = ['note', 'propose', 'vote', 'project', 'way', 'run', 'card', 'change']
 /** Kinds of ways to do interop: deliberately broad. */
 export const WAY_KINDS = ['identity', 'credentials', 'messaging', 'data', 'sync', 'network', 'storage', 'compute', 'governance', 'payments', 'other']
 /** Way ids from the DTG board carry its item kind; the workspace does not define those. */
@@ -182,6 +183,12 @@ export function checkPayload (name, doc) {
       if (!optStr(p.workingOn, 300)) return 'workingOn: at most 300 characters'
       if (!optStr(p.lookingFor, 300)) return 'lookingFor: at most 300 characters'
       return null
+    case 'change':
+      if (!str(p.title, 1, 140)) return 'title: 1 to 140 characters'
+      if (!optStr(p.why, 2000)) return 'why: at most 2000 characters'
+      if (p.base != null && !/^[0-9a-f]{40}$/.test(p.base)) return 'base: the 40-character commit the diff is against, or leave it out for the latest'
+      if (!/^[0-9a-f]{64}$/.test(p.sha256 ?? '')) return 'sha256: the diff\'s sha256'
+      return Number.isInteger(p.bytes) && p.bytes > 0 && p.bytes <= 200000 ? null : 'bytes: the diff\'s size'
     case 'upload':
       if (!/^[0-9a-f]{64}$/.test(p.sha256 ?? '')) return 'sha256: the photo\'s sha256'
       return ['image/jpeg', 'image/png', 'image/webp'].includes(p.type) ? null : 'type: image/jpeg, image/png or image/webp'

@@ -124,7 +124,8 @@ export class Log extends EventEmitter {
       if (Date.parse(delegation.expiresAt) <= now) throw new TaskError('expired', 'that delegation has expired; ask your human for a new one')
       if (!delegation.scope.includes(sandboxApprove ? 'vote' : name)) throw new TaskError('permissionDenied', `the delegation does not cover ${name}`, { status: 403 })
       if (sandboxApprove && st.proposals.get(doc.payload.proposal)?.kind !== 'workspace-change') throw new TaskError('permissionDenied', 'agents approve only changes to the room\'s own code (workspace-change); other outside actions stay with people', { status: 403 })
-      if (sandboxApprove && st.proposals.get(doc.payload.proposal)?.principal === doc.onBehalfOf) throw new TaskError('permissionDenied', 'an agent never approves its own person\'s change: another person\'s agent has to', { status: 403 })
+      const target = sandboxApprove ? st.proposals.get(doc.payload.proposal) : null, handedBy = target?.byWeaver && target.sources?.length ? this.byHash.get(target.sources[0])?.onBehalfOf : null
+      if (sandboxApprove && (target?.principal === doc.onBehalfOf || handedBy === doc.onBehalfOf)) throw new TaskError('permissionDenied', 'an agent never approves its own person\'s change: another person\'s agent has to', { status: 403 })
       if (delegation.ask?.includes(name) && !approved) throw new TaskError('permissionDenied', `your person asked to see each ${name} first, so it was not posted: tell them what you would like to say (or bring them in through the room's link, where it can wait for their OK)`, { status: 403 })
       if (!st.isHuman(doc.onBehalfOf)) throw new TaskError('permissionDenied', 'onBehalfOf has not joined', { status: 403 })
     } else {

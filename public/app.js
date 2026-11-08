@@ -632,7 +632,7 @@ function notebookPanel (a) {
   return d
 }
 const MODES_OF = { ask: ['Ask me first', 'Every line waits for your OK in Talk.'], commit: ['Talks on its own, asks before committing me', 'It talks freely; proposals, votes and runs wait for your OK.'], free: ['On its own', 'It acts within its permission without asking.'] }
-const ASK_OF = { ask: AGENT_SCOPES, commit: ['propose', 'vote', 'run'], free: [] }
+const ASK_OF = { ask: AGENT_SCOPES, commit: ['propose', 'vote', 'run', 'change'], free: [] }
 const modeOf = (a) => { const k = a.ask ?? []; return !k.length ? 'free' : AGENT_SCOPES.every((x) => k.includes(x)) ? 'ask' : 'commit' }
 function modeChoice (a) {
   const now = modeOf(a)

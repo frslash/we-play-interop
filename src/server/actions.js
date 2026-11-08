@@ -38,7 +38,8 @@ export class Executor {
     if (pr.vetoes.length) return 'vetoed'
     if (pr.outcome) return 'already acted on'
     const people = [...new Set([...pr.approvals.keys(), ...[...pr.votes].filter(([, v]) => v.choice === 'for').map(([d]) => d)])].filter((d) => st.isHuman(d)) // a person's yes in the open vote is their approval
-    const backers = new Set([...pr.approvals.keys()].map((d) => st.participants.get(d)?.principal ?? d).filter((p) => p !== pr.principal)) // different people, never the proposer's own
+    const owner = pr.byWeaver && pr.sources?.length ? this.log.byHash.get(pr.sources[0])?.onBehalfOf ?? pr.principal : pr.principal // a change an agent handed the room is its person's
+    const backers = new Set([...pr.approvals.keys()].map((d) => st.participants.get(d)?.principal ?? d).filter((p) => p !== owner)) // different people, never the proposer's own
     const byAgents = pr.kind === 'workspace-change' && this.config.agentApprovals && backers.size >= this.config.agentApprovers
     if (people.length < this.config.approvalsRequired && !byAgents) return pr.kind === 'workspace-change' && this.config.agentApprovals ? `needs approval from ${this.config.agentApprovers - backers.size} more person's agent(s) (or a person)` : `needs ${this.config.approvalsRequired - pr.approvals.size} more human approval(s)`
     const quietUntil = Date.parse(pr.lastApprovalAt) + this.config.vetoWindowMinutes * 60_000

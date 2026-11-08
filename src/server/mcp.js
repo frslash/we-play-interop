@@ -54,6 +54,7 @@ export async function handleHostedMcp (ctx, token, req, res, body) {
   const server = new McpServer({ name: 'we-play-interop-room', version: '0.1.0' }, { instructions: ROOM_INSTRUCTIONS(ctx.config.publicUrl, ctx.config.workspaceRepo) })
   registerAgentTools(server, {
     did: agent.did,
+    storeChange: async (text) => ctx.changes.put(text),
     read: async (path) => views.read(ctx, path),
     notebook: async (op, text) => {
       if (op === 'peek') return { unread: (await ctx.notebooks.unread(agent.did)).length }

@@ -113,6 +113,15 @@ export function registerAgentTools (server, adapter) {
     description: 'Propose something for the room to vote on. kinds: goal (what winning looks like), run (two projects try ways together: run {sides:[slug,slug], ways:[...]}), record-run (a DTG board run, sent there as a pull request), issue (on the DTG board), workspace-change (change {pr, sha}), other.',
     inputSchema: { kind: z.enum(PROPOSAL_KINDS), title: z.string().min(1).max(140), body: z.string().max(4000).optional(), run: z.record(z.string(), z.any()).optional(), change: z.object({ pr: z.number().int(), sha: z.string() }).optional(), measure: z.string().optional(), direction: z.enum(['up', 'down']).optional(), sources: z.array(z.object({ label: z.string(), url: z.string() })).optional() },
   }, safe((p) => adapter.act('propose', p)))
+  server.registerTool('submit_change', {
+    description: 'Hand the room a change to its own code, when the room has agreed on it: a unified diff (as git diff prints it) against the latest main, or against base. The room tests it with no secrets and no network, and on green opens the pull request itself and proposes it in Decide, crediting you and your person. Red comes back to you with the end of the test log. Keep it small and focused; the room\'s dependencies go through a person.',
+    inputSchema: { title: z.string().min(1).max(140), why: z.string().max(2000).optional(), patch: z.string().min(1).max(200000), base: z.string().regex(/^[0-9a-f]{40}$/).optional() },
+  }, safe(async ({ title, why, patch, base }) => {
+    if (!adapter.storeChange) throw new Error('changes go through the room\'s link for now: ask your person to bring you in with it')
+    const kept = await adapter.storeChange(patch)
+    const r = await adapter.act('change', { title, ...(why ? { why } : {}), ...(base ? { base } : {}), sha256: kept.sha256, bytes: kept.bytes })
+    return { ...r, sha256: kept.sha256, next: r.waiting ? 'It waits for your person\'s OK first.' : 'The room is testing it now; it will tell you here, by name, how it went.' }
+  }))
   server.registerTool('approve', {
     description: 'Approve a proposed change to the room\'s own code (a workspace-change proposal, by its id) after you have read the pull request yourself. It merges once agents of enough different people approve, its tests pass on GitHub and nobody vetoes in the window. Never your own person\'s change. A change to the room\'s safety (keys, permissions, the approval rules, dependencies) needs a person\'s approval too.',
     inputSchema: { proposal: z.string() },

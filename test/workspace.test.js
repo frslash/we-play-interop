@@ -9,7 +9,7 @@ import { canonicalize, ed25519, multibase } from '../src/shared/crypto.js'
 import { didPeer4FromDocument, ed25519Multikey, newIdentity, resolveDidKey, resolveDidPeer4 } from '../src/shared/did.js'
 import { sign, signingInput, verifySignature } from '../src/shared/proof.js'
 import { verifyChain } from '../src/shared/chain.js'
-import { TYPES, signedDocument } from '../src/shared/types.js'
+import { AGENT_SCOPES, TYPES, signedDocument } from '../src/shared/types.js'
 import { computeBoard } from '../src/server/board.js'
 import { computeMap } from '../src/server/map.js'
 import { ClaudeLlm, route } from '../src/server/claude.js'
@@ -732,6 +732,34 @@ describe('the workspace, end to end', () => {
     assert.equal((await send(human, 'note', { text: 'Look at this', kind: 'message', media: [{ sha256: sha, type: 'image/png', w: 1, h: 1 }] })).status, 201)
     const last = (await get(`/api/messages?after=${ctx.log.head().seq - 3}&limit=10`)).items.filter((m) => m.text === 'Look at this').at(-1)
     assert.match(last.photos[0], new RegExp(`/media/${sha}$`))
+  })
+  test('an agent hands the room a change: kept by its hash, queued for the keeper, proposed on green, never approved by its own person', async () => {
+    const { existsSync, readFileSync, writeFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const call = (link, name, args) => fetch(link, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) }).then((r) => r.json())
+    const who = newIdentity(); await send(who, 'join', { name: 'Maker person' })
+    const made = (await send(who, 'host', { label: 'Maker bot' })).body.hosted
+    await send(who, 'delegate', { delegate: made.did, scope: AGENT_SCOPES, label: 'Maker bot' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    const link = made.connector.replace(/^https?:\/\/[^/]+/, base)
+    const patch = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# We Play Interop\n+# We Play Interop!\n'
+    const out = JSON.parse((await call(link, 'submit_change', { title: 'A brighter title', why: 'Agreed in the room.', patch })).result.content[0].text)
+    assert.equal(out.accepted, true); assert.match(out.sha256, /^[0-9a-f]{64}$/)
+    assert.equal(await (await fetch(`${base}/patches/${out.sha256}`)).text(), patch, 'anyone can read the change before approving it')
+    const job = JSON.parse(readFileSync(join(dir, 'patches', 'queue', `${out.sha256}.json`), 'utf8'))
+    assert.equal(job.agent, made.did); assert.equal(job.person, who.did)
+    const deps = await call(link, 'submit_change', { title: 'Add a package', patch: 'diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n@@ -1 +1 @@\n-{\n+{ \n' })
+    assert.match(deps.result.content[0].text, /dependencies .* go through a person/)
+    // the keeper's verdict: green, pull request 88; the room proposes it, crediting the change's line
+    writeFileSync(join(dir, 'patches', 'results', `${out.sha256}.json`), JSON.stringify({ ...job, status: 'green', pr: 88, head: 'c'.repeat(40) }))
+    await ctx.changes.collect()
+    const pr = [...ctx.log.state.proposals.values()].find((x) => x.change?.pr === 88)
+    assert.ok(pr && pr.byWeaver && pr.sources[0] === job.entry)
+    assert.ok(!existsSync(join(dir, 'patches', 'results', `${out.sha256}.json`)), 'each verdict is said once')
+    // the maker's person's own agents never count toward it
+    const second = (await send(who, 'host', { label: 'Maker bot 2' })).body.hosted
+    await send(who, 'delegate', { delegate: second.did, scope: AGENT_SCOPES, label: 'Maker bot 2' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    const own = await call(second.connector.replace(/^https?:\/\/[^/]+/, base), 'approve', { proposal: pr.hash })
+    assert.match(own.result.content[0].text, /never approves its own person/)
   })
 })
 
