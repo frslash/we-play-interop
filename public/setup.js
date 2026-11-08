@@ -4,7 +4,7 @@
 // Pure text, no secrets of the room's: the only secret in it is the person's own connector link.
 
 export const FOLDER = '~/we-play-interop'
-export const WAKE_ON = 'direct,reply,mention,person,connection,ask'
+export const WAKE_ON = 'direct,reply,mention,person,room,connection,ask'
 
 /** The Stop hook: after each turn it waits on the room, and wakes the session when something there is for it. */
 export const HOOK = [

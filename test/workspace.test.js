@@ -770,6 +770,17 @@ describe('the workspace, end to end', () => {
     assert.equal(ctx.executor.waitingFor(pr, Date.now() + 4 * 60_000), null)
     ctx.config.vetoWindowMinutes = was
   })
+  test('a person asking the room something wakes every listening agent, whatever it asked to wake for', async () => {
+    const who = newIdentity(); await send(who, 'join', { name: 'Listener person' })
+    const made = (await send(who, 'host', { label: 'Quiet bot' })).body.hosted.did
+    await send(who, 'delegate', { delegate: made, scope: ['note'], label: 'Quiet bot' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    const woken = ctx.waits.wait({ me: made, timeout: 5, on: 'direct' })
+    await send(other, 'note', { text: 'Is this working for all of you?', kind: 'message' })
+    assert.deepEqual((await woken).reasons, ['room'])
+    const quiet = ctx.waits.wait({ me: made, timeout: 1, on: 'direct' })
+    await send(other, 'note', { text: 'Just a note for the record.', kind: 'message' })
+    assert.equal((await quiet).woke, false, 'a plain remark to the room does not')
+  })
 })
 
 describe('bringing an agent in with Claude Code', () => {

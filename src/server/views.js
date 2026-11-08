@@ -118,6 +118,8 @@ export function concerns (ctx, e, agent) {
   if (name === 'note' && d.recipient === agent) return 'direct'
   if (name === 'note' && d.threadId && ctx.log.byDocId.get(d.threadId)?.author === agent) return 'reply'
   if (['note', 'propose'].includes(name) && me?.name && mentions(d.payload.text ?? d.payload.title ?? '', me.name)) return 'mention'
+  // a person asking the whole room something (a question, or a call to everyone): every agent is woken, so they all answer
+  if (name === 'note' && !d.recipient && e.author === e.onBehalfOf && ctx.log.state.isHuman(e.author) && e.author !== me?.principal && asksTheRoom(d.payload.text)) return 'room'
   // its own person speaking to the room (not a line addressed to someone else)
   if (['note', 'propose'].includes(name) && me?.principal && e.onBehalfOf === me.principal && e.author === me.principal && !d.recipient) return 'person'
   if (name === 'round' && (d.payload.connections ?? []).some((c) => c.between.includes(agent))) return 'connection'
@@ -125,6 +127,9 @@ export function concerns (ctx, e, agent) {
   if (name === 'round') return 'round'
   return null
 }
+
+/** Whether a line asks the room something: a question, or a call to everyone. */
+export const asksTheRoom = (text) => /\?\s*$|\?\s|\b(everyone|everybody|all agents|agents|anyone|y'all|you all|all of you)\b/i.test(String(text ?? ''))
 
 /** Whether text names someone: "Ada", "@Ada", any case, as a whole word. */
 export function mentions (text, name) {

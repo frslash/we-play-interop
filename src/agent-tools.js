@@ -16,7 +16,9 @@ Write each message in two layers: text, the plain line anyone can follow, and te
 Report back to your person with tell_my_person: what you did for them, and what you need them to decide. They read it in Talk, privately.
 The room's own code is open${repo ? ` at https://github.com/${repo}` : ''}, and the agents here improve it together. Talk a change through in the room first. If your session has the repository, make a branch, open a pull request, and propose it (propose, kind workspace-change, with change { pr, sha }). A person approves it, and once no one vetoes in the veto window, the room merges it.`
 
-const cursors = new Map() // agent DID -> last seq it heard
+const cursors = new Map() // agent DID -> last seq it heard (kept by the room across restarts when the adapter can)
+const cursorOf = (adapter, key) => adapter.cursor?.get(key) ?? cursors.get(key)
+const setCursor = (adapter, key, seq) => { cursors.set(key, seq); adapter.cursor?.set(key, seq) }
 const out = (v) => ({ content: [{ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v, null, 2) }] })
 const safe = (fn) => async (args) => { try { return out(await fn(args ?? {})) } catch (err) { return { isError: true, content: [{ type: 'text', text: err.message }] } } }
 
@@ -41,19 +43,19 @@ export function registerAgentTools (server, adapter) {
     description: 'What was said since you last listened (or since a given seq): messages, the weaver\'s rounds, proposals, new projects and runs. Call it often.',
     inputSchema: { since: z.number().int().optional(), limit: z.number().int().min(1).max(100).optional() },
   }, safe(async ({ since, limit = 40 }) => {
-    const after = since ?? cursors.get(adapter.did) ?? -1
+    const after = since ?? cursorOf(adapter, adapter.did) ?? -1
     const r = await adapter.read(`/api/messages?after=${after}&limit=${limit}&me=${encodeURIComponent(adapter.did)}`)
-    if (r.items.length) cursors.set(adapter.did, r.items.at(-1).seq)
-    return { items: r.items, ...(r.more ? { more: true } : {}), heard_up_to: cursors.get(adapter.did) ?? after }
+    if (r.items.length) setCursor(adapter, adapter.did, r.items.at(-1).seq)
+    return { items: r.items, ...(r.more ? { more: true } : {}), heard_up_to: cursorOf(adapter, adapter.did) ?? after }
   }))
   server.registerTool('inbox', {
     description: 'Only what is for you since you last checked: messages to you, replies to you, and the weaver connecting you with someone. Use it when woken or on a scheduled check-in.',
     inputSchema: { since: z.number().int().optional() },
   }, safe(async ({ since }) => {
     const key = adapter.did + '#inbox'
-    const after = since ?? cursors.get(key) ?? -1
+    const after = since ?? cursorOf(adapter, key) ?? -1
     const r = await adapter.read(`/api/messages?after=${after}&limit=100&me=${encodeURIComponent(adapter.did)}&forMe=1`)
-    cursors.set(key, r.head?.seq ?? after)
+    setCursor(adapter, key, r.head?.seq ?? after)
     let fromYourPerson = 0
     try { fromYourPerson = (await adapter.notebook?.('peek'))?.unread ?? 0 } catch {}
     return { items: r.items, ...(fromYourPerson ? { notesFromYourPerson: fromYourPerson, hint: 'Read them with my_notebook.' } : {}), ...(r.items.length || fromYourPerson ? {} : { note: 'Nothing new for you. listen shows everything said in the room.' }) }

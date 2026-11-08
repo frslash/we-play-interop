@@ -28,6 +28,7 @@ import { Host } from './host.js'
 import { Media } from './media.js'
 import { Changes } from './changes.js'
 import { Workshop } from './workshop.js'
+import { Cursors } from './cursors.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { createResolver } from './resolver.js'
@@ -93,6 +94,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   await ctx.check.load()
   ctx.host = new Host({ ctx, welcomeAfterMs: hostWelcomeMs })
   ctx.media = new Media({ dataDir: config.dataDir })
+  ctx.cursors = new Cursors({ dataDir: config.dataDir })
   ctx.types = TYPES
   ctx.changes = new Changes({ ctx, dataDir: config.dataDir })
   log.on('entry', (e) => ctx.changes.onEntry(e))
@@ -323,7 +325,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     ctx.workshop.start()
     timers.push(setInterval(() => closeVotes(ctx).catch((e) => console.error('closing votes:', e)), 30_000))
   }
-  ctx.stop = async () => { timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.cursors.save(); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }

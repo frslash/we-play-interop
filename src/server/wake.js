@@ -56,7 +56,7 @@ export class Waker {
     for (const [agent, hook] of this.hooks) {
       if (e.author === agent || !this.ctx.log.state.activeDelegation(agent) || this.ctx.check?.dids().includes(e.author)) continue // the room check never wakes anyone's agent
       const why = concerns(this.ctx, e, agent) ?? 'any'
-      if (!hook.on.includes(why) && !hook.on.includes('any')) continue
+      if (!hook.on.includes(why) && !hook.on.includes('any') && why !== 'room') continue
       this.queue(agent, why, e)
     }
   }

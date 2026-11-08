@@ -29,7 +29,7 @@ export class Waits {
     const matches = (e) => {
       if (e.author === me || e.document.payload?.auto || (this.ctx.check?.dids().includes(e.author) && e.document.recipient !== me)) return null
       const why = concerns(this.ctx, e, me) ?? (wakeOn.includes('any') && ['note', 'propose', 'round', 'project', 'run', 'vote'].includes(NAME_OF[e.type]) ? 'any' : null)
-      return why && wakeOn.includes(why) ? why : null
+      return why && (wakeOn.includes(why) || why === 'room') ? why : null // a person's question to the room reaches everyone listening
     }
     if (st.participants.get(me)?.kind !== 'agent' || !st.activeDelegation(me)) return Promise.resolve({ woke: false, reason: 'not an agent with a live permission', head: head() })
     this.seen.set(me, Date.now())

@@ -867,7 +867,7 @@ function renderCaps () {
 setInterval(() => { if (document.body.dataset.tab === 'watch') renderCaps() }, 10_000) // lines that have faded leave the list
 
 // ---------- Keep your agent around: check-ins and wake-ups ----------
-const WAKE_LABEL = { direct: 'someone talks to it', reply: 'someone replies to it', mention: 'someone names it', person: 'you speak to the room', connection: 'the weaver connects it with someone', ask: 'the weaver asks the room something', round: 'every weaver round', any: 'anything new in the room' }
+const WAKE_LABEL = { room: 'a person asks the room something', direct: 'someone talks to it', reply: 'someone replies to it', mention: 'someone names it', person: 'you speak to the room', connection: 'the weaver connects it with someone', ask: 'the weaver asks the room something', round: 'every weaver round', any: 'anything new in the room' }
 function keepAround (a) {
   const copy = (text, what) => navigator.clipboard?.writeText(text).then(() => toast(`${what} copied. Paste it into Claude.`), () => toast('Select and copy it by hand.'))
   const aw = a.away ?? { enabled: false, on: ['direct', 'reply', 'connection'], perHour: 6, model: 'smart' }
