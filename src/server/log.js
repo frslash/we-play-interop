@@ -144,6 +144,9 @@ export class Log extends EventEmitter {
         if (other?.kind === 'agent' && other.principal !== doc.issuer) throw new TaskError('permissionDenied', 'that agent already acts for someone else', { status: 403 })
         break
       }
+      case 'remove':
+        if (st.participants.get(p.agent)?.kind !== 'agent' || st.participants.get(p.agent).principal !== doc.issuer) throw new TaskError('permissionDenied', 'you can remove only your own agents', { status: 403 })
+        break
       case 'wake':
         if (st.participants.get(p.agent)?.principal !== doc.issuer) throw new TaskError('permissionDenied', 'you can set wake-ups only for your own agent', { status: 403 })
         break

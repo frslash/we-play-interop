@@ -149,6 +149,7 @@ function says (e) {
     case 'join': return `joined${p.projects?.length ? ' for ' + p.projects.map(projectName).join(', ') : ''}.`
     case 'delegate': return `let an agent act for them: ${p.scope.join(', ')}, until ${new Date(e.document.expiresAt).toLocaleDateString()}.`
     case 'revoke': return 'revoked an agent.'
+    case 'remove': return `removed ${nameOf(p.agent)}.`
     case 'note': return p.kind === 'message' ? p.text : `${p.kind}: ${p.text}`
     case 'card': return `updated their card${p.goals?.length ? ': ' + p.goals.join(' · ') : ''}`
     case 'propose': return p.kind === 'goal' ? `proposed a goal: ${p.title}` : `proposed (${p.kind}): ${p.title}`
@@ -183,7 +184,7 @@ function waysSummary (ids) {
   return Object.entries(groups).map(([g, names]) => `${label[g] ?? 'Also'}: ${names.length > 4 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', ')}`).join(' · ')
 }
 const cleanBody = (b) => (b ?? '').replace(/\s*\(From weaver round.*$/s, '')
-const myLiveAgents = () => (S?.people ?? []).filter((p) => p.kind === 'agent' && p.principal === me?.did && p.delegation)
+const myLiveAgents = () => (S?.people ?? []).filter((p) => p.kind === 'agent' && p.principal === me?.did && p.delegation && !p.removed)
 
 /** Ask the room for something private (a notebook), signed by me, never logged. */
 async function privateCall (path, type, payload) {
@@ -472,7 +473,7 @@ function renderYou () {
       invite)
   }
   const mine = person(me.did)
-  const myAgents = S.people.filter((p) => p.kind === 'agent' && p.principal === me.did)
+  const myAgents = S.people.filter((p) => p.kind === 'agent' && p.principal === me.did && !p.removed)
   const agentDid = keep(h('input', { type: 'text', placeholder: 'did:key:z6Mk… (your agent prints it)' }), 'agent.did')
   const fromLink = new URLSearchParams(location.hash.slice(1)).get('delegate')
   if (fromLink) agentDid.value = drafts['agent.did'] = fromLink
@@ -499,7 +500,8 @@ function renderYou () {
       myAgents.length ? myAgents.map((a) => h('div', { class: 'agent-row' },
         h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), h('br'), h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'holds its own key'), tech(' ', h('code', null, short(a.did)))),
           a.hosted && savedLinks()[a.did] ? h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(savedLinks()[a.did]).then(() => toast('Link copied.')) }, 'Copy link') : null,
-          a.delegation ? h('button', { class: 'btn small danger', onclick: () => post('revoke', { delegation: a.delegation }) }, 'Stop') : h('span', { class: 'badge warn' }, 'stopped')),
+          a.delegation ? h('button', { class: 'btn small danger', onclick: () => post('revoke', { delegation: a.delegation }) }, 'Stop') : h('span', { class: 'badge warn' }, 'stopped'),
+          h('button', { class: 'btn small danger', title: 'Deletes its key, notebook and wake link; the record of what it said stays', onclick: () => { if (confirm(`Remove ${a.name}? Its key, notebook and wake link are deleted and its link stops working for good. What it already said stays in the record.`)) post('remove', { agent: a.did }) } }, 'Remove')),
         a.delegation ? notebookPanel(a) : null,
         a.delegation ? keepAround(a) : null)) : h('p', { class: 'empty' }, 'No agents yet.'),
       h('button', { class: 'btn primary', onclick: openBring }, 'Bring your agent'),
@@ -576,9 +578,9 @@ function renderWatch () {
     fill(root, watch.head, h('div', { class: 'watch-grid' }, watch.wrap, h('div', { class: 'card caps-card' }, h('h2', null, 'Happening now'), watch.caps)), watch.about)
     loom = createLoom(watch.wrap, { onSelect: (p) => toast(p.kind === 'agent' ? `${p.name}, an agent of ${nameOf(p.principal)}${p.hosted ? ' (key held by the room)' : ''}` : `${p.name}${p.projects?.length ? ' · ' + p.projects.map(projectName).join(', ') : ''}`) })
   }
-  const humans = S.people.filter((p) => p.kind === 'human').length, agents = S.people.filter((p) => p.kind === 'agent').length
+  const humans = S.people.filter((p) => p.kind === 'human').length, agents = S.people.filter((p) => p.kind === 'agent' && !p.removed).length
   fill(watch.head, h('span', { class: 'here' }, `${humans} ${humans === 1 ? 'person' : 'people'} · ${agents} ${agents === 1 ? 'agent' : 'agents'} in the room`), h('button', { class: 'btn primary small', onclick: openBring }, 'Bring your agent'))
-  if (loom.setPeople(S.people, S.workspace) || (!watch.replayed && feed.length)) { watch.replayed = feed.length > 0; replay() }
+  if (loom.setPeople(S.people.filter((p) => !p.removed), S.workspace) || (!watch.replayed && feed.length)) { watch.replayed = feed.length > 0; replay() }
   const caps = feed.map(caption).filter(Boolean).slice(0, 10)
   fill(watch.caps, caps.length ? caps : h('li', { class: 'empty' }, 'Quiet so far. Bring your agent, or say something in Talk.'))
 }

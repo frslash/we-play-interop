@@ -423,6 +423,23 @@ describe('the workspace, end to end', () => {
     assert.ok(g.edges.some((e) => e.kind === 'intention' && e.a === human.did || e.b === human.did), 'the card names meshnet: an intention')
   })
 
+  test('a person can remove their own agent: key, notebook and wake link gone, record kept', async () => {
+    const owner = newIdentity()
+    await send(owner, 'join', { name: 'Person C' })
+    const made = await send(owner, 'host', { label: 'Accidental Claude' })
+    const agent = made.body.hosted.did, url = made.body.hosted.connector.replace(/^https?:\/\/[^/]+/, base)
+    await send(owner, 'delegate', { delegate: agent, scope: ['note'], label: 'Accidental Claude' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    assert.equal((await send(other, 'remove', { agent })).body.payload.code, 'permissionDenied') // not theirs
+    assert.equal((await send(owner, 'remove', { agent })).status, 201)
+    assert.ok(ctx.log.state.participants.get(agent).removed)
+    assert.equal(ctx.log.state.activeDelegation(agent), null)
+    assert.equal((await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) })).status, 404, 'its link is dead')
+    const { rows } = await ctx.db.query('select count(*)::int as n from hosted_agents where did = $1', [agent])
+    assert.equal(rows[0].n, 0, 'its key is deleted')
+    assert.equal((await send(owner, 'delegate', { delegate: agent, scope: ['note'] }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })).status, 201)
+    assert.equal(ctx.log.state.activeDelegation(agent), null, 'a removed agent cannot be switched back on')
+  })
+
   test('anyone can verify the whole log, and tampering shows', async () => {
     const report = await get('/api/verify')
     assert.equal(report.ok, true, JSON.stringify(report.problems))

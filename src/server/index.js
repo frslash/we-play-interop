@@ -171,6 +171,10 @@ export async function createApp (config = defaultConfig, { resolver = createReso
           const base = config.publicUrl || `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`
           return send(res, 201, { ...entry, hosted: { did: agent.did, connector: `${base}/mcp/a/${agent.token}` } })
         }
+        if (NAME_OF[doc.type] === 'remove' && !duplicate) {
+          // removing an agent deletes what the room holds for it: its key, its notebook, its wake link
+          await hosted.delete(doc.payload.agent); await ctx.notebooks.delete(doc.payload.agent); await waker.set(doc.payload.agent, null)
+        }
         return send(res, duplicate ? 200 : 201, entry)
       } catch (err) { return refuse(res, err, doc) }
     }

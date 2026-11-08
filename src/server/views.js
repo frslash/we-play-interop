@@ -45,7 +45,7 @@ export function graph (ctx, m) {
   const asPerson = (did) => st.participants.get(did)?.principal ?? did // an agent's lines belong to its person
   const nodes = new Map(), edges = new Map()
   for (const p of m.projects) nodes.set(p.slug, { id: p.slug, kind: 'project', label: p.name, about: p.about, ways: p.ways, sources: p.sources, url: p.url, members: p.members })
-  for (const p of st.participants.values()) if (p.kind === 'human') nodes.set(p.did, { id: p.did, kind: 'person', label: p.name, projects: p.projects, card: p.card ?? null, agents: [...st.participants.values()].filter((a) => a.principal === p.did).map((a) => a.name) })
+  for (const p of st.participants.values()) if (p.kind === 'human') nodes.set(p.did, { id: p.did, kind: 'person', label: p.name, projects: p.projects, card: p.card ?? null, agents: [...st.participants.values()].filter((a) => a.principal === p.did && !a.removed).map((a) => a.name) })
   const edge = (a, b, kind, label) => { if (!nodes.has(a) || !nodes.has(b) || a === b) return; const k = [a, b].sort().join('|') + '|' + kind; const cur = edges.get(k); if (cur) { cur.weight++; if (label && !cur.labels.includes(label)) cur.labels.push(label) } else edges.set(k, { a, b, kind, weight: 1, labels: label ? [label] : [] }) }
   for (const p of m.pairs) {
     const ways = p.ways

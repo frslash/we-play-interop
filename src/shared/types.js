@@ -28,6 +28,7 @@ export const TYPES = {
   host: T('agent/host'),
   wake: T('agent/wake'),
   card: T('member/card'),
+  remove: T('agent/remove'),
   notebook: T('agent/notebook'),
   hosted: T('agent/hosted'),
 }
@@ -35,7 +36,7 @@ export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => 
 
 /** Who may write each kind of document. */
 export const WHO = {
-  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private',
+  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', remove: 'human',
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone',
 }
@@ -159,6 +160,7 @@ export function checkPayload (name, doc) {
     }
     case 'revoke': return HASH_RE.test(p.delegation ?? '') ? null : 'delegation: the hash of the delegation entry'
     case 'host': return str(p.label, 1, 60) ? null : 'label: a name for the agent, 1 to 60 characters'
+    case 'remove': return DID_RE.test(p.agent ?? '') ? null : 'agent: your agent\'s DID'
     case 'card':
       if (p.goals !== undefined && (!Array.isArray(p.goals) || p.goals.length > 5 || !p.goals.every((g) => str(g, 1, 140)))) return 'goals: up to 5, each 1 to 140 characters'
       if (!optStr(p.workingOn, 300)) return 'workingOn: at most 300 characters'

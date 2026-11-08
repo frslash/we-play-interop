@@ -32,6 +32,7 @@ export class State {
   /** The live delegation a given agent holds, if any. */
   activeDelegation (agent, now = Date.now()) {
     let best = null
+    if (this.participants.get(agent)?.removed) return null
     for (const d of this.delegations.values()) if (d.delegate === agent && !d.revoked && Date.parse(d.expiresAt) > now && (!best || d.seq > best.seq)) best = d
     return best
   }
@@ -58,6 +59,13 @@ export class State {
       }
       case 'card': { const who = this.participants.get(e.onBehalfOf); if (who) who.card = { goals: p.goals ?? [], workingOn: p.workingOn ?? '', lookingFor: p.lookingFor ?? '', by: e.author, at: e.timestamp }; break }
       case 'wake': { const a = this.participants.get(p.agent); if (a) a.wake = p.urlHash ? { on: p.on, since: e.timestamp } : null; break }
+      case 'remove': {
+        // the record stays (it is permanent); the agent is stopped and no longer listed
+        const a = this.participants.get(p.agent)
+        if (a) { a.removed = true; a.removedAt = e.timestamp }
+        for (const d of this.delegations.values()) if (d.delegate === p.agent) d.revoked = true
+        break
+      }
       case 'hosted': { this.hosted.add(p.agent); const a = this.participants.get(p.agent); if (a) a.hosted = true; break }
       case 'revoke': { const d = this.delegations.get(p.delegation); if (d && d.issuer === e.author) d.revoked = true; break }
       case 'propose': this.addProposal(e); break

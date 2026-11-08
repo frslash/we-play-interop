@@ -49,6 +49,12 @@ export class HostedAgents {
     return { did: id.did, token }
   }
 
+  /** Forget an agent's key for good: its connector link stops working. */
+  async delete (did) {
+    await this.db.query('delete from hosted_agents where did = $1', [did])
+    for (const [k, a] of this.byTokenHash) if (a.did === did) this.byTokenHash.delete(k)
+  }
+
   /** The agent behind a connector secret, with its signing identity, or null. */
   byToken (token) {
     const rec = this.byTokenHash.get(sha(String(token)))

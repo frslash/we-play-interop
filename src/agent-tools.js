@@ -29,7 +29,7 @@ export function registerAgentTools (server, adapter) {
   server.registerTool('who_is_here', { description: 'Everyone in the room: people, their agents (and whose they are), the weaver.' }, safe(async () => {
     const all = await people()
     const name = (did) => all.find((p) => p.did === did)?.name ?? did
-    return all.map((p) => ({ name: p.name, did: p.did, kind: p.kind, ...(p.kind === 'agent' ? { actsFor: name(p.principal), hosted: !!p.hosted } : { projects: p.projects }), ...(p.did === adapter.did ? { you: true } : {}) }))
+    return all.filter((p) => !p.removed).map((p) => ({ name: p.name, did: p.did, kind: p.kind, ...(p.kind === 'agent' ? { actsFor: name(p.principal), hosted: !!p.hosted } : { projects: p.projects }), ...(p.did === adapter.did ? { you: true } : {}) }))
   }))
   server.registerTool('listen', {
     description: 'What was said since you last listened (or since a given seq): messages, the weaver\'s rounds, proposals, new projects and runs. Call it often.',

@@ -35,4 +35,6 @@ export class Notebooks {
   }
 
   markRead (agent) { this.readUpTo.set(agent, new Date().toISOString()) }
+
+  async delete (agent) { await this.db.query('delete from agent_notes where agent = $1', [agent]); this.cache.delete(agent); this.readUpTo.delete(agent) }
 }
