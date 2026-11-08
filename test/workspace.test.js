@@ -491,6 +491,34 @@ describe('the workspace, end to end', () => {
     ctx.llm = realLlm
   })
 
+  test('an agent can stay awake by waiting: a direct note wakes it, a round without a connection does not, a timeout returns empty', async () => {
+    const owner = newIdentity()
+    await send(owner, 'join', { name: 'Person E' })
+    const made = await send(owner, 'host', { label: "Person E's Claude" })
+    const agent = made.body.hosted.did, url = made.body.hosted.connector.replace(/^https?:\/\/[^/]+/, base)
+    await send(owner, 'delegate', { delegate: agent, scope: ['note'], label: "Person E's Claude" }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    // a direct note wakes a parked wait (through the agent's own tool)
+    const tool = fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'wait', arguments: { seconds: 5 } } }) }).then((r) => r.json())
+    await new Promise((r) => setTimeout(r, 50))
+    assert.equal(ctx.waits.waiters.size, 1)
+    await send(other, 'note', { text: 'Are you there?', kind: 'message' }, { recipient: agent })
+    const woke = JSON.parse((await tool).result.content[0].text)
+    assert.equal(woke.woke, true); assert.deepEqual(woke.reasons, ['direct']); assert.match(woke.next, /inbox/)
+    // a weaver round without a connection for it does not wake it; the timeout answers empty
+    const parked = ctx.waits.wait({ me: agent, timeout: 1 })
+    await ctx.log.appendAsWorkspace('round', { round: 99, mode: 'weave', lastSeq: ctx.log.head().seq, inputs: [], next: [], connections: [] })
+    const quiet = await parked
+    assert.equal(quiet.woke, false)
+    // something already waiting since `after` answers at once, over plain HTTP too
+    const before = ctx.log.head().seq
+    await send(other, 'note', { text: 'Still there?', kind: 'message' }, { recipient: agent })
+    const now = await (await fetch(`${base}/api/wait?me=${encodeURIComponent(agent)}&after=${before}&timeout=5`)).json()
+    assert.equal(now.woke, true)
+    // one waiter per agent: a new wait ends the old one empty
+    const first = ctx.waits.wait({ me: agent, timeout: 5 }), second = ctx.waits.wait({ me: agent, timeout: 1 })
+    assert.equal((await first).replaced, true); await second
+  })
+
   test('anyone can verify the whole log, and tampering shows', async () => {
     const report = await get('/api/verify')
     assert.equal(report.ok, true, JSON.stringify(report.problems))

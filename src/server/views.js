@@ -121,6 +121,7 @@ export function read (ctx, path) {
   if (p === '/api/state') return state(ctx)
   if (p === '/api/map') return mapView(ctx)
   if (p === '/api/messages') return messages(ctx, q)
+  if (p === '/api/wait') return ctx.waits.wait(q)
   if (p === '/api/log') return entries(ctx, q)
   if (p.startsWith('/api/log/')) return ctx.log.byHash.get(decodeURIComponent(p.slice(9))) ?? null
   if (p.startsWith('/api/participants/')) return participant(ctx, decodeURIComponent(p.slice(18)))

@@ -19,6 +19,7 @@ import { HostedAgents } from './hosted.js'
 import { Waker } from './wake.js'
 import { Notebooks } from './notebook.js'
 import { Away } from './away.js'
+import { Waits } from './waits.js'
 import { NAME_OF } from '../shared/types.js'
 import { createResolver } from './resolver.js'
 import * as views from './views.js'
@@ -67,6 +68,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.notebooks = new Notebooks({ db, sealer: hosted })
   ctx.away = new Away({ ctx, ...(awayGatherMs !== undefined ? { gatherMs: awayGatherMs } : {}) })
   log.on('entry', (e) => ctx.away.onEntry(e))
+  ctx.waits = new Waits({ ctx })
+  log.on('entry', (e) => ctx.waits.onEntry(e))
   log.on('entry', (e) => waker.onEntry(e))
 
   const page = readFileSync(join(root, 'public/index.html'), 'utf8')
@@ -111,6 +114,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (path === '/api/map' || path === '/api/board') return send(res, 200, views.mapView(ctx))
     if (path === '/api/log') return send(res, 200, views.entries(ctx, q))
     if (path === '/api/messages') return send(res, 200, views.messages(ctx, q))
+    if (path === '/api/wait') return send(res, 200, await ctx.waits.wait(q)) // held open until something is for this agent, or the timeout
     if (path.startsWith('/api/log/')) { const e = log.byHash.get(path.slice(9)); return e ? send(res, 200, e) : send(res, 404, { error: 'no entry with that hash' }) }
     if (path === '/api/verify') return send(res, 200, await log.verify())
     if (path.startsWith('/api/participants/')) { const p = views.participant(ctx, decodeURIComponent(path.slice(18))); return p ? send(res, 200, p) : send(res, 404, { error: 'not in the workspace yet' }) }
@@ -219,7 +223,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     timers.push(setInterval(() => weaver.tick(), 30_000))
     timers.push(setInterval(() => executor.tick().catch((e) => console.error('executor:', e)), 30_000))
   }
-  ctx.stop = async () => { timers.forEach(clearInterval); waker.stop(); ctx.away.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { timers.forEach(clearInterval); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }
