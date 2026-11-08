@@ -165,7 +165,7 @@ export class Executor {
     if (pull.base?.ref && pull.base.ref !== (this.config.workspaceBranch || 'main')) throw new Error(`pull request #${number} is into ${pull.base.ref}; this room merges into ${this.config.workspaceBranch || 'main'}`)
     if (pull.head.sha !== sha) throw new Error(`pull request #${number} changed after it was approved (now ${pull.head.sha}); propose the new commit`)
     // the commit status branch protection can require, so code merges only through this loop
-    await this.gh('POST', `/repos/${repo}/statuses/${sha}`, { state: 'success', context: 'we-play-interop/approval', description: 'Approved in the workspace log', target_url: this.config.publicUrl ? `${this.config.publicUrl}/api/log/${pr.hash}` : undefined })
+    try { await this.gh('POST', `/repos/${repo}/statuses/${sha}`, { state: 'success', context: 'we-play-interop/approval', description: 'Approved in the workspace log', target_url: this.config.publicUrl ? `${this.config.publicUrl}/api/log/${pr.hash}` : undefined }) } catch (err) { console.warn('approval mark not set:', err.message) } // a token without commit-status rights still merges, unless the branch rules require the mark
     const merged = await this.gh('PUT', `/repos/${repo}/pulls/${number}/merge`, { sha, merge_method: 'squash', commit_title: `${pull.title} (#${number})`, commit_message: this.provenance(pr) })
     return { status: 'merged', url, detail: `merged as ${merged.sha}`, sha: merged.sha }
   }
