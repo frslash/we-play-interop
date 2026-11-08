@@ -4,7 +4,7 @@ import { identityFromSeedHex, newIdentity } from '/shared/did.js'
 import { verifyChain } from '/shared/chain.js'
 import { createLoom } from '/loom.js'
 import { sha256, toHex } from '/shared/crypto.js'
-import { AGENT_SCOPES, MODES, NAME_OF, TYPES, WAKE_ON, signedDocument } from '/shared/types.js'
+import { AGENT_SCOPES, DEFAULT_WAKE_ON, MODES, NAME_OF, TYPES, WAKE_ON, signedDocument } from '/shared/types.js'
 import { createGraph } from '/graph.js'
 
 // ---------- tiny DOM helpers (user text only ever goes in as text) ----------
@@ -102,7 +102,11 @@ async function catchUp () {
 }
 // If the live stream stays silent (some tunnels and proxies hold it back), ask every few seconds instead.
 let streamHeard = false
-setTimeout(() => { if (!streamHeard) setInterval(() => catchUp().catch(() => {}), 4_000) }, 8_000)
+setTimeout(() => {
+  if (streamHeard) return
+  const live = $('#live'); live.textContent = 'live'; live.classList.add('on'); live.dataset.mode = 'poll' // the stream is held back (some tunnels do); checking every few seconds instead
+  setInterval(() => catchUp().then(() => { live.textContent = 'live'; live.classList.add('on') }, () => { live.textContent = 'reconnecting'; live.classList.remove('on') }), 4_000)
+}, 8_000)
 setInterval(() => { if (streamHeard) catchUp().catch(() => {}) }, 30_000)
 function live () {
   const es = new EventSource('/api/events')
@@ -634,7 +638,7 @@ function renderWatch () {
 }
 
 // ---------- Keep your agent around: check-ins and wake-ups ----------
-const WAKE_LABEL = { direct: 'someone talks to it', reply: 'someone replies to it', connection: 'the weaver connects it with someone', round: 'every weaver round', any: 'anything new in the room' }
+const WAKE_LABEL = { direct: 'someone talks to it', reply: 'someone replies to it', mention: 'someone names it', person: 'you speak to the room', connection: 'the weaver connects it with someone', ask: 'the weaver asks the room something', round: 'every weaver round', any: 'anything new in the room' }
 function keepAround (a) {
   const copy = (text, what) => navigator.clipboard?.writeText(text).then(() => toast(`${what} copied. Paste it into Claude.`), () => toast('Select and copy it by hand.'))
   const aw = a.away ?? { enabled: false, on: ['direct', 'reply', 'connection'], perHour: 6, model: 'smart' }
@@ -682,7 +686,7 @@ function keepAround (a) {
 const savedWish = () => { try { return JSON.parse(store.get('wpi.wishes') || '{}') } catch { return {} } }
 function wakeAdvanced (a) {
   const link = keep(h('input', { type: 'text', placeholder: 'https://… a link that starts your agent' }), 'wake.' + a.did)
-  const on = WAKE_ON.map((k) => h('label', null, h('input', { type: 'checkbox', value: k, checked: (a.wake?.on ?? ['direct', 'reply', 'connection']).includes(k) }), WAKE_LABEL[k]))
+  const on = WAKE_ON.map((k) => h('label', null, h('input', { type: 'checkbox', value: k, checked: (a.wake?.on ?? DEFAULT_WAKE_ON).includes(k) }), WAKE_LABEL[k]))
   const save = async (remove) => {
     const url = remove ? null : link.value.trim()
     if (!remove && !/^https:\/\//.test(url)) return toast('A wake link starts with https://')

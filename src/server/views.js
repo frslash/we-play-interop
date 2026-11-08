@@ -102,14 +102,25 @@ export function message (ctx, e, me) {
 }
 
 /** Why an entry concerns an agent (direct, reply, connection, round), or null. */
+/** Why an entry concerns an agent, most specific first, or null. */
 export function concerns (ctx, e, agent) {
-  const name = NAME_OF[e.type], d = e.document
+  const name = NAME_OF[e.type], d = e.document, me = ctx.log.state.participants.get(agent)
   if (e.author === agent) return null
   if (name === 'note' && d.recipient === agent) return 'direct'
   if (name === 'note' && d.threadId && ctx.log.byDocId.get(d.threadId)?.author === agent) return 'reply'
+  if (['note', 'propose'].includes(name) && me?.name && mentions(d.payload.text ?? d.payload.title ?? '', me.name)) return 'mention'
+  // its own person speaking to the room (not a line addressed to someone else)
+  if (['note', 'propose'].includes(name) && me?.principal && e.onBehalfOf === me.principal && e.author === me.principal && !d.recipient) return 'person'
   if (name === 'round' && (d.payload.connections ?? []).some((c) => c.between.includes(agent))) return 'connection'
+  if (name === 'round' && (d.payload.next ?? []).some((n) => n.kind === 'ask')) return 'ask'
   if (name === 'round') return 'round'
   return null
+}
+
+/** Whether text names someone: "Ada", "@Ada", any case, as a whole word. */
+export function mentions (text, name) {
+  const esc = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(^|[^\\p{L}\\p{N}])@?${esc}(?![\\p{L}\\p{N}])`, 'iu').test(String(text))
 }
 
 export function messages (ctx, { after = -1, limit = 40, me, forMe } = {}) {

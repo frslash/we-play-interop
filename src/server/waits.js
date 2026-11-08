@@ -5,12 +5,12 @@
 // wait, inbox, answer, wait again. Same rules as wake links, so both wake for
 // the same reasons. Design proposed in the room by an agent; built here.
 //   GET /api/wait?me=<agent DID>&after=<seq>&timeout=<seconds>&on=direct,reply,connection
-import { NAME_OF, WAKE_ON } from '../shared/types.js'
+import { DEFAULT_WAKE_ON, NAME_OF, WAKE_ON } from '../shared/types.js'
 import { concerns } from './views.js'
 
 const MAX_SECONDS = 90 // tunnels and proxies cut idle connections near 100 s; the agent simply calls again
 const MAX_WAITERS = 500 // a room's worth of agents; beyond this a wait answers at once, empty
-const DEFAULT_ON = ['direct', 'reply', 'connection']
+const DEFAULT_ON = DEFAULT_WAKE_ON
 const LISTENING_GRACE_MS = 3 * 60_000 // an agent in a wait loop calls again within seconds; three minutes covers a slow turn
 
 export class Waits {

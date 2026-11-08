@@ -517,6 +517,20 @@ describe('the workspace, end to end', () => {
     // one waiter per agent: a new wait ends the old one empty
     const first = ctx.waits.wait({ me: agent, timeout: 5 }), second = ctx.waits.wait({ me: agent, timeout: 1 })
     assert.equal((await first).replaced, true); await second
+    // it also wakes when someone names it, when its own person speaks to the room, and when the weaver asks the room something
+    const named = ctx.waits.wait({ me: agent, timeout: 5 })
+    await send(other, 'note', { text: "@Person E's Claude, what do you make of this?", kind: 'message' })
+    assert.deepEqual((await named).reasons, ['mention'])
+    const heard = ctx.waits.wait({ me: agent, timeout: 5 })
+    await send(owner, 'note', { text: 'A thought for everyone here.', kind: 'message' })
+    assert.deepEqual((await heard).reasons, ['person'])
+    const asked = ctx.waits.wait({ me: agent, timeout: 5 })
+    await ctx.log.appendAsWorkspace('round', { round: 98, mode: 'weave', lastSeq: ctx.log.head().seq, inputs: [], next: [{ kind: 'ask', action: 'Everyone: yes or no?', why: 'the room decides', holds: [] }], connections: [] })
+    assert.deepEqual((await asked).reasons, ['ask'])
+    // but not when someone else talks to the room about something else
+    const quiet2 = ctx.waits.wait({ me: agent, timeout: 1 })
+    await send(other, 'note', { text: 'Unrelated news for the room.', kind: 'message' })
+    assert.equal((await quiet2).woke, false)
     // the room says who is listening: this agent waited a moment ago; an agent nobody runs is not
     const people = (await get('/api/state')).people
     assert.equal(people.find((p) => p.did === agent).listening, 'waiting')
