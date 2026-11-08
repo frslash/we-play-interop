@@ -116,8 +116,9 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       return send(res, 200, await QRCode.toString(t, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' }), { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=3600' })
     }
     if (path === '/api/events') {
-      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'access-control-allow-origin': '*' })
-      res.write(`event: hello\ndata: ${JSON.stringify(log.head())}\n\n`)
+      // no-transform and no buffering, so proxies and tunnels pass each event on at once; the padding pushes past buffers that wait for a first chunk
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no', connection: 'keep-alive', 'access-control-allow-origin': '*' })
+      res.write(`:${' '.repeat(2048)}\n\nevent: hello\ndata: ${JSON.stringify(log.head())}\n\n`)
       sse.add(res)
       const beat = setInterval(() => res.write(': keep-alive\n\n'), 25_000)
       req.on('close', () => { clearInterval(beat); sse.delete(res) })

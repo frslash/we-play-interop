@@ -90,11 +90,26 @@ async function loadFeed () {
   const r = await api(`/api/log?after=${Math.max(-1, head - 80)}&limit=100`)
   if (r.ok) feed = r.body.entries.reverse()
 }
+/** New entries since the last one we have (the fallback when a proxy holds the live stream back). */
+async function catchUp () {
+  const last = feed[0]?.seq ?? -1
+  const r = await api(`/api/log?after=${last}&limit=100`)
+  if (!r.ok || !r.body.entries.length) return
+  for (const e of r.body.entries) if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); toWeave.push(e) }
+  feed = feed.slice(0, 150)
+  await refresh(); weaveQueued()
+}
+// If the live stream stays silent (some tunnels and proxies hold it back), ask every few seconds instead.
+let streamHeard = false
+setTimeout(() => { if (!streamHeard) setInterval(() => catchUp().catch(() => {}), 4_000) }, 8_000)
+setInterval(() => { if (streamHeard) catchUp().catch(() => {}) }, 30_000)
 function live () {
   const es = new EventSource('/api/events')
+  es.addEventListener('hello', () => { streamHeard = true })
   es.onopen = () => { $('#live').textContent = 'live'; $('#live').classList.add('on') }
   es.onerror = () => { $('#live').textContent = 'reconnecting'; $('#live').classList.remove('on') }
   es.addEventListener('entry', (ev) => {
+    streamHeard = true
     const e = JSON.parse(ev.data)
     if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); toWeave.push(e) }
     feed = feed.slice(0, 150)
