@@ -12,6 +12,7 @@ import { Board } from './board.js'
 import { config as defaultConfig } from './config.js'
 import { openDb } from './db.js'
 import { Llm } from './llm.js'
+import { ClaudeLlm } from './claude.js'
 import { Log, TaskError } from './log.js'
 import { handleHostedMcp, handleMcp } from './mcp.js'
 import { HostedAgents } from './hosted.js'
@@ -51,7 +52,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   const db = await openDb(config)
   const log = new Log({ db, identity, resolver, config })
   await log.load()
-  const llm = new Llm(config.llm)
+  const llm = config.llm.provider === 'anthropic' ? new ClaudeLlm(config.llm) : new Llm(config.llm)
   const board = new Board({ config, log })
   const weaver = new Weaver({ config, log, board, llm })
   const executor = new Executor({ config, log, board, ...(gh ? { gh } : {}) })
@@ -220,7 +221,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const ctx = await createApp()
   ctx.server.listen(defaultConfig.port, () => {
     console.log(`${defaultConfig.workspaceName} on :${defaultConfig.port} · workspace ${ctx.identity.did} · ${ctx.db.kind} · ${ctx.log.entries.length} entries`)
-    if (!ctx.llm.configured) console.warn('LLM_API_KEY is not set: the weaver runs its built-in tally instead of a model, and every round says so.')
+    console.log(ctx.llm.configured ? `weaver model: ${ctx.llm.model ?? 'picked at the first round'} via ${ctx.llm.endpoint ?? defaultConfig.llm.baseUrl}` : 'No model key (ANTHROPIC_API_KEY or LLM_API_KEY) is set: the weaver runs its built-in tally instead of a model, and every round says so.')
     if (!defaultConfig.githubToken) console.warn('GITHUB_TOKEN is not set: approved actions are prepared as links for a person to open, and the log says so.')
   })
   await ctx.start()

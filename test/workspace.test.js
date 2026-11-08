@@ -12,6 +12,7 @@ import { verifyChain } from '../src/shared/chain.js'
 import { TYPES, signedDocument } from '../src/shared/types.js'
 import { computeBoard } from '../src/server/board.js'
 import { computeMap } from '../src/server/map.js'
+import { ClaudeLlm } from '../src/server/claude.js'
 import { State } from '../src/server/state.js'
 import { config as baseConfig } from '../src/server/config.js'
 import { createApp } from '../src/server/index.js'
@@ -70,6 +71,27 @@ describe('board scoring', () => {
     assert.equal(b.faded.length, 1)
     assert.ok(b.fadingSoon.some((f) => f.pair.join('|') === 'alpha|beta'))
     assert.deepEqual(b.opportunities.map((o) => o.pair.join('|')), ['alpha|gamma'])
+  })
+})
+
+describe('the weaver on Claude (official SDK)', () => {
+  test('sends one well-formed request and reads the answer, a refusal and a fallback', async () => {
+    let sent = null, reply = null
+    const client = { beta: { messages: { create: async (req) => { sent = req; return reply } } } }
+    const llm = new ClaudeLlm({ anthropicKey: '', effort: 'medium', timeoutMs: 1000 }, { client })
+    assert.equal(llm.configured, true); assert.equal(await llm.pickModel(), 'claude-opus-5-5')
+    reply = { model: 'claude-opus-5-5', stop_reason: 'end_turn', content: [{ type: 'thinking', thinking: '' }, { type: 'text', text: '{"heard":[]}' }], usage: { input_tokens: 10, output_tokens: 5 } }
+    const r = await llm.chat([{ role: 'system', content: 'You are the weaver.' }, { role: 'user', content: '{}' }])
+    assert.equal(r.content, '{"heard":[]}'); assert.equal(r.finishReason, 'end_turn'); assert.equal(r.model, 'claude-opus-5-5')
+    assert.equal(sent.model, 'claude-opus-5-5'); assert.equal(sent.system, 'You are the weaver.')
+    assert.deepEqual(sent.messages, [{ role: 'user', content: '{}' }])
+    assert.equal(sent.fallbacks, 'default'); assert.deepEqual(sent.betas, ['server-side-fallback-2026-07-01'])
+    assert.deepEqual(sent.output_config, { effort: 'medium' })
+    for (const k of ['temperature', 'top_p', 'top_k', 'thinking']) assert.ok(!(k in sent), `${k} is not sent`)
+    reply = { model: 'claude-opus-5-5', stop_reason: 'refusal', stop_details: { category: 'cyber' }, content: [], usage: {} }
+    await assert.rejects(llm.chat([{ role: 'user', content: '{}' }]), /declined this round \(cyber\)/)
+    reply = { model: 'claude-opus-4-8', stop_reason: 'end_turn', content: [{ type: 'text', text: '{}' }], usage: { iterations: [{ type: 'message' }, { type: 'fallback_message' }] } }
+    assert.equal((await llm.chat([{ role: 'user', content: '{}' }])).fallback, true)
   })
 })
 

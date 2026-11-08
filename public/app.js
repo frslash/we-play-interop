@@ -210,7 +210,7 @@ function renderTop () {
     tile(s.faded + s.fadingSoon, 'faded or fading'),
   ] : [tile('–', 'map loading')])
   const notes = []
-  if (!S.weaver.configured) notes.push('The weaver has no model connected (LLM_API_KEY is not set), so its rounds are a plain tally.')
+  if (!S.weaver.configured) notes.push('The weaver has no model connected (no ANTHROPIC_API_KEY or LLM_API_KEY), so its rounds are a plain tally.')
   if (S.board?.error) notes.push(`The DTG board could not be read just now (${S.board.error.message}); the map shows the last good copy.`)
   const banner = $('#banner'); banner.hidden = !notes.length; banner.textContent = notes.join(' ')
 }

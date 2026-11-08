@@ -254,7 +254,7 @@ Use only hashes that appear in the input. Prefer an existing proposal over a new
     const ctx = this.context(inputs)
     const fallback = this.heuristic(ctx)
     let result = fallback
-    let model = { id: null, ok: false, note: 'No LLM_API_KEY is set: this round is the built-in tally, not a model.' }
+    let model = { id: null, ok: false, note: 'No model key is set (ANTHROPIC_API_KEY or LLM_API_KEY): this round is the built-in tally, not a model.' }
     if (this.llm.configured) {
       const messages = this.prompt(ctx)
       try {

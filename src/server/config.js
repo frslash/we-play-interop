@@ -17,6 +17,12 @@ export const config = {
   freshDays: 30, // the board fades a mark after 30 days; this is the board's rule, not a setting
 
   llm: {
+    // which model runs the weaver: 'anthropic' (Claude, official SDK) or 'openai' (any OpenAI-compatible endpoint);
+    // left empty, Claude is used when ANTHROPIC_API_KEY is set, else the OpenAI-compatible endpoint
+    provider: env.LLM_PROVIDER || (env.ANTHROPIC_API_KEY ? 'anthropic' : 'openai'),
+    anthropicKey: env.ANTHROPIC_API_KEY || '',
+    anthropicModel: env.ANTHROPIC_MODEL || 'claude-opus-5-5',
+    effort: env.LLM_EFFORT || 'medium',
     baseUrl: (env.LLM_BASE_URL || 'https://gateway.inference.coop/v1').replace(/\/$/, ''),
     apiKey: env.LLM_API_KEY || '',
     model: env.LLM_MODEL || '', // empty: pick from the gateway's list, enclave models first

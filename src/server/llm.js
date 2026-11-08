@@ -5,7 +5,7 @@ const NOT_CHAT = /whisper|voxtral|tts|embed|image|metis|speech|transcri/i
 const PREFERRED = ['tinfoil/glm-5.3', 'tinfoil/deepseek-v4-1-flash', 'tinfoil/gpt-oss-120b']
 
 export class Llm {
-  constructor (cfg) { this.cfg = cfg; this.model = cfg.model || null; this.lastError = null }
+  constructor (cfg) { this.cfg = cfg; this.model = cfg.model || null; this.lastError = null; this.endpoint = cfg.baseUrl }
   get configured () { return Boolean(this.cfg.apiKey) }
 
   #headers () { return { authorization: `Bearer ${this.cfg.apiKey}`, 'content-type': 'application/json' } }

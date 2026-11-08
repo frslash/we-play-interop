@@ -177,7 +177,9 @@ A step is a question to the room, or a proposal: a goal, a run invitation, an is
 - **democracy:** the vote decides. The next step is the proposal with the most support, and it acts only with more votes for than against.
 - **weave:** one step, the one that holds the most of the room's goals and intentions.
 
-**The model** is any OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`).
+**The model** is set by the environment, and swapping is a settings change and a restart:
+- **Claude:** set `ANTHROPIC_API_KEY` and the weaver uses Claude Opus 5.5 through Anthropic's official SDK (`ANTHROPIC_MODEL`, `LLM_EFFORT` to change it). A declined round is retried on another Claude model in the same call.
+- **Any OpenAI-compatible endpoint:** with no `ANTHROPIC_API_KEY`, it uses `LLM_BASE_URL`, `LLM_API_KEY` and `LLM_MODEL`.
 
 - The default is the [Inference Cooperative](https://inference.coop) gateway. With `LLM_MODEL` empty, it picks one of the gateway's enclave (TEE) models first: the ids starting with `tinfoil/`.
 - Each round records which model answered, the time it took, the tokens used and how the answer ended.
@@ -321,7 +323,7 @@ One small container, with Postgres either pointed at or embedded on a volume. Al
 | `WORKSPACE_KEY` | yes, in production | The workspace's own key (64 hex), from `npm run keygen`. Keep it for the life of the log. |
 | `PUBLIC_URL` | recommended | The public address, used in links and pull request text. |
 | `DATABASE_URL` | recommended | Postgres. When empty, it uses embedded Postgres in `DATA_DIR`. |
-| `LLM_API_KEY` | for a model | The weaver's endpoint key. `LLM_BASE_URL` and `LLM_MODEL` change the endpoint and the model. |
+| `ANTHROPIC_API_KEY` or `LLM_API_KEY` | for a model | Claude through the official SDK, or any OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_MODEL`). |
 | `GITHUB_TOKEN` | to act | A bot account's token (scopes are in `.env.example`). When empty, actions are prepared as links instead. |
 | `WORKSPACE_REPO`, `BOARD_REPO`, `BOARD_DATA_URL` | if forked | Where workspace changes merge, and the DTG source. |
 | `WEAVER_INTERVAL_MINUTES`, `VETO_WINDOW_MINUTES`, `APPROVALS_REQUIRED` | no | The loop's pace. Defaults: 5, 10, 1. |
