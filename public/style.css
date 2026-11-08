@@ -162,7 +162,12 @@ body[data-view="tech"] .plain-only { display: none !important; }
 .goals-strip { font-size: 14px; padding: 8px 12px; margin-bottom: 8px; border-radius: 10px; background: var(--soft); }
 .chat { display: flex; flex-direction: column; gap: 8px; min-height: 40vh; max-height: calc(100vh - 260px); overflow-y: auto; padding: 4px 2px 8px; }
 @media (min-width: 760px) { .chat { max-height: calc(100vh - 300px); } }
-.msg { max-width: 86%; align-self: flex-start; background: var(--panel); border: 1px solid var(--line); border-radius: 16px 16px 16px 4px; padding: 8px 12px; cursor: pointer; overflow-wrap: anywhere; }
+.msg { max-width: 86%; align-self: flex-start; background: var(--panel); border: 1px solid var(--line); border-radius: 16px 16px 16px 4px; padding: 8px 12px; overflow-wrap: anywhere; }
+.msg .text { cursor: text; user-select: text; }
+.btn.tiny { min-height: 24px; padding: 1px 8px; font-size: 12px; border-radius: 7px; }
+.msg-actions { display: inline-flex; gap: 4px; opacity: 0; transition: opacity 0.12s; }
+.msg:hover .msg-actions, .msg:focus-within .msg-actions { opacity: 1; }
+@media (hover: none) { .msg-actions { opacity: 1; } }
 .msg.mine { align-self: flex-end; background: var(--soft); border-radius: 16px 16px 4px 16px; }
 .msg.agent { border-style: dashed; }
 .msg.private { opacity: 0.8; border-style: dotted; }

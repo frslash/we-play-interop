@@ -277,13 +277,15 @@ function chatItem (e) {
   if (name === 'note') {
     const parent = d.threadId ? feed.find((x) => x.document.id === d.threadId) : null
     const agent = e.author !== e.onBehalfOf
-    const b = h('div', { class: 'msg' + (e.author === me?.did ? ' mine' : '') + (agent ? ' agent' : ''), tabindex: 0, title: 'Tap to reply' },
+    // the text selects and copies like any text; replying is its own button, so a drag never starts a reply
+    const actions = h('span', { class: 'msg-actions' },
+      h('button', { class: 'btn tiny', title: 'Reply to this', onclick: () => setReply(e) }, 'Reply'),
+      h('button', { class: 'btn tiny', title: 'Copy this message', onclick: () => navigator.clipboard?.writeText(p.text ?? '').then(() => toast('Copied.'), () => toast('Select the text and copy it by hand.')) }, 'Copy'))
+    return h('div', { class: 'msg' + (e.author === me?.did ? ' mine' : '') + (agent ? ' agent' : '') },
       h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${colorFor(e.author)}` }), nameOf(e.author), agent && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
-        d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, ' ', time),
+        d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, ' ', time, actions),
       parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${(parent.document.payload.text ?? parent.document.payload.title ?? '').slice(0, 100)}`) : null,
       h('div', { class: 'text' }, p.text), techLine)
-    b.addEventListener('click', (ev) => { if (ev.target.closest('a,button')) return; setReply(e) })
-    return b
   }
   if (name === 'propose') return proposalBubble(e)
   if (name === 'round') {
@@ -310,11 +312,21 @@ function chatItem (e) {
   if (name === 'result') return system(`${p.status === 'prepared' ? 'Ready for a person to open' : 'Done'}: ${p.detail ?? ''}`)
   return ['vote', 'approve', 'score', 'hosted', 'genesis', 'wake', 'way'].includes(name) ? (name === 'way' || name === 'vote' ? tech(system(says(e))) : null) : null
 }
+function holdingChat () {
+  if (!talk.list) return false
+  if (talk.dragging) return true
+  const s = getSelection()
+  return Boolean(s && !s.isCollapsed && s.rangeCount && talk.list.contains(s.getRangeAt(0).commonAncestorContainer))
+}
+function catchUpChat () { if (talk.deferred && !holdingChat()) renderTalk() }
 function renderTalk (scrollDown) {
   const root = $('#tab-talk')
   if (!talk.list) {
     talk.goals = h('div', { class: 'goals-strip' })
     talk.list = h('div', { class: 'chat', 'aria-live': 'polite' })
+    talk.list.addEventListener('pointerdown', (ev) => { if (!ev.target.closest('button,a')) talk.dragging = true })
+    document.addEventListener('pointerup', () => { if (talk.dragging) { talk.dragging = false; setTimeout(catchUpChat, 0) } })
+    document.addEventListener('selectionchange', catchUpChat)
     talk.reply = h('div', { class: 'reply-chip row', hidden: true })
     talk.toggle = h('div', { class: 'seg small' })
     talk.input = keep(h('textarea', { rows: 1, maxlength: 2000, placeholder: 'Say something…' }), 'chat.text')
@@ -329,6 +341,10 @@ function renderTalk (scrollDown) {
   talk.toggle.hidden = !agents.length
   if (!agents.length) talk.to = 'room'
   fill(talk.toggle, [['room', 'To the room'], ['agent', `To ${agents[0]?.name ?? 'my agent'}, privately`]].map(([k, l]) => h('button', { class: talk.to === k ? 'on' : '', onclick: () => { talk.to = k; talk.input.placeholder = k === 'agent' ? 'Only your agent will read this…' : 'Say something…'; renderTalk() } }, l)))
+  // someone selecting text in the chat keeps their selection: the list redraws once they're done
+  if (holdingChat()) { talk.deferred = true; talk.deferredScroll ||= Boolean(scrollDown); return }
+  if (talk.deferredScroll) { scrollDown = true; talk.deferredScroll = false }
+  talk.deferred = false
   const nearBottom = talk.list.scrollHeight - talk.list.scrollTop - talk.list.clientHeight < 80
   const items = feed.slice(0, 150).reverse().map(chatItem).filter(Boolean)
   const echoes = talk.echoes.map((x) => h('div', { class: 'msg mine private' }, h('div', { class: 'who' }, `🔒 to ${x.agent} · ${ago(x.at)}`), h('div', { class: 'text' }, x.text)))
