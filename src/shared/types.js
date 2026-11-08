@@ -191,7 +191,7 @@ export function checkPayload (name, doc) {
       return Number.isInteger(p.bytes) && p.bytes > 0 && p.bytes <= 200000 ? null : 'bytes: the diff\'s size'
     case 'upload':
       if (!/^[0-9a-f]{64}$/.test(p.sha256 ?? '')) return 'sha256: the photo\'s sha256'
-      return ['image/jpeg', 'image/png', 'image/webp'].includes(p.type) ? null : 'type: image/jpeg, image/png or image/webp'
+      return ['image/jpeg', 'image/png', 'image/webp', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.openxmlformats-officedocument.presentationml.presentation', 'text/plain', 'text/markdown', 'text/csv'].includes(p.type) ? null : 'type: a photo, a PDF, an Office file or plain text'
     case 'draft':
       if (!DID_RE.test(p.agent ?? '')) return 'agent: your agent\'s DID'
       if (!['list', 'send', 'drop'].includes(p.op)) return 'op: list | send | drop'
@@ -212,6 +212,7 @@ export function checkPayload (name, doc) {
       return null
     case 'note':
       if (!str(p.text, 1, 2000)) return 'text: 1 to 2000 characters'
+      if (p.files !== undefined && (!Array.isArray(p.files) || p.files.length > 4 || !p.files.every((f) => isObj(f) && /^[0-9a-f]{64}$/.test(f.sha256 ?? '') && ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.openxmlformats-officedocument.presentationml.presentation', 'text/plain', 'text/markdown', 'text/csv'].includes(f.type) && str(f.name, 1, 120) && Number.isInteger(f.bytes) && f.bytes > 0 && f.bytes <= 10485760))) return 'files: up to 4 files, each { sha256, type, name, bytes }'
       if (p.media !== undefined && (!Array.isArray(p.media) || p.media.length > 4 || !p.media.every((m) => isObj(m) && /^[0-9a-f]{64}$/.test(m.sha256 ?? '') && ['image/jpeg', 'image/png', 'image/webp'].includes(m.type) && Number.isInteger(m.w) && Number.isInteger(m.h) && m.w > 0 && m.h > 0 && m.w <= 8000 && m.h <= 8000))) return 'media: up to 4 photos, each { sha256, type, w, h }'
       if (p.tech !== undefined && !str(p.tech, 1, 4000)) return 'tech: the technical layer, 1 to 4000 characters'
       if (!NOTE_KINDS.includes(p.kind)) return `kind: ${NOTE_KINDS.join(' | ')}`

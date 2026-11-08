@@ -316,3 +316,8 @@ input[type=url] { width: 100%; padding: 10px 12px; border: 1px solid var(--line)
 .tray-item .btn { position: absolute; top: 2px; right: 2px; min-height: 20px; padding: 0 6px; }
 .btn.attach { min-width: 40px; padding: 6px 8px; }
 @media (max-width: 420px) { .tabs button { font-size: 13px; padding: 12px 2px; } .tabs .count { margin-left: 2px; padding: 0 4px; } }
+.seg.tiles { display: flex; flex-wrap: wrap; margin: 4px 0 8px; }
+.seg.tiles button { flex: 1 1 auto; }
+.files { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }
+.doc-chip { display: inline-block; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); font-size: 13px; text-decoration: none; color: var(--ink); max-width: 100%; overflow-wrap: anywhere; }
+.tray-item.doc .btn { position: static; margin-left: 4px; }

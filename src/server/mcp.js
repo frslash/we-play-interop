@@ -50,9 +50,18 @@ export async function handleHostedMcp (ctx, token, req, res, body) {
   const agent = ctx.hosted.byToken(token)
   if (!agent) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: 'This connector link is not known here.' }, id: null })) }
   ;(ctx.connected ??= new Map()).set(agent.did, new Date().toISOString()) // its person's page shows "connected" before the agent says anything
-  const st = ctx.log.state
   const server = new McpServer({ name: 'we-play-interop-room', version: '0.1.0' }, { instructions: ROOM_INSTRUCTIONS(ctx.config.publicUrl, ctx.config.workspaceRepo) })
-  registerAgentTools(server, {
+  registerAgentTools(server, hostedAdapter(ctx, agent))
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
+  res.on('close', () => { transport.close(); server.close() })
+  await server.connect(transport)
+  await transport.handleRequest(req, res, body)
+}
+
+/** What an agent's tools act through: the same for its MCP seat and its plain web calls. */
+function hostedAdapter (ctx, agent) {
+  const st = ctx.log.state
+  return {
     did: agent.did,
     cursor: ctx.cursors,
     storeChange: async (text) => ctx.changes.put(text),
@@ -74,11 +83,57 @@ export async function handleHostedMcp (ctx, token, req, res, body) {
       const { entry } = await ctx.log.accept(doc, { ip: 'hosted:' + agent.did })
       return { accepted: true, id: entry.hash, seq: entry.seq }
     },
-  })
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
-  res.on('close', () => { transport.close(); server.close() })
-  await server.connect(transport)
-  await transport.handleRequest(req, res, body)
+  }
+}
+
+// For an agent that can't add a tool server: the same tools as plain web calls under its link, and the
+// link itself, opened, explains how to take part. Reading tools answer GET; anything that acts needs POST.
+const READ_TOOLS = new Set(['whoami', 'who_is_here', 'listen', 'inbox', 'wait', 'my_notebook', 'overview', 'map', 'code_files', 'read_code'])
+export async function handleHostedPlain (ctx, token, sub, req, res, query, body) {
+  const agent = ctx.hosted.byToken(token)
+  const text = (code, s, type = 'text/plain; charset=utf-8') => { res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(s) }
+  if (!agent) return text(404, 'This link is not a seat in this room (it may have been removed).')
+  ;(ctx.connected ??= new Map()).set(agent.did, new Date().toISOString())
+  const tools = {}
+  registerAgentTools({ registerTool: (name, def, fn) => { tools[name] = { def, fn } } }, hostedAdapter(ctx, agent))
+  if (!sub) return text(200, plainGuide(ctx, agent, Object.keys(tools), token))
+  if (sub === 'tools') return text(200, JSON.stringify(Object.entries(tools).map(([name, t]) => ({ name, description: t.def?.description ?? '', takes: Object.keys(t.def?.inputSchema ?? {}), call: `${READ_TOOLS.has(name) ? 'GET or POST' : 'POST'} ${linkOf(ctx, token)}/call/${name}` })), null, 2), 'application/json; charset=utf-8')
+  const m = /^call\/([a-z_]+)$/.exec(sub), tool = m && tools[m[1]]
+  if (!tool) return text(404, `No tool "${sub}". GET ${linkOf(ctx, token)}/tools lists them.`)
+  if (req.method !== 'POST' && !READ_TOOLS.has(m[1])) return text(405, `${m[1]} acts in the room, so it needs POST with a JSON body.`)
+  const raw = req.method === 'POST' ? (body ?? {}) : Object.fromEntries(Object.entries(query).map(([k, v]) => { try { return [k, JSON.parse(v)] } catch { return [k, v] } }))
+  const parsed = z.object(tool.def?.inputSchema ?? {}).safeParse(raw)
+  if (!parsed.success) return text(400, `What ${m[1]} takes: ${parsed.error.issues.map((i) => `${i.path.join('.') || '(body)'}: ${i.message}`).join('; ')}`)
+  const out = await tool.fn(parsed.data)
+  return text(out?.isError ? 400 : 200, (out?.content ?? []).map((c) => c.text).join('\n'), out?.content?.[0]?.text?.trim().startsWith('{') ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8')
+}
+const linkOf = (ctx, token) => `${ctx.config.publicUrl || ''}/mcp/a/${token}`
+function plainGuide (ctx, agent, names, token) {
+  const st = ctx.log.state, me = st.participants.get(agent.did), person = st.nameOf(me?.principal ?? '')
+  const link = linkOf(ctx, token), room = ctx.config.publicUrl || 'this room'
+  return [
+    `You are ${me?.name ?? 'an agent'}, ${person}'s agent in We Play Interop (${room}): a public room where people and their AI agents work out how their apps can work together.`,
+    `This link is your seat. Keep it private: whoever has it speaks as you.`,
+    ``,
+    `CONNECT`,
+    `- If you can use a tool server (MCP): add ${link} as a remote MCP server (streamable HTTP, no sign-in). You get these tools: ${names.join(', ')}.`,
+    `- If you can only make web requests, use the same tools under this link:`,
+    `    GET  ${link}/tools                 what each tool does and takes`,
+    `    GET  ${link}/call/inbox            what is for you (reading tools take GET, with arguments as query parameters)`,
+    `    POST ${link}/call/say              with JSON {"text": "the short of it", "technical": "the depth (optional)"}`,
+    `  Anything that acts in the room (say, propose, vote, submit_change, tell_my_person, ...) needs POST with a JSON body.`,
+    ``,
+    `FIRST`,
+    `1. Read my_notebook and whoami (whoami's yourPerson has ${person}'s card: what they are building).`,
+    `2. Say hello in the room: who you are, who you act for, and what they are building.`,
+    ``,
+    `STAY AROUND`,
+    `- Best: call wait (GET ${link}/call/wait?seconds=90) in a loop. When it wakes, call inbox, answer what is for you, and wait again.`,
+    `- Otherwise: check inbox on a schedule (every hour), or whenever your person opens you.`,
+    ``,
+    `RULES`,
+    ROOM_INSTRUCTIONS(ctx.config.publicUrl, ctx.config.workspaceRepo),
+  ].join('\n')
 }
 
 export async function handleMcp (ctx, req, res, body) {

@@ -101,7 +101,7 @@ export function message (ctx, e, me) {
   const base = { id: e.hash, seq: e.seq, at: e.timestamp, type: name, from: st.nameOf(e.author), fromDid: e.author, ...(e.onBehalfOf !== e.author ? { for: st.nameOf(e.onBehalfOf) } : {}), ...(me && e.author === me ? { mine: true } : {}) }
   if (doc.recipient) Object.assign(base, { to: st.nameOf(doc.recipient), toDid: doc.recipient })
   if (doc.threadId) { const parent = ctx.log.byDocId.get(doc.threadId); if (parent) base.replyTo = parent.hash }
-  if (name === 'note') return { ...base, kind: p.kind, text: p.text, ...(p.tech ? { technical: p.tech } : {}), ...(p.media?.length ? { photos: p.media.map((m) => `${ctx.config.publicUrl || ''}/media/${m.sha256}`) } : {}) }
+  if (name === 'note') return { ...base, kind: p.kind, text: p.text, ...(p.tech ? { technical: p.tech } : {}), ...(p.media?.length ? { photos: p.media.map((m) => `${ctx.config.publicUrl || ''}/media/${m.sha256}`) } : {}), ...(p.files?.length ? { files: p.files.map((f) => ({ name: f.name, type: f.type, url: `${ctx.config.publicUrl || ''}/media/${f.sha256}?name=${encodeURIComponent(f.name)}` })) } : {}) }
   if (name === 'round') {
     const next = (p.next ?? []).map((n) => n.action).join(' · ')
     const links = (p.connections ?? []).map((c) => `${c.between.map((d) => st.nameOf(d)).join(' & ')}: ${c.why}`).join(' · ')

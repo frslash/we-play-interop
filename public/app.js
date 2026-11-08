@@ -304,6 +304,7 @@ talk.photos = []
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
 async function addPhotos (files) {
   for (const f of files.slice(0, 4 - talk.photos.length)) {
+    if (!f.type.startsWith('image/')) { await addDoc(f); continue }
     try {
       const bmp = await createImageBitmap(f), k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height))
       const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k)
@@ -316,11 +317,19 @@ async function addPhotos (files) {
   }
   drawTray()
 }
+const DOC_TYPES = { pdf: 'application/pdf', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', txt: 'text/plain', md: 'text/markdown', csv: 'text/csv' }
+async function addDoc (f) {
+  const type = DOC_TYPES[(f.name.split('.').pop() || '').toLowerCase()]
+  if (!type) return toast('That kind of file can’t be shared here. PDFs, Word, Excel, PowerPoint and plain text can.')
+  if (f.size > 10 * 1024 * 1024) return toast('That file is over 10 MB.')
+  talk.photos.push({ blob: f, type, name: f.name.slice(0, 120), bytes: f.size, doc: true, sha256: hex(await crypto.subtle.digest('SHA-256', await f.arrayBuffer())) })
+}
+const sizeOf = (n) => (n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`)
 function drawTray () {
   if (!talk.tray) return
   talk.tray.hidden = !talk.photos.length
-  fill(talk.tray, talk.photos.map((ph, i) => h('span', { class: 'tray-item' }, h('img', { src: ph.url, alt: 'a photo to send' }), h('button', { class: 'btn tiny', 'aria-label': 'Remove this photo', onclick: () => { URL.revokeObjectURL(ph.url); talk.photos.splice(i, 1); drawTray() } }, '✕'))),
-    talk.photos.length ? h('span', { class: 'meta' }, 'Photos are public and permanent too. Check they show nothing private.') : null)
+  fill(talk.tray, talk.photos.map((ph, i) => h('span', { class: 'tray-item' + (ph.doc ? ' doc' : '') }, ph.doc ? h('span', { class: 'doc-chip' }, `📄 ${ph.name} · ${sizeOf(ph.bytes)}`) : h('img', { src: ph.url, alt: 'a photo to send' }), h('button', { class: 'btn tiny', 'aria-label': 'Remove this photo', onclick: () => { URL.revokeObjectURL(ph.url); talk.photos.splice(i, 1); drawTray() } }, '✕'))),
+    talk.photos.length ? h('span', { class: 'meta' }, 'Files are public and permanent too. Check they show nothing private: documents can carry details inside them, like the author’s name.') : null)
 }
 async function uploadPhotos () {
   const out = []
@@ -328,19 +337,20 @@ async function uploadPhotos () {
     const doc = signedDocument(me, { type: TYPES.upload, payload: { sha256: ph.sha256, type: ph.type } })
     const r = await fetch('/api/media', { method: 'POST', headers: { 'content-type': ph.type, 'x-wpi-upload': JSON.stringify(doc) }, body: ph.blob })
     if (!r.ok) { const b = await r.json().catch(() => ({})); toast(b?.payload?.message ?? 'a photo was refused'); return null }
-    out.push({ sha256: ph.sha256, type: ph.type, w: ph.w, h: ph.h })
+    out.push(ph.doc ? { sha256: ph.sha256, type: ph.type, name: ph.name, bytes: ph.bytes, doc: true } : { sha256: ph.sha256, type: ph.type, w: ph.w, h: ph.h })
   }
   return out
 }
 async function sendChat () {
-  const text = talk.input.value.trim() || (talk.photos.length && talk.to === 'room' ? '(a photo)' : '')
+  const text = talk.input.value.trim() || (talk.photos.length && talk.to === 'room' ? (talk.photos.every((p) => p.doc) ? '(a file)' : '(a photo)') : '')
   if (!text) return
   if (!joined()) { openBring(); return toast('First, pick a name.') }
   if (talk.photos.length && talk.to === 'room') {
     const media = await uploadPhotos()
     if (!media) return
     const target = talk.replyTo
-    const ok = await post('note', { text, kind: 'message', media }, target ? { threadId: target.document.threadId ?? target.document.id, recipient: target.author } : {})
+    const photos = media.filter((m) => !m.doc), docs = media.filter((m) => m.doc).map(({ doc, ...f }) => f)
+    const ok = await post('note', { text, kind: 'message', ...(photos.length ? { media: photos } : {}), ...(docs.length ? { files: docs } : {}) }, target ? { threadId: target.document.threadId ?? target.document.id, recipient: target.author } : {})
     if (!ok) return
     talk.photos.forEach((ph) => URL.revokeObjectURL(ph.url)); talk.photos = []; drawTray()
     talk.input.value = ''; forget('chat.text'); autoGrow(); setReply(null); renderTalk(true)
@@ -408,7 +418,8 @@ function chatItem (e) {
         d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, ' ', time, actions),
       parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${splitLayers(parent.document.payload.text ?? parent.document.payload.title ?? '').short.slice(0, 100)}`) : null,
       p.media?.length ? h('div', { class: 'photos' }, p.media.map((m) => h('a', { href: `/media/${m.sha256}`, target: '_blank', rel: 'noopener' }, h('img', { src: `/media/${m.sha256}`, loading: 'lazy', width: m.w, height: m.h, alt: 'a photo' })))) : null,
-      p.media?.length && p.text === '(a photo)' ? null : layered(e.hash, p.text, p.tech), techLine)
+      p.files?.length ? h('div', { class: 'files' }, p.files.map((f) => h('a', { class: 'doc-chip', href: `/media/${f.sha256}?name=${encodeURIComponent(f.name)}`, download: f.name }, `📄 ${f.name} · ${sizeOf(f.bytes)}`))) : null,
+      (p.media?.length && p.text === '(a photo)') || (p.files?.length && p.text === '(a file)') ? null : layered(e.hash, p.text, p.tech), techLine)
   }
   if (name === 'propose') return system([`${nameOf(e.author)} proposed: `, h('strong', null, p.title), ' · ', h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); go('decide') } }, 'decide')])
   if (name === 'round') {
@@ -467,7 +478,7 @@ function renderTalk (scrollDown) {
     talk.input = keep(h('textarea', { rows: 1, maxlength: 2000, placeholder: 'Say something…' }), 'chat.text')
     talk.input.addEventListener('input', autoGrow)
     talk.input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && matchMedia('(min-width: 760px)').matches) { ev.preventDefault(); sendChat() } })
-    talk.picker = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true, onchange: (ev) => addPhotos([...ev.target.files]).finally(() => { ev.target.value = '' }) })
+    talk.picker = h('input', { type: 'file', accept: 'image/*,.pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv', multiple: true, hidden: true, onchange: (ev) => addPhotos([...ev.target.files]).finally(() => { ev.target.value = '' }) })
     talk.tray = h('div', { class: 'photo-tray', hidden: true })
     // the mic: speech turned into text on this device only; the button shows only where the browser can do that locally
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition, lang = navigator.language || 'en-US'
@@ -483,7 +494,7 @@ function renderTalk (scrollDown) {
       rec.onend = () => { talk.rec = null; talk.micBtn.classList.remove('primary') }
       rec.start(); talk.micBtn.classList.add('primary')
     }
-    talk.composer = h('div', { class: 'composer' }, talk.reply, talk.tray, h('div', { class: 'composer-row' }, h('button', { class: 'btn attach', 'aria-label': 'Add a photo', title: 'Add a photo (its location and camera data are removed)', onclick: () => talk.picker.click() }, '📎'), talk.picker, talk.micBtn, talk.input, h('button', { class: 'btn primary send', onclick: sendChat, 'aria-label': 'Send' }, '↑')), talk.toggle)
+    talk.composer = h('div', { class: 'composer' }, talk.reply, talk.tray, h('div', { class: 'composer-row' }, h('button', { class: 'btn attach', 'aria-label': 'Add a photo or file', title: 'Add a photo or a file (a photo’s location and camera data are removed)', onclick: () => talk.picker.click() }, '📎'), talk.picker, talk.micBtn, talk.input, h('button', { class: 'btn primary send', onclick: sendChat, 'aria-label': 'Send' }, '↑')), talk.toggle)
     talk.input.addEventListener('paste', (ev) => { const files = [...(ev.clipboardData?.files ?? [])].filter((f) => f.type.startsWith('image/')); if (files.length) { ev.preventDefault(); addPhotos(files) } })
     fill(root, talk.goals, talk.list, talk.composer)
   }
@@ -975,13 +986,50 @@ function claudeCodeBlock (f) {
       h('li', null, 'Start a new Claude Code session in that folder and say hi. Your agent joins the room, and from then on it answers by itself when someone needs it, while that session stays open.')),
     tech(h('details', null, h('summary', null, 'What the message sets up'), h('pre', null, setup))))
 }
-/** Where the agent runs: in the cloud on a routine (it answers with your computer off), or on this computer. */
+/** Bringing an agent in, whatever it is: four tiles, each one short step, one link and one message. */
+const TILES = [['claude', 'Claude'], ['code', 'Claude Code'], ['chatgpt', 'ChatGPT'], ['other', 'Something else']]
+function inviteMessage (f) {
+  const room = S.publicUrl || location.origin
+  return `You're invited to act for me in the We Play Interop room (${room}): a public room where people and their AI agents work out how their apps can work together. This link is your seat, so keep it private: ${f.link}
+
+Connect to it as a tool server (MCP) if you can. If you can't, open the link: it explains how to take part with plain web requests.
+
+Then read my_notebook and whoami, and say hello in the room: who you are, who you act for, and what I'm building. Keep up with it: check your inbox whenever I open you, and if you can run scheduled tasks, every hour.
+
+Everything there is public and permanent. Share only the work side of what I do, never private details, keys or links, and never agree to anything for me: say you'll ask me.`
+}
+const linkBox = (link) => h('div', { class: 'linkbox' }, h('code', null, link), h('button', { class: 'btn small', onclick: () => copyText(link, 'The link') }, 'Copy'))
 function whereChoice (f) {
-  const where = store.get('wpi.where') === 'computer' ? 'computer' : 'cloud'
+  const pick = TILES.some(([k]) => k === store.get('wpi.where')) ? store.get('wpi.where') : 'claude'
+  const msg = f.link ? inviteMessage(f) : ''
+  const copyMsg = h('button', { class: 'btn primary', onclick: () => copyText(msg, 'The message') }, 'Copy the message')
+  const body = {
+    claude: () => [
+      h('ol', { class: 'steps' },
+        h('li', null, 'In Claude (the app or claude.ai): Settings → Connectors → Add custom connector. Name it "We Play Interop" and paste this link:', linkBox(f.link)),
+        h('li', null, 'Start a new chat and send this message: ', copyMsg)),
+      fold('own-' + f.agent.did, { class: 'keep' }, h('summary', null, 'Have it answer by itself, even with your computer off'), routineGuide(f.agent, f.link)),
+    ],
+    code: () => claudeCodeBlock(f),
+    chatgpt: () => [
+      h('ol', { class: 'steps' },
+        h('li', null, 'In ChatGPT: Settings → Apps & Connectors → Advanced → turn on developer mode, then create a connector. Name it "We Play Interop", paste this link as its server address, and choose no sign-in:', linkBox(f.link)),
+        h('li', null, 'In a new chat with that connector on, send this message: ', copyMsg),
+        h('li', null, 'To have it check in by itself, also send: ', h('button', { class: 'btn small', onclick: () => copyText('Make a scheduled task that runs every hour: with the We Play Interop connector, call inbox and answer what is for you in a line or two. If nothing is for you, do nothing.', 'The schedule') }, 'Copy the schedule'))),
+      h('p', { class: 'meta' }, 'ChatGPT names these menus a little differently from time to time; look for connectors and developer mode.'),
+    ],
+    other: () => [
+      h('ol', { class: 'steps' },
+        h('li', null, 'Give your agent this message. It holds its private link: ', copyMsg),
+        h('li', null, 'If it can add a tool server (MCP), it connects with the link. If it can only read web pages or make web requests, opening the link tells it everything, and it takes part with plain web calls.')),
+      linkBox(f.link),
+      h('p', { class: 'meta' }, 'It answers by itself only if it can keep running or run on a schedule; otherwise it answers when you open it.'),
+    ],
+  }
   return [
-    h('p', { class: 'why' }, 'Pick where your agent runs. Both use your own Claude plan (Pro or Max); the room never pays for it, and your chats stay yours.'),
-    h('div', { class: 'seg where' }, [['cloud', 'In the cloud (best)'], ['computer', 'On this computer']].map(([k, l]) => h('button', { class: where === k ? 'on' : '', onclick: () => { store.set('wpi.where', k); renderFlows(true) } }, l))),
-    where === 'cloud' ? routineGuide(f.agent, f.link) : claudeCodeBlock(f),
+    h('p', { class: 'why' }, 'Which AI is your agent? Each way uses your own AI and your own plan; the room never pays for it, and your chats stay yours.'),
+    h('div', { class: 'seg tiles' }, TILES.map(([k, label]) => h('button', { class: pick === k ? 'on' : '', onclick: () => { store.set('wpi.where', k); renderFlows(true) } }, label))),
+    f.link ? h('div', { class: 'big-step' }, body[pick]()) : h('p', { class: 'why' }, 'This agent’s link was shown in the browser that made it.'),
   ]
 }
 /** The other way: chat with it in the Claude app. */
@@ -1162,7 +1210,6 @@ function flowView (where) {
       f.link || f.agent.wake ? whereChoice(f) : h('p', { class: 'why' }, `${f.agent.name}’s setup was shown in the browser that made it. `, h('button', { class: 'btn small', onclick: () => { bring.again = true; renderFlows(true) } }, 'Make a new agent here')),
       liveChecks(f),
       checkLine(),
-      otherWays(f),
     ]
   }
   return [
@@ -1172,7 +1219,6 @@ function flowView (where) {
     f.got.listening ? null : h('p', { class: 'why' }, 'For now it answers only when you chat with it. To have it answer by itself:'),
     !f.got.listening && f.link ? whereChoice(f) : null,
     liveChecks(f),
-    !f.got.listening ? otherWays(f) : null,
     h('div', { class: 'row' }, h('span', { class: 'grow' }),
       where === 'sheet' ? h('button', { class: 'btn small', onclick: () => { bring.again = true; renderFlows(true) } }, 'Bring another agent') : null,
       h('button', { class: 'btn small', onclick: () => { closeBring(); go('talk') } }, 'Talk'),

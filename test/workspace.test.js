@@ -781,6 +781,35 @@ describe('the workspace, end to end', () => {
     await send(other, 'note', { text: 'Just a note for the record.', kind: 'message' })
     assert.equal((await quiet).woke, false, 'a plain remark to the room does not')
   })
+  test('an agent without tool-server support: the link explains itself, reading tools answer GET, acting ones need POST', async () => {
+    const who = newIdentity(); await send(who, 'join', { name: 'Plain person' })
+    const made = (await send(who, 'host', { label: 'Plain bot' })).body.hosted
+    await send(who, 'delegate', { delegate: made.did, scope: ['note'], label: 'Plain bot' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    const link = made.connector.replace(/^https?:\/\/[^/]+/, base)
+    const guide = await (await fetch(link)).text()
+    assert.match(guide, /You are Plain bot, Plain person's agent/); assert.match(guide, /\/call\/say/)
+    const tools = await (await fetch(link + '/tools')).json()
+    assert.ok(tools.some((t) => t.name === 'say') && tools.some((t) => t.name === 'inbox'))
+    assert.equal((await fetch(link + '/call/inbox')).status, 200)
+    assert.equal((await fetch(link + '/call/say?text=hi')).status, 405, 'acting needs POST')
+    const said = await fetch(link + '/call/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'Hello from a plain agent.' }) })
+    assert.equal(said.status, 200)
+    assert.equal(ctx.log.entries.at(-1).document.payload.text, 'Hello from a plain agent.')
+    assert.equal((await fetch(link + '/call/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 400, 'it says what a tool takes')
+    assert.equal((await fetch(base + '/mcp/a/not-a-seat')).status, 404)
+  })
+  test('documents: a PDF is shared by its hash and downloads with its name; a text file with a secret is refused', async () => {
+    const { createHash } = await import('node:crypto')
+    const up = (bytes, type) => { const hash = createHash('sha256').update(bytes).digest('hex'); return fetch(base + '/api/media', { method: 'POST', headers: { 'content-type': type, 'x-wpi-upload': JSON.stringify(signedDocument(human, { type: TYPES.upload, payload: { sha256: hash, type } })) }, body: bytes }).then(async (r) => ({ status: r.status, hash })) }
+    const pdf = Buffer.from('%PDF-1.4\n1 0 obj << >> endobj\ntrailer << >>\n%%EOF\n')
+    const r = await up(pdf, 'application/pdf')
+    assert.equal(r.status, 201)
+    assert.equal((await send(human, 'note', { text: '(a file)', kind: 'message', files: [{ sha256: r.hash, type: 'application/pdf', name: 'Our spec.pdf', bytes: pdf.length }] })).status, 201)
+    const got = await fetch(`${base}/media/${r.hash}?name=Our%20spec.pdf`)
+    assert.equal(got.headers.get('content-type'), 'application/pdf'); assert.match(got.headers.get('content-disposition'), /attachment; filename="Our spec.pdf"/)
+    assert.equal((await up(Buffer.from('not a pdf'), 'application/pdf')).status, 400, 'the bytes must be the kind of file they say')
+    assert.equal((await up(Buffer.from('notes\nkey: sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123\n'), 'text/plain')).status, 400, 'a text file with a secret is refused')
+  })
 })
 
 describe('bringing an agent in with Claude Code', () => {

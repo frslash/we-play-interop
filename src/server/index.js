@@ -14,7 +14,7 @@ import { openDb } from './db.js'
 import { Llm } from './llm.js'
 import { ClaudeLlm } from './claude.js'
 import { Log, TaskError } from './log.js'
-import { handleHostedMcp, handleMcp } from './mcp.js'
+import { handleHostedMcp, handleHostedPlain, handleMcp } from './mcp.js'
 import { HostedAgents } from './hosted.js'
 import { Waker } from './wake.js'
 import { Notebooks } from './notebook.js'
@@ -133,6 +133,13 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (req.method === 'OPTIONS') return send(res, 204, '', { 'access-control-allow-methods': 'GET, POST', 'access-control-allow-headers': 'content-type, accept, mcp-protocol-version' })
 
     if (path.startsWith('/mcp/a/')) {
+      const [token, ...rest] = path.slice(7).split('/'), sub = rest.join('/')
+      const wantsMcp = req.method === 'POST' && !sub
+      if (!wantsMcp && !(req.method === 'GET' && /text\/event-stream/.test(req.headers.accept ?? ''))) { // opened in a browser or by an agent without MCP: the plain way in
+        let body = null
+        if (req.method === 'POST') { try { body = JSON.parse((await readBody(req)) || '{}') } catch { return send(res, 400, 'the body is JSON') } }
+        return handleHostedPlain(ctx, decodeURIComponent(token), sub, req, res, q, body)
+      }
       if (req.method !== 'POST') return send(res, 405, { jsonrpc: '2.0', error: { code: -32000, message: 'POST only (stateless MCP)' }, id: null })
       let body; try { body = JSON.parse(await readBody(req)) } catch { return send(res, 400, { jsonrpc: '2.0', error: { code: -32700, message: 'parse error' }, id: null }) }
       return handleHostedMcp(ctx, decodeURIComponent(path.slice(7)), req, res, body)
@@ -195,7 +202,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
         const who = log.state.participants.get(doc.issuer)
         if (!who || (who.kind !== 'human' && who.kind !== 'agent')) throw new TaskError('permissionDenied', 'join first', { status: 403 })
         const chunks = []; let size = 0
-        for await (const c of req) { size += c.length; if (size > 3 * 1024 * 1024 + 1) throw new TaskError('malformedRequest', 'a photo is at most 3 MB', { status: 413 }); chunks.push(c) }
+        for await (const c of req) { size += c.length; if (size > 10 * 1024 * 1024 + 1) throw new TaskError('malformedRequest', 'a file is at most 10 MB', { status: 413 }); chunks.push(c) }
         const bytes = Buffer.concat(chunks)
         if (createHash('sha256').update(bytes).digest('hex') !== doc.payload.sha256) throw new TaskError('malformedRequest', 'the photo does not match the hash you signed')
         try { return send(res, 201, ctx.media.put(who.principal ?? doc.issuer, doc.payload.type, bytes)) } catch (err) { throw new TaskError('malformedRequest', err.message) }
@@ -209,7 +216,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (path.startsWith('/media/') && req.method === 'GET') {
       const m = /^\/media\/([0-9a-f]{64})$/.exec(path), got = m && ctx.media.get(m[1])
       if (!got) return send(res, 404, { error: 'no photo with that hash' })
-      res.writeHead(200, { 'content-type': got.type, 'cache-control': 'public, max-age=31536000, immutable', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; sandbox", 'access-control-allow-origin': '*' })
+      const isImage = got.type.startsWith('image/'), name = String(q.name ?? 'file').replace(/[^\w.\- ]+/g, '_').slice(0, 120)
+      res.writeHead(200, { 'content-type': got.type, 'cache-control': 'public, max-age=31536000, immutable', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; sandbox", 'access-control-allow-origin': '*', ...(isImage ? {} : { 'content-disposition': `attachment; filename="${name}"` }) })
       return res.end(got.bytes)
     }
     if (path === '/api/drafts' && req.method === 'POST') { // an agent's lines waiting for its person: list, send (maybe changed) or drop
