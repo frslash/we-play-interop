@@ -11,6 +11,8 @@ export function info (ctx) {
     publicUrl: config.publicUrl || null,
     board: { repo: config.boardRepo, data: config.boardDataUrl },
     workspaceRepo: config.workspaceRepo,
+    operator: config.operator || null,
+    tunnel: (() => { try { const h = new URL(config.publicUrl).hostname; return /trycloudflare\.com$/i.test(h) ? 'Cloudflare’s quick tunnel' : /ngrok/i.test(h) ? 'an ngrok tunnel' : null } catch { return null } })(),
     mode: st.mode,
     head: log.head(),
     weaver: { model: llm.configured ? (llm.model ?? 'chosen at first round') : null, configured: llm.configured, endpoint: llm.endpoint ?? config.llm.baseUrl, nextRoundAt: new Date(weaver.nextRoundAt()).toISOString(), rounds: st.roundCount, lastError: weaver.lastError, lastSilent: weaver.lastSilent ?? null, speaksAfterQuietMinutes: config.weaverQuietMinutes, atMostEveryMinutes: config.weaverIntervalMinutes },
@@ -30,7 +32,7 @@ function listeningOf (ctx, p) {
 
 export function state (ctx) {
   const { log, board, executor } = ctx, st = log.state
-  const people = [...st.participants.values()].filter((p) => p.kind !== 'workspace').map((p) => ({ ...p, delegation: p.kind === 'agent' ? st.activeDelegation(p.did)?.hash ?? null : undefined, ...(p.kind === 'agent' && ctx.waker?.status.get(p.did) ? { wakeLast: ctx.waker.status.get(p.did) } : {}), ...(p.kind === 'agent' && st.away.get(p.did) ? { away: st.away.get(p.did), awayLast: ctx.away?.status.get(p.did) ?? null } : {}), ...(p.kind === 'agent' ? { listening: listeningOf(ctx, p), connected: ctx.connected?.get(p.did) ?? null } : {}) }))
+  const people = [...st.participants.values()].filter((p) => p.kind !== 'workspace').map((p) => ({ ...p, delegation: p.kind === 'agent' ? st.activeDelegation(p.did)?.hash ?? null : undefined, ...(p.kind === 'agent' && ctx.waker?.status.get(p.did) ? { wakeLast: ctx.waker.status.get(p.did) } : {}), ...(p.kind === 'agent' && st.away.get(p.did) ? { away: st.away.get(p.did), awayLast: ctx.away?.status.get(p.did) ?? null } : {}), ...(p.kind === 'agent' ? { listening: listeningOf(ctx, p), connected: ctx.connected?.get(p.did) ?? null, ask: st.activeDelegation(p.did)?.ask ?? [], until: st.activeDelegation(p.did)?.expiresAt ?? null, waiting: ctx.drafts?.list(p.did).length ?? 0 } : {}) }))
   const checkDids = ctx.check?.dids() ?? []
   const theirs = people.filter((p) => p.kind === 'agent' && p.hosted && !checkDids.includes(p.did))
   const comingIn = { agents: theirs.length, saidHello: theirs.filter((p) => p.firstSaid).length, answeringNow: theirs.filter((p) => p.listening).length }

@@ -178,7 +178,7 @@ describe('the workspace, end to end', () => {
     webvh = await makeWebvh()
     ghCalls = []
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: 'test', vetoWindowMinutes: 0, approvalsRequired: 1, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, apiKey: '' } }
-    ctx = await createApp(config, { resolver: createResolver({ fetch: webvh.fetch }), gh, wakeFetch, awayGatherMs: 0 })
+    ctx = await createApp(config, { resolver: createResolver({ fetch: webvh.fetch }), gh, wakeFetch, awayGatherMs: 0, hostWelcomeMs: null })
     await new Promise((r) => ctx.server.listen(0, r))
     base = `http://localhost:${ctx.server.address().port}`
     await ctx.board.refresh()
@@ -628,6 +628,60 @@ describe('the workspace, end to end', () => {
     const said = (await get('/api/messages?after=-1&limit=100')).items.filter((m) => m.text.startsWith('Agreed'))
     assert.match(said.at(-1).text, /Builder Bee.*yours to take on/)
     assert.deepEqual(await closeVotes(ctx, Date.now() + 11 * 60_000, { max: 50 }), [], 'a closed vote stays closed')
+  })
+  test('secrets never enter the record; a never-say list works from hashes; Ask me first holds lines as drafts', async () => {
+    const { sha256, toHex } = await import('../src/shared/crypto.js')
+    const { neverKey } = await import('../src/shared/guard.js')
+    const priv = async (path, id, type, payload) => { const r = await fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signedDocument(id, { type: TYPES[type], payload })) }); return { status: r.status, body: await r.json() } }
+    const call = (link, name, args) => fetch(link, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) }).then((r) => r.json())
+    // the guard: a key, a token or a private link is refused with words for its author
+    const leak = await send(human, 'note', { text: 'my key is sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123', kind: 'message' })
+    assert.equal(leak.status, 422); assert.match(leak.body.payload.message, /looks like an API key.*public and permanent/)
+    assert.equal((await send(human, 'note', { text: 'connect with https://room.example/mcp/a/AbCdEfGhIjKlMnOpQrStUv', kind: 'message' })).status, 422)
+    assert.equal((await send(human, 'note', { text: 'An ordinary line about keys and tokens.', kind: 'message' })).status, 201)
+    // a never-say list: the browser sends salted hashes; the room refuses that person's lines with it, names where, not what
+    const { salt } = (await priv('/api/never', human, 'never', { op: 'get' })).body
+    const hash = (x) => toHex(sha256(`${salt}\n${neverKey(x)}`))
+    assert.equal((await priv('/api/never', human, 'never', { op: 'set', hashes: [hash('Project Falcon')] })).body.count, 1)
+    const said = await send(human, 'note', { text: 'Big news on project falcon soon.', kind: 'message' })
+    assert.equal(said.status, 422); assert.match(said.body.payload.message, /never-say list \(word 4 to 5/); assert.ok(!said.body.payload.message.toLowerCase().includes('falcon'))
+    assert.equal((await send(other, 'note', { text: 'Big news on project falcon soon.', kind: 'message' })).status, 201, 'only its own person\'s list applies')
+    // Ask me first: a hosted agent's line waits as a draft; its person sends it (changed) or drops it
+    const made = (await send(other, 'host', { label: 'Careful Cat' })).body.hosted
+    const link = made.connector.replace(/^https?:\/\/[^/]+/, base)
+    await send(other, 'delegate', { delegate: made.did, scope: ['note', 'vote'], ask: ['note'], label: 'Careful Cat' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    const waiting = JSON.parse((await call(link, 'say', { text: 'Hello, I am Careful Cat.' })).result.content[0].text)
+    assert.equal(waiting.waiting, true)
+    assert.equal((await get('/api/state')).people.find((x) => x.did === made.did).waiting, 1)
+    assert.equal((await priv('/api/drafts', human, 'draft', { agent: made.did, op: 'list' })).status, 403, 'only its person sees its drafts')
+    const listed = (await priv('/api/drafts', other, 'draft', { agent: made.did, op: 'list' })).body.drafts
+    assert.equal(listed.length, 1); assert.equal(listed[0].payload.text, 'Hello, I am Careful Cat.')
+    const sent = await priv('/api/drafts', other, 'draft', { agent: made.did, op: 'send', id: listed[0].id, text: 'Hello from Careful Cat, checked by its person.' })
+    assert.equal(sent.status, 201)
+    assert.equal(ctx.log.byHash.get(sent.body.sent).document.payload.text, 'Hello from Careful Cat, checked by its person.')
+    await call(link, 'say', { text: 'A second thought.' })
+    const second = (await priv('/api/drafts', other, 'draft', { agent: made.did, op: 'list' })).body.drafts[0]
+    assert.equal((await priv('/api/drafts', other, 'draft', { agent: made.did, op: 'drop', id: second.id })).body.drafts.length, 0)
+    // an agent that holds its own key cannot wait for a draft, so it is refused and told to ask its person
+    const own = newIdentity()
+    await send(other, 'delegate', { delegate: own.did, scope: ['note'], ask: ['note'], label: 'Own-key agent' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    const d = ctx.log.state.activeDelegation(own.did)
+    const refused = await postDoc(signedDocument(own, { type: TYPES.note, payload: { text: 'Hi.', kind: 'message' }, onBehalfOf: other.did, delegation: d.hash }))
+    assert.equal(refused.status, 403); assert.match(refused.body.payload.message, /asked to see each note first/)
+  })
+  test('the host: its permission is signed into the record once, and it welcomes newcomers naming who is listening', async () => {
+    await ctx.host.start(); await ctx.host.start()
+    const charters = ctx.log.entries.filter((e) => e.author === ctx.log.state.workspace && String(e.document.payload.text ?? '').startsWith('The host’s permission'))
+    assert.equal(charters.length, 1); assert.match(charters[0].document.payload.text, /never speak for a person/)
+    const guide = (await send(other, 'host', { label: 'Guide Gus' })).body.hosted.did
+    await send(other, 'delegate', { delegate: guide, scope: ['note'], label: 'Guide Gus' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    const woken = ctx.waits.wait({ me: guide, timeout: 5 })
+    const newcomer = newIdentity()
+    await send(newcomer, 'join', { name: 'New Nell' })
+    await ctx.host.welcome(newcomer.did)
+    const said = ctx.log.entries.at(-1).document.payload.text
+    assert.match(said, /Welcome, New Nell\. I'm the room's host: an AI agent of the room itself, speaking for no one/); assert.match(said, /Guide Gus/)
+    assert.deepEqual((await woken).reasons, ['mention'], 'the guide it names wakes to answer')
   })
 })
 

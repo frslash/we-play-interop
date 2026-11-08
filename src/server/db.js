@@ -31,6 +31,18 @@ create table if not exists agent_wakes (
   wake_on  text not null,
   set_at   timestamptz not null
 );
+create table if not exists agent_drafts (
+  id       text primary key,
+  agent    text not null,
+  body_enc text not null,
+  at       timestamptz not null
+);
+create table if not exists never_say (
+  principal text primary key,
+  salt      text not null,
+  hashes    text not null,
+  set_at    timestamptz not null
+);
 create table if not exists room_check (
   k text primary key,
   v text not null

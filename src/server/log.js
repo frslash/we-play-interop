@@ -84,7 +84,7 @@ export class Log extends EventEmitter {
   }
 
   /** Accept a document from a person or an agent, or throw a TaskError. */
-  async accept (doc, { ip = '' } = {}) {
+  async accept (doc, { ip = '', approved = false } = {}) {
     const shape = checkShape(doc)
     if (shape) throw new TaskError('malformedRequest', shape)
     const name = NAME_OF[doc.type], st = this.state, now = Date.now()
@@ -122,12 +122,14 @@ export class Log extends EventEmitter {
       if (delegation.revoked) throw new TaskError('permissionDenied', 'that delegation was revoked', { status: 403 })
       if (Date.parse(delegation.expiresAt) <= now) throw new TaskError('expired', 'that delegation has expired; ask your human for a new one')
       if (!delegation.scope.includes(name)) throw new TaskError('permissionDenied', `the delegation does not cover ${name}`, { status: 403 })
+      if (delegation.ask?.includes(name) && !approved) throw new TaskError('permissionDenied', `your person asked to see each ${name} first, so it was not posted: tell them what you would like to say (or bring them in through the room's link, where it can wait for their OK)`, { status: 403 })
       if (!st.isHuman(doc.onBehalfOf)) throw new TaskError('permissionDenied', 'onBehalfOf has not joined', { status: 403 })
     } else {
       if (st.isAgent(doc.issuer)) throw new TaskError('permissionDenied', 'this DID belongs to an agent: sign with onBehalfOf and delegation', { status: 403 })
       if (name !== 'join' && !st.isHuman(doc.issuer)) throw new TaskError('permissionDenied', 'join first (member/join)', { status: 403 })
     }
     this.#checkContext(name, doc, principal)
+    for (const guard of this.guards ?? []) { const why = guard(doc, principal, name); if (why) throw new TaskError('malformedRequest', why, { status: 422 }) } // nothing secret enters the permanent record
     this.#limit(principal, ip)
     this.verified = null
     const entry = await this.#append(doc, { author: doc.issuer, onBehalfOf: principal, delegation: delegation?.hash })

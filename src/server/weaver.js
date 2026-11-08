@@ -118,15 +118,19 @@ export class Weaver {
     }
     const agreements = open.filter((p) => p.tally.for >= 2 && !p.tally.against).map((p) => ({ point: `${p.tally.for} back "${p.title}"`, entries: [p.hash] }))
     const conflicts = open.filter((p) => p.tally.for && p.tally.against).map((p) => ({ point: `"${p.title}": ${p.tally.for} for, ${p.tally.against} against`, entries: [p.hash] }))
+    // a run is between two people's projects: never suggest one whose two sides are the same person's
+    const membersOf = (slug) => [...st.participants.values()].filter((p) => p.kind === 'human' && p.projects?.includes(slug)).map((p) => p.did)
+    const twoPeople = (pair) => { const a = membersOf(pair[0]), b = membersOf(pair[1]); return !(a.length && b.length && a.every((d) => b.includes(d)) && b.every((d) => a.includes(d))) }
     const fromBoard = () => {
       const m = ctx.map
-      const soon = m.fadingSoon?.[0]
+      const pick = (list) => (list ?? []).find((x) => twoPeople(x.pair))
+      const soon = pick(m.fadingSoon)
       if (soon) return { kind: 'run', action: `${soon.pair[0]} and ${soon.pair[1]} run ${soon.way} again before it fades`, why: `Their last pass (${soon.lastPass}) fades in ${soon.daysLeft} day(s); a fresh run keeps the pair on the map.`, run: { sides: soon.pair, ways: [soon.way] }, holds: [] }
-      const o = m.dtgReadyToTry?.[0]
+      const o = pick(m.dtgReadyToTry)
       if (o) return { kind: 'run', action: `${o.pair[0]} and ${o.pair[1]} try "${o.scenario}" together`, why: `Both bring every need of "${o.scenario}" in running code and have not played it yet.`, run: { sides: o.pair, ways: o.ways }, holds: [] }
-      const s = m.sameWayNeverTried?.[0]
+      const s = pick(m.sameWayNeverTried)
       if (s) return { kind: 'run', action: `${s.pair[0]} and ${s.pair[1]} try ${s.ways[0]} together`, why: `Both speak ${s.ways.slice(0, 3).join(', ')} and have never tried it together.`, run: { sides: s.pair, ways: s.ways.slice(0, 3) }, holds: [] }
-      const f = m.faded?.[0]
+      const f = pick(m.faded)
       if (f) return { kind: 'run', action: `${f.pair[0]} and ${f.pair[1]} run ${f.way} again`, why: `Their last pass is ${f.ageDays} days old and has faded.`, run: { sides: f.pair, ways: [f.way] }, holds: [] }
       return null
     }

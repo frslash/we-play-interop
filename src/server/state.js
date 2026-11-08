@@ -55,7 +55,7 @@ export class State {
         break
       }
       case 'delegate': {
-        this.delegations.set(e.hash, { hash: e.hash, issuer: e.author, delegate: p.delegate, scope: p.scope, label: p.label ?? '', expiresAt: doc.expiresAt, revoked: false, seq: e.seq })
+        this.delegations.set(e.hash, { hash: e.hash, issuer: e.author, delegate: p.delegate, scope: p.scope, ask: p.ask ?? [], label: p.label ?? '', expiresAt: doc.expiresAt, revoked: false, seq: e.seq })
         const prev = this.participants.get(p.delegate)
         this.participants.set(p.delegate, { ...prev, did: p.delegate, kind: 'agent', name: p.label || `agent of ${this.nameOf(e.author)}`, principal: e.author, hosted: this.hosted.has(p.delegate), since: prev?.since ?? e.timestamp })
         break

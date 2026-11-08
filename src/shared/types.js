@@ -31,13 +31,15 @@ export const TYPES = {
   remove: T('agent/remove'),
   away: T('agent/away'),
   notebook: T('agent/notebook'),
+  never: T('member/never'),
+  draft: T('agent/draft'),
   hosted: T('agent/hosted'),
 }
 export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v, k]))
 
 /** Who may write each kind of document. */
 export const WHO = {
-  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', remove: 'human', away: 'human',
+  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', remove: 'human', away: 'human',
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone',
 }
@@ -159,6 +161,7 @@ export function checkPayload (name, doc) {
       if (!DID_RE.test(p.delegate ?? '')) return 'delegate: the agent DID'
       if (!Array.isArray(p.scope) || !p.scope.length || !p.scope.every((s) => AGENT_SCOPES.includes(s))) return `scope: some of ${AGENT_SCOPES.join(', ')}`
       if (!optStr(p.label, 60)) return 'label: at most 60 characters'
+      if (p.ask !== undefined && (!Array.isArray(p.ask) || !p.ask.every((s) => p.scope.includes(s)))) return 'ask: the kinds of line (from scope) that wait for your OK before they are posted'
       if (!RFC3339.test(doc.expiresAt ?? '')) return 'a delegation needs expiresAt'
       const days = (Date.parse(doc.expiresAt) - Date.parse(doc.issuedAt)) / 86400000
       if (!(days > 0 && days <= 90)) return 'expiresAt: after issuedAt and within 90 days'
@@ -177,6 +180,15 @@ export function checkPayload (name, doc) {
       if (p.goals !== undefined && (!Array.isArray(p.goals) || p.goals.length > 5 || !p.goals.every((g) => str(g, 1, 140)))) return 'goals: up to 5, each 1 to 140 characters'
       if (!optStr(p.workingOn, 300)) return 'workingOn: at most 300 characters'
       if (!optStr(p.lookingFor, 300)) return 'lookingFor: at most 300 characters'
+      return null
+    case 'draft':
+      if (!DID_RE.test(p.agent ?? '')) return 'agent: your agent\'s DID'
+      if (!['list', 'send', 'drop'].includes(p.op)) return 'op: list | send | drop'
+      if (p.op !== 'list' && !str(p.id, 1, 64)) return 'id: the draft'
+      return p.text !== undefined && !str(p.text, 1, 2000) ? 'text: 1 to 2000 characters' : null
+    case 'never':
+      if (!['get', 'set'].includes(p.op)) return 'op: get | set'
+      if (p.op === 'set' && (!Array.isArray(p.hashes) || p.hashes.length > 200 || !p.hashes.every((x) => /^[0-9a-f]{64}$/.test(x)))) return 'hashes: up to 200 sha256 hex strings'
       return null
     case 'notebook':
       if (!DID_RE.test(p.agent ?? '')) return 'agent: the agent\'s DID'

@@ -64,6 +64,10 @@ export async function handleHostedMcp (ctx, token, req, res, body) {
     act: async (name, payload, extra = {}) => {
       const d = st.activeDelegation(agent.did)
       if (!d) throw new Error('Your human has not switched you on yet, or your permission ended. Ask them to open the room, You → Your agents.')
+      if (d.ask?.includes(name) && d.scope.includes(name)) { // Ask me first: it waits on its person's page until they send, change or drop it
+        const draft = await ctx.drafts.add(agent.did, name, payload, extra)
+        return { waiting: true, draft: draft.id, note: 'Your person asked to see this first: it waits for their OK on the room page, where they can send it, change it or drop it. You do not need to tell them; they see it in Talk.' }
+      }
       const doc = signedDocument(agent.identity, { type: TYPES[name], payload, onBehalfOf: d.issuer, delegation: d.hash, ...extra })
       const { entry } = await ctx.log.accept(doc, { ip: 'hosted:' + agent.did })
       return { accepted: true, id: entry.hash, seq: entry.seq }

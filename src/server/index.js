@@ -22,7 +22,11 @@ import { Away } from './away.js'
 import { Waits } from './waits.js'
 import { RoomCheck } from './check.js'
 import { closeVotes } from './votes.js'
-import { NAME_OF } from '../shared/types.js'
+import { NeverLists } from './never.js'
+import { Drafts } from './drafts.js'
+import { Host } from './host.js'
+import { secretIn } from '../shared/guard.js'
+import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { createResolver } from './resolver.js'
 import * as views from './views.js'
 import { Weaver } from './weaver.js'
@@ -60,7 +64,7 @@ function workspaceIdentity (config) {
   return id
 }
 
-export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, awayGatherMs } = {}) {
+export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, awayGatherMs, hostWelcomeMs = 3000 } = {}) {
   const identity = workspaceIdentity(config)
   const db = await openDb(config)
   const log = new Log({ db, identity, resolver, config })
@@ -84,6 +88,13 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   log.on('entry', (e) => waker.onEntry(e))
   ctx.check = new RoomCheck({ ctx, db, sealer: hosted, everyMinutes: config.checkEveryMinutes ?? 180 })
   await ctx.check.load()
+  ctx.host = new Host({ ctx, welcomeAfterMs: hostWelcomeMs })
+  log.on('entry', (e) => ctx.host.onEntry(e))
+  ctx.drafts = new Drafts({ db, sealer: hosted })
+  await ctx.drafts.load()
+  ctx.never = new NeverLists({ db })
+  await ctx.never.load()
+  log.guards = [(doc) => secretIn(doc.payload), (doc, principal) => ctx.never.check(principal, doc.payload)]
   weaver.skip = () => ctx.check.dids() // the check walks the path; it is not part of the conversation
 
   const page = readFileSync(join(root, 'public/index.html'), 'utf8')
@@ -164,6 +175,33 @@ export async function createApp (config = defaultConfig, { resolver = createReso
         const notes = op === 'add' ? await ctx.notebooks.add(agent, asAgent ? 'agent' : 'person', text) : await ctx.notebooks.get(agent)
         if (asAgent && op === 'read') await ctx.notebooks.markRead(agent)
         return send(res, 200, { agent, notes, readUpTo: await ctx.notebooks.readAt(agent), card: log.state.participants.get(who.principal)?.card ?? null })
+      } catch (err) { return refuse(res, err, doc) }
+    }
+    if (path === '/api/drafts' && req.method === 'POST') { // an agent's lines waiting for its person: list, send (maybe changed) or drop
+      let doc
+      try {
+        doc = await log.verifyPrivate(JSON.parse(await readBody(req)), 'draft')
+        const { agent, op, id, text } = doc.payload, who = log.state.participants.get(agent)
+        if (who?.kind !== 'agent' || who.principal !== doc.issuer) throw new TaskError('permissionDenied', 'only its person sees and sends its drafts', { status: 403 })
+        if (op === 'send') {
+          const draft = ctx.drafts.get(agent, id), d = log.state.activeDelegation(agent), identity = hosted.identityOf(agent)
+          if (!draft) throw new TaskError('malformedRequest', 'that draft is gone')
+          if (!d || !identity) throw new TaskError('permissionDenied', 'this agent has no live permission, or the room no longer holds its key', { status: 403 })
+          const payload = text && draft.kind === 'note' ? { ...draft.payload, text } : draft.payload
+          const { entry } = await log.accept(signedDocument(identity, { type: TYPES[draft.kind], payload, onBehalfOf: d.issuer, delegation: d.hash, ...draft.extra }), { ip: ipOf(req), approved: true })
+          await ctx.drafts.drop(agent, id)
+          return send(res, 201, { sent: entry.hash, drafts: ctx.drafts.list(agent) })
+        }
+        if (op === 'drop') await ctx.drafts.drop(agent, id)
+        return send(res, 200, { drafts: ctx.drafts.list(agent) })
+      } catch (err) { return refuse(res, err, doc) }
+    }
+    if (path === '/api/never' && req.method === 'POST') { // your never-say list: you send only salted hashes; the room never holds the words
+      let doc
+      try {
+        doc = await log.verifyPrivate(JSON.parse(await readBody(req)), 'never')
+        if (!log.state.isHuman(doc.issuer)) throw new TaskError('permissionDenied', 'join first', { status: 403 })
+        return send(res, 200, doc.payload.op === 'set' ? await ctx.never.set(doc.issuer, doc.payload.hashes) : await ctx.never.get(doc.issuer))
       } catch (err) { return refuse(res, err, doc) }
     }
     if (path === '/api/check' && req.method === 'POST') { // walk the newcomer's path now (at most every five minutes; sooner gets the last run)
@@ -247,9 +285,10 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     timers.push(setInterval(() => weaver.tick(), 30_000))
     timers.push(setInterval(() => executor.tick().catch((e) => console.error('executor:', e)), 30_000))
     if (config.checkEveryMinutes !== 0) ctx.check.start(server.address()?.port)
+    await ctx.host.start()
     timers.push(setInterval(() => closeVotes(ctx).catch((e) => console.error('closing votes:', e)), 30_000))
   }
-  ctx.stop = async () => { timers.forEach(clearInterval); ctx.check.stop(); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }
