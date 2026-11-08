@@ -440,12 +440,12 @@ const flipped = new Map() // message -> the card someone chose, over the page's 
 function layered (key, text, techText) {
   const L = splitLayers(text, techText)
   if (!L.depth) return h('div', { class: 'text' }, L.short)
-  const showing = flipped.get(key) ?? (document.body.dataset.view === 'tech' ? 'depth' : 'short')
-  const pick = (v) => { flipped.set(key, v); renderTalk() }
-  return h('div', { class: 'layers' },
-    h('div', { class: 'layer-tabs', role: 'tablist' }, [['short', 'In short'], ['depth', 'In depth']].map(([v, label]) => h('button', { class: 'btn tiny' + (showing === v ? ' on' : ''), role: 'tab', 'aria-selected': String(showing === v), onclick: () => pick(v) }, label))),
-    showing === 'short' ? h('div', { class: 'layer card-short' }, h('div', { class: 'text' }, L.short))
-      : h('div', { class: 'layer card-depth' }, L.title ? h('div', { class: 'layer-title' }, L.title) : null, h('div', { class: 'text' }, L.depth)))
+  // the site's view picks which layer shows; a small fold under each message opens the other one
+  const tech = document.body.dataset.view === 'tech'
+  const depth = () => h('div', { class: 'layer card-depth' }, L.title ? h('div', { class: 'layer-title' }, L.title) : null, h('div', { class: 'text' }, L.depth))
+  const short = () => h('div', { class: 'text' }, L.short)
+  return h('div', { class: 'layers' }, tech ? depth() : short(),
+    fold('layer-' + key, { class: 'layer-more' }, h('summary', null, tech ? 'In short' : 'In depth'), tech ? short() : depth()))
 }
 function holdingChat () {
   if (!talk.list) return false
