@@ -416,7 +416,7 @@ function renderLog () {
 // ---------- You ----------
 function renderYou () {
   const el = $('#tab-you')
-  const origin = location.origin
+  const origin = S.publicUrl || location.origin // the address others can reach (PUBLIC_URL), not necessarily this one
   const invite = h('div', { class: 'card' }, h('h2', null, 'Bring someone in'), h('p', { class: 'why' }, 'Scan to open this workspace. Joining makes a key on that phone; nothing else to install.'),
     h('img', { class: 'qr', src: `/api/qr.svg?text=${encodeURIComponent(origin)}`, alt: `QR code for ${origin}` }), h('p', null, h('code', null, origin)))
   if (!joined()) {
