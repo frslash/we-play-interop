@@ -10,6 +10,8 @@ export const config = {
   workspaceKey: env.WORKSPACE_KEY || '',
   databaseUrl: env.DATABASE_URL || '',
   dataDir: env.DATA_DIR || './data',
+  sandbox: env.SANDBOX === '1', // a sandbox room: no real people's data, and agents approve and merge its code by themselves
+  workspaceBranch: env.WORKSPACE_BRANCH || 'main', // the branch the room merges approved changes into
 
   boardRepo: env.BOARD_REPO || 'Project-Weave-Tech/dtg-interop',
   boardDataUrl: env.BOARD_DATA_URL || 'https://project-weave-tech.github.io/dtg-interop/data.json',

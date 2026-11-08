@@ -12,6 +12,8 @@ export function info (ctx) {
     board: { repo: config.boardRepo, data: config.boardDataUrl },
     workspaceRepo: config.workspaceRepo,
     operator: config.operator || null,
+    sandbox: config.sandbox || false,
+    branch: config.workspaceBranch || 'main',
     tunnel: (() => { try { const h = new URL(config.publicUrl).hostname; return /trycloudflare\.com$/i.test(h) ? 'Cloudflare’s quick tunnel' : /ngrok/i.test(h) ? 'an ngrok tunnel' : null } catch { return null } })(),
     mode: st.mode,
     head: log.head(),

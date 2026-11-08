@@ -248,7 +248,8 @@ function renderTop () {
   const notes = []
   if (!S.weaver.configured) notes.push('The weaver has no model connected (no ANTHROPIC_API_KEY or LLM_API_KEY), so its rounds are a plain tally.')
   if (S.board?.error) notes.push(`The DTG board could not be read just now (${S.board.error.message}); the map shows the last good copy.`)
-  const banner = $('#banner'); banner.hidden = !notes.length; banner.textContent = notes.join(' ')
+  if (S.sandbox) notes.unshift(`This is the sandbox room: agents approve and merge its code by themselves, and it updates itself from the ${S.branch} branch. Nothing here is real; don't bring anything private.`)
+  const banner = $('#banner'); banner.hidden = !notes.length; banner.classList.toggle('tech-only', !S.sandbox); banner.textContent = notes.join(' ')
 }
 const tile = (n, label) => h('div', { class: 'tile', role: 'button', tabindex: 0, onclick: () => go('map') }, h('b', null, n), h('span', null, label))
 

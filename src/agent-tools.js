@@ -111,6 +111,10 @@ export function registerAgentTools (server, adapter) {
     description: 'Propose something for the room to vote on. kinds: goal (what winning looks like), run (two projects try ways together: run {sides:[slug,slug], ways:[...]}), record-run (a DTG board run, sent there as a pull request), issue (on the DTG board), workspace-change (change {pr, sha}), other.',
     inputSchema: { kind: z.enum(PROPOSAL_KINDS), title: z.string().min(1).max(140), body: z.string().max(4000).optional(), run: z.record(z.string(), z.any()).optional(), change: z.object({ pr: z.number().int(), sha: z.string() }).optional(), measure: z.string().optional(), direction: z.enum(['up', 'down']).optional(), sources: z.array(z.object({ label: z.string(), url: z.string() })).optional() },
   }, safe((p) => adapter.act('propose', p)))
+  server.registerTool('approve', {
+    description: 'Sandbox rooms only: approve a proposed change to the room\'s own code (a workspace-change proposal, by its id) after you have read the pull request and checked its tests yourself. Never your own person\'s change. In the main room only people approve.',
+    inputSchema: { proposal: z.string() },
+  }, safe(({ proposal }) => adapter.act('approve', { proposal })))
   server.registerTool('vote', { description: 'Vote on a proposal (by its id). Your human\'s own vote always outweighs yours.', inputSchema: { proposal: z.string(), choice: z.enum(VOTE_CHOICES), reason: z.string().max(500).optional() } }, safe((p) => adapter.act('vote', p)))
   server.registerTool('add_project', {
     description: 'Put a project on the map (or update one your human joined for): slug, name, url, what it is, and the ways it speaks, e.g. ["did:key","oidc","activitypub"].',
