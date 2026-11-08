@@ -286,6 +286,10 @@ body[data-view="tech"] .plain-only { display: none !important; }
 .decision.closed { opacity: 0.8; }
 .decision .need { color: var(--accent); }
 h2.decided { font-size: 15px; margin: 18px 0 8px; color: var(--muted); }
+.workshop-list li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.workshop-list li:last-child { border-bottom: 0; }
+.why.pre { white-space: pre-wrap; font-size: 13px; }
+@media (max-width: 420px) { .tabs button { font-size: 12px; padding: 12px 1px; } }
 .check-line { font-size: 13px; margin: 8px 0; padding: 6px 10px; border-radius: 8px; }
 .check-line.ok { background: var(--good-soft); color: var(--good); }
 .check-line.bad { background: var(--warn-soft); color: var(--warn); }

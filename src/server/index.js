@@ -27,6 +27,7 @@ import { Drafts } from './drafts.js'
 import { Host } from './host.js'
 import { Media } from './media.js'
 import { Changes } from './changes.js'
+import { Workshop } from './workshop.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { createResolver } from './resolver.js'
@@ -95,6 +96,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.types = TYPES
   ctx.changes = new Changes({ ctx, dataDir: config.dataDir })
   log.on('entry', (e) => ctx.changes.onEntry(e))
+  ctx.workshop = new Workshop({ ctx, gh: (...a) => executor.gh(...a) })
   log.on('entry', (e) => ctx.host.onEntry(e))
   ctx.drafts = new Drafts({ db, sealer: hosted })
   await ctx.drafts.load()
@@ -196,6 +198,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
         try { return send(res, 201, ctx.media.put(who.principal ?? doc.issuer, doc.payload.type, bytes)) } catch (err) { throw new TaskError('malformedRequest', err.message) }
       } catch (err) { return refuse(res, err, doc) }
     }
+    if (path === '/api/workshop') return send(res, 200, ctx.workshop.view()) // every change to the room's own code, in public
     if (path.startsWith('/patches/') && req.method === 'GET') { // a change an agent handed the room, to read before approving it
       const d = ctx.changes.get(path.slice(9))
       return d ? send(res, 200, d, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' }) : send(res, 404, { error: 'no change with that hash' })
@@ -316,9 +319,10 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (config.checkEveryMinutes !== 0) ctx.check.start(server.address()?.port)
     await ctx.host.start()
     ctx.changes.start()
+    ctx.workshop.start()
     timers.push(setInterval(() => closeVotes(ctx).catch((e) => console.error('closing votes:', e)), 30_000))
   }
-  ctx.stop = async () => { timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }

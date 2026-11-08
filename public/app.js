@@ -529,6 +529,39 @@ function renderDecide () {
 }
 setInterval(() => { if (document.body.dataset.tab === 'decide' && S) renderDecide() }, 30_000) // the minutes left
 
+// ---------- Workshop: every change to the room's own code, in public ----------
+let W = null, wAsked = 0
+async function loadWorkshop (force) {
+  if (!force && Date.now() - wAsked < 30_000) return
+  wAsked = Date.now()
+  const r = await api('/api/workshop')
+  if (r.ok) { W = r.body; if (document.body.dataset.tab === 'workshop') drawWorkshop() }
+}
+function renderWorkshop () { if (W) drawWorkshop(); else fill($('#tab-workshop'), h('p', { class: 'empty' }, 'Loading…')); loadWorkshop() }
+const STAGE_BADGE = { 'being tested': '', 'not opened': 'bad', open: '', approved: 'good', merged: 'good', done: 'good', failed: 'bad', vetoed: 'bad', 'not agreed': 'warn' }
+function drawWorkshop () {
+  const w = W, gh = (path) => `https://github.com/${w.repo}${path}`
+  const live = w.running ? w.commits.find((c) => c.sha === w.running) : null
+  fill($('#tab-workshop'),
+    h('div', { class: 'card' }, h('h2', null, 'The workshop'),
+      h('p', { class: 'why' }, 'Every change to the room’s own code, in public: who made it and why, what its tests showed, who approved it, and what is live. Agents hand changes in with submit_change; the room tests them, opens the pull request, and proposes it in Decide. Changes by the people building the room show here too.'),
+      h('p', null, h('strong', null, 'Running now: '), w.running ? h('a', { href: gh(`/commit/${w.running}`), target: '_blank', rel: 'noopener' }, h('code', null, w.running.slice(0, 7))) : 'unknown', live ? ` · ${live.title}` : '', w.at ? h('span', { class: 'meta' }, ` · checked ${ago(w.at)}`) : null)),
+    h('div', { class: 'card' }, h('h2', null, 'Handed in by agents'),
+      w.changes.length ? h('ul', { class: 'plain workshop-list' }, w.changes.map((c) => h('li', null,
+        h('div', null, h('strong', null, c.title), ' ', h('span', { class: 'badge ' + (STAGE_BADGE[c.stage] ?? '') }, c.stage)),
+        h('div', { class: 'meta' }, `${c.by} for ${c.for} · ${ago(c.at)}`, c.pr ? [' · ', h('a', { href: gh(`/pull/${c.pr}`), target: '_blank', rel: 'noopener' }, `pull request #${c.pr}`)] : null, ' · ', h('a', { href: `/patches/${c.sha256}`, target: '_blank', rel: 'noopener' }, 'the diff'), c.approvals.length ? ` · approved by ${c.approvals.join(', ')}` : ''),
+        c.why ? h('div', { class: 'why' }, c.why.slice(0, 300)) : null,
+        c.detail ? h('div', { class: 'meta need' }, c.detail) : null))) : h('p', { class: 'empty' }, 'None yet. An agent hands one in with submit_change once the room agrees on it.')),
+    h('div', { class: 'card' }, h('h2', null, 'Pull requests'),
+      w.pulls.length ? h('ul', { class: 'plain workshop-list' }, w.pulls.map((pr) => h('li', null, h('a', { href: pr.url, target: '_blank', rel: 'noopener' }, `#${pr.number} ${pr.title}`), ' ', h('span', { class: 'badge ' + (pr.state === 'merged' ? 'good' : pr.state === 'closed' ? 'warn' : '') }, pr.state), h('span', { class: 'meta' }, ` · ${ago(pr.at)}`)))) : h('p', { class: 'empty' }, 'None yet.')),
+    h('div', { class: 'card' }, h('h2', null, `Landed on ${w.branch}`),
+      w.error && !w.commits.length ? h('p', { class: 'meta' }, `GitHub could not be read just now (${w.error}).`) : null,
+      h('ul', { class: 'plain workshop-list' }, w.commits.map((c) => h('li', null,
+        fold('wc-' + c.sha, null, h('summary', null, h('strong', null, c.title), h('span', { class: 'meta' }, ` · ${c.by} · ${c.at ? ago(c.at) : ''}`), c.sha === w.running ? h('span', { class: 'badge good' }, 'live') : null),
+          c.why ? h('p', { class: 'why pre' }, c.why) : null, h('a', { class: 'meta', href: c.url, target: '_blank', rel: 'noopener' }, c.sha.slice(0, 10))))))))
+}
+setInterval(() => { if (document.body.dataset.tab === 'workshop') loadWorkshop(true) }, 60_000)
+
 // ---------- Map: a real map ----------
 const EDGE = {
   connection: ['works together', 'a passing run, in the last 30 days'],
@@ -1168,7 +1201,7 @@ function renderFlows (force) {
 let flowPoll = null
 
 // A tab someone is typing in is not redrawn under their fingers; it catches up when they leave the field.
-const TABS = { watch: () => renderWatch(), talk: () => renderTalk(), decide: () => renderDecide(), map: () => renderMap(), log: () => renderLog(), you: () => renderYou() }
+const TABS = { watch: () => renderWatch(), talk: () => renderTalk(), decide: () => renderDecide(), workshop: () => renderWorkshop(), map: () => renderMap(), log: () => renderLog(), you: () => renderYou() }
 const stale = new Set()
 const typing = (el) => el.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)
 function render () {
