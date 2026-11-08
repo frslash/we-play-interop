@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { findSecret } from '../shared/guard.js'
+import { extractText } from './extract.js'
 
 export const TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'application/pdf': 'pdf', 'application/msword': 'doc', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx', 'text/plain': 'txt', 'text/markdown': 'md', 'text/csv': 'csv' }
 export const IMAGES = ['image/jpeg', 'image/png', 'image/webp']
@@ -31,6 +32,20 @@ export class Media {
     if (!this.pathOf(sha256)) writeFileSync(join(this.dir, `${sha256}.${TYPES[type]}`), bytes)
     return { sha256, type, bytes: bytes.length }
   }
+  /** The text inside a file, pulled out once (on first ask for files shared before this existed). */
+  async text (sha) {
+    if (!/^[0-9a-f]{64}$/.test(sha)) return null
+    const t = join(this.dir, `${sha}.text`)
+    if (existsSync(t)) return readFileSync(t, 'utf8')
+    const f = this.get(sha)
+    if (!f || f.type.startsWith('image/')) return null
+    try {
+      const text = await extractText(f.type, f.bytes)
+      if (text != null) writeFileSync(t, text) // kept only when it worked, so a fixed reader tries again
+      return text
+    } catch (err) { return `(the room could not read this file's text: ${String(err.message).slice(0, 120)})` }
+  }
+
   get (sha) { const f = this.pathOf(sha); return f ? { bytes: readFileSync(f.path), type: Object.keys(TYPES).find((t) => TYPES[t] === f.ext) } : null }
 }
 

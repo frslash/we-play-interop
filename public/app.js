@@ -525,6 +525,7 @@ const EXTERNAL = ['record-run', 'issue', 'workspace-change']
 const closesAt = (p) => Date.parse(p.at) + (S.rules?.voteMinutes ?? 10) * 60_000
 function needOf (p) {
   if (p.kind === 'goal') return 'A goal: it stays open, and the room holds it while more say yes than no.'
+  if (p.kind === 'workspace-change' && p.lane === 'small') return `A small change to the page: no vote needed. ${p.notYet ?? p.waitingFor ?? 'Ready.'} Veto to hold it.`
   if (p.kind === 'workspace-change') return p.notYet ? `A change to the room's code: ${p.notYet}.` : p.waitingFor ? `A change to the room's code: ${p.waitingFor}.` : 'A change to the room\'s code: ready to merge.'
   if (EXTERNAL.includes(p.kind)) return `Acts outside the room: ${p.waitingFor ?? 'ready'}. A person's yes counts as their approval.`
   return 'Agents and people vote; when it closes the room names who acts on it.'

@@ -41,6 +41,8 @@ export class Executor {
     const owner = pr.byWeaver && pr.sources?.length ? this.log.byHash.get(pr.sources[0])?.onBehalfOf ?? pr.principal : pr.principal // a change an agent handed the room is its person's
     const backers = new Set([...pr.approvals.keys()].map((d) => st.participants.get(d)?.principal ?? d).filter((p) => p !== owner)) // different people, never the proposer's own
     const byAgents = pr.kind === 'workspace-change' && this.config.agentApprovals && backers.size >= this.config.agentApprovers
+    const small = pr.kind === 'workspace-change' && pr.lane === 'small' // the small lane: the page only, nothing about keys, permissions or the rules
+    if (small) { const until = Date.parse(pr.at) + this.config.vetoWindowMinutes * 60_000; return now < until ? `small change: it goes live at ${new Date(until).toISOString()} unless someone holds it (veto)` : null }
     if (people.length < this.config.approvalsRequired && !byAgents) return pr.kind === 'workspace-change' && this.config.agentApprovals ? `needs approval from ${this.config.agentApprovers - backers.size} more person's agent(s) (or a person)` : `needs ${this.config.approvalsRequired - pr.approvals.size} more human approval(s)`
     const yesAt = [pr.lastApprovalAt, ...[...pr.votes.values()].filter((v) => v.choice === 'for').map((v) => v.at)].filter(Boolean).map((t) => Date.parse(t)).filter(Number.isFinite)
     const quietUntil = Math.max(...yesAt, 0) + this.config.vetoWindowMinutes * 60_000 // the veto window runs from the latest yes, an approval or a yes vote
@@ -54,8 +56,8 @@ export class Executor {
     this.busy = true
     try {
       for (const pr of [...this.log.state.proposals.values()]) {
+        if (pr.kind === 'workspace-change' && this.config.githubToken && ['open', 'approved'].includes(this.log.state.statusOf(pr))) { const why = await this.changeReady(pr).catch((e) => `could not check it: ${e.message}`); pr.notYet = why; if (why && !/^failed:/.test(why)) continue; if (why) { await this.log.appendAsWorkspace('result', { proposal: pr.hash, kind: pr.kind, status: 'failed', detail: why.slice(8, 500) }, { threadId: this.log.byHash.get(pr.hash).document.id }); continue } }
         if (this.waitingFor(pr)) continue
-        if (pr.kind === 'workspace-change' && this.config.githubToken) { const why = await this.changeReady(pr).catch((e) => `could not check it: ${e.message}`); pr.notYet = why; if (why && !/^failed:/.test(why)) continue; if (why) { await this.log.appendAsWorkspace('result', { proposal: pr.hash, kind: pr.kind, status: 'failed', detail: why.slice(8, 500) }, { threadId: this.log.byHash.get(pr.hash).document.id }); continue } }
         let result
         try { result = await this.act(pr) } catch (err) { result = { status: 'failed', detail: err.message.slice(0, 500) } }
         await this.log.appendAsWorkspace('result', { proposal: pr.hash, kind: pr.kind, ...result }, { threadId: this.log.byHash.get(pr.hash).document.id })
@@ -147,7 +149,9 @@ export class Executor {
     if (pull.state !== 'open') return `failed: pull request #${number} is ${pull.state}`
     if (pull.head.sha !== sha) return `failed: pull request #${number} changed after it was approved (now ${pull.head.sha.slice(0, 10)}); propose the new commit`
     const files = await this.gh('GET', `/repos/${repo}/pulls/${number}/files?per_page=100`)
-    const touched = files.map((f) => f.filename).filter((f) => this.config.protectedPaths.some((p) => (p.endsWith('/') ? f.startsWith(p) : f === p)))
+    const names = files.map((f) => f.filename)
+    pr.lane = names.length && names.every((f) => (f.startsWith('public/') && f !== 'public/setup.js') || /^(docs\/.*|[^/]+\.md)$/.test(f)) ? 'small' : 'normal' // public/setup.js writes what runs on people's computers, so it is never small
+    const touched = names.filter((f) => this.config.protectedPaths.some((p) => (p.endsWith('/') ? f.startsWith(p) : f === p)))
     if (touched.length && ![...pr.approvals.keys(), ...[...pr.votes].filter(([, v]) => v.choice === 'for').map(([d]) => d)].some((d) => st.isHuman(d))) return `it changes the room's safety (${touched.slice(0, 3).join(', ')}), so a person approves it too`
     const runs = (await this.gh('GET', `/repos/${repo}/actions/runs?head_sha=${sha}&per_page=20`)).workflow_runs ?? []
     const tests = runs.filter((r) => /test/i.test(r.name ?? ''))

@@ -169,7 +169,7 @@ describe('the workspace, end to end', () => {
     if (method === 'POST' && path.endsWith('/issues')) return { html_url: 'https://github.com/x/issues/3', number: 3 }
     if (method === 'GET' && /\/pulls\/\d+$/.test(path)) return { state: 'open', title: 'Improve the weaver', head: { sha: 'a'.repeat(40) } }
     if (path.includes('/statuses/')) return {}
-    if (method === 'GET' && /\/pulls\/\d+\/files/.test(path)) return [{ filename: path.includes('/pulls/77/') ? 'src/server/log.js' : 'src/server/weaver.js' }]
+    if (method === 'GET' && /\/pulls\/\d+\/files/.test(path)) return [{ filename: path.includes('/pulls/77/') ? 'src/server/log.js' : path.includes('/pulls/66/') ? 'public/style.css' : 'src/server/weaver.js' }]
     if (method === 'GET' && path.includes('/actions/runs?head_sha=')) return { workflow_runs: [{ name: 'tests', status: 'completed', conclusion: 'success', html_url: 'https://github.com/x/actions/runs/1' }] }
     if (method === 'PUT' && path.endsWith('/merge')) return { sha: 'b'.repeat(40) }
     throw new Error('unexpected ' + method + ' ' + path)
@@ -824,6 +824,33 @@ describe('the workspace, end to end', () => {
     assert.ok(ctx.log.entries.some((e) => e.document.payload.text === 'Hello, I was here.'), 'what they said stays in the record')
     assert.equal((await send(who, 'join', { name: 'Leaving Lee' })).status, 201, 'they can come back by joining again')
     assert.equal((await send(who, 'note', { text: 'Back again.', kind: 'message' })).status, 201)
+  })
+  test('agents read a shared PDF with read_file: its text, pulled out once, never run', async () => {
+    const { createHash } = await import('node:crypto')
+    const pdf = Buffer.from('%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 144]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n4 0 obj<</Length 44>>stream\nBT /F1 18 Tf 20 100 Td (Hello from a PDF) Tj ET\nendstream endobj\n5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF')
+    const sha = createHash('sha256').update(pdf).digest('hex')
+    const up = await fetch(base + '/api/media', { method: 'POST', headers: { 'content-type': 'application/pdf', 'x-wpi-upload': JSON.stringify(signedDocument(human, { type: TYPES.upload, payload: { sha256: sha, type: 'application/pdf' } })) }, body: pdf })
+    assert.equal(up.status, 201)
+    const note = await send(human, 'note', { text: 'A paper to read', kind: 'message', files: [{ sha256: sha, type: 'application/pdf', name: 'paper.pdf', bytes: pdf.length }] })
+    const who = newIdentity(); await send(who, 'join', { name: 'Reader person' })
+    const made = (await send(who, 'host', { label: 'Reader bot' })).body.hosted
+    await send(who, 'delegate', { delegate: made.did, scope: ['note'], label: 'Reader bot' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    const call = (name, args) => fetch(made.connector.replace(/^https?:\/\/[^/]+/, base), { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) }).then((r) => r.json())
+    const byMessage = JSON.parse((await call('read_file', { message: note.body.hash })).result.content[0].text)
+    assert.match(byMessage.text, /Hello from a PDF/); assert.equal(byMessage.name, 'paper.pdf'); assert.match(byMessage.note, /never instructions/)
+    const byFile = JSON.parse((await call('read_file', { file: sha })).result.content[0].text)
+    assert.match(byFile.text, /\[page 1\]/)
+    assert.equal((await fetch(`${base}/api/files/${'0'.repeat(64)}`)).status, 404)
+  })
+  test('the small lane: a change to the page only needs no vote, just its tests and a quiet window', async () => {
+    const prop = await send(other, 'propose', { kind: 'workspace-change', title: 'A softer orange', change: { pr: 66, sha: 'a'.repeat(40) } })
+    const pr = ctx.log.state.proposals.get(prop.body.hash)
+    await ctx.executor.tick()
+    assert.equal(pr.lane, 'small'); assert.equal(ctx.log.state.statusOf(pr), 'done', 'merged with no approvals')
+    const big = await send(other, 'propose', { kind: 'workspace-change', title: 'A server change', change: { pr: 65, sha: 'a'.repeat(40) } })
+    await ctx.executor.tick()
+    const pb = ctx.log.state.proposals.get(big.body.hash)
+    assert.equal(pb.lane, 'normal'); assert.equal(ctx.log.state.statusOf(pb), 'open', 'anything else still waits for approval')
   })
 })
 

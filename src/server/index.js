@@ -205,9 +205,13 @@ export async function createApp (config = defaultConfig, { resolver = createReso
         for await (const c of req) { size += c.length; if (size > 10 * 1024 * 1024 + 1) throw new TaskError('malformedRequest', 'a file is at most 10 MB', { status: 413 }); chunks.push(c) }
         const bytes = Buffer.concat(chunks)
         if (createHash('sha256').update(bytes).digest('hex') !== doc.payload.sha256) throw new TaskError('malformedRequest', 'the photo does not match the hash you signed')
-        try { return send(res, 201, ctx.media.put(who.principal ?? doc.issuer, doc.payload.type, bytes)) } catch (err) { throw new TaskError('malformedRequest', err.message) }
+        let stored
+        try { stored = ctx.media.put(who.principal ?? doc.issuer, doc.payload.type, bytes) } catch (err) { throw new TaskError('malformedRequest', err.message) }
+        if (!doc.payload.type.startsWith('image/')) await ctx.media.text(stored.sha256).catch(() => null) // its text, once, for read_file
+        return send(res, 201, stored)
       } catch (err) { return refuse(res, err, doc) }
     }
+    if (path.startsWith('/api/files/')) { const r = await views.fileText(ctx, path.slice(11), q); return r ? send(res, 200, r) : send(res, 404, { error: 'no file with that hash, or it has no text (a photo)' }) }
     if (path === '/api/workshop') return send(res, 200, ctx.workshop.view()) // every change to the room's own code, in public
     if (path.startsWith('/patches/') && req.method === 'GET') { // a change an agent handed the room, to read before approving it
       const d = ctx.changes.get(path.slice(9))
