@@ -469,7 +469,21 @@ function renderTalk (scrollDown) {
     talk.input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && matchMedia('(min-width: 760px)').matches) { ev.preventDefault(); sendChat() } })
     talk.picker = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true, onchange: (ev) => addPhotos([...ev.target.files]).finally(() => { ev.target.value = '' }) })
     talk.tray = h('div', { class: 'photo-tray', hidden: true })
-    talk.composer = h('div', { class: 'composer' }, talk.reply, talk.tray, h('div', { class: 'composer-row' }, h('button', { class: 'btn attach', 'aria-label': 'Add a photo', title: 'Add a photo (its location and camera data are removed)', onclick: () => talk.picker.click() }, '📎'), talk.picker, talk.input, h('button', { class: 'btn primary send', onclick: sendChat, 'aria-label': 'Send' }, '↑')), talk.toggle)
+    // the mic: speech turned into text on this device only; the button shows only where the browser can do that locally
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition, lang = navigator.language || 'en-US'
+    talk.micBtn = h('button', { class: 'btn attach', hidden: true, 'aria-label': 'Speak instead of typing', title: 'Speak instead of typing (turned into text on this device; no audio leaves it)', onclick: () => toggleMic() }, '🎤')
+    SR?.available?.({ langs: [lang], processLocally: true }).then((a) => { talk.micBtn.hidden = !['available', 'downloadable'].includes(a) }).catch(() => {})
+    const toggleMic = async () => {
+      if (talk.rec) return talk.rec.stop()
+      if ((await SR.available({ langs: [lang], processLocally: true })) === 'downloadable' && !(await SR.install?.({ langs: [lang], processLocally: true }))) return toast('This browser could not set up speech on this device.')
+      const rec = talk.rec = new SR()
+      Object.assign(rec, { lang, processLocally: true, continuous: true, interimResults: false })
+      rec.onresult = (ev) => { for (let i = ev.resultIndex; i < ev.results.length; i++) if (ev.results[i].isFinal) { const t = ev.results[i][0].transcript.trim(); talk.input.value += (talk.input.value && !/\s$/.test(talk.input.value) ? ' ' : '') + t; talk.input.dispatchEvent(new Event('input')) } }
+      rec.onerror = (ev) => toast(ev.error === 'not-allowed' ? 'Allow the microphone for this site to speak here.' : 'Speech stopped: ' + ev.error)
+      rec.onend = () => { talk.rec = null; talk.micBtn.classList.remove('primary') }
+      rec.start(); talk.micBtn.classList.add('primary')
+    }
+    talk.composer = h('div', { class: 'composer' }, talk.reply, talk.tray, h('div', { class: 'composer-row' }, h('button', { class: 'btn attach', 'aria-label': 'Add a photo', title: 'Add a photo (its location and camera data are removed)', onclick: () => talk.picker.click() }, '📎'), talk.picker, talk.micBtn, talk.input, h('button', { class: 'btn primary send', onclick: sendChat, 'aria-label': 'Send' }, '↑')), talk.toggle)
     talk.input.addEventListener('paste', (ev) => { const files = [...(ev.clipboardData?.files ?? [])].filter((f) => f.type.startsWith('image/')); if (files.length) { ev.preventDefault(); addPhotos(files) } })
     fill(root, talk.goals, talk.list, talk.composer)
   }
