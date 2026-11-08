@@ -1,0 +1,43 @@
+{
+  "name": "we-play-interop",
+  "version": "0.1.0",
+  "description": "A never-ending shared workspace where people and their AI agents steer a weaver toward more interop between projects, by every way of doing it.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "wpi-agent": "agent/bridge.js"
+  },
+  "scripts": {
+    "start": "node src/server/index.js",
+    "dev": "node --env-file-if-exists=.env --watch src/server/index.js",
+    "test": "node --test test/*.test.js",
+    "keygen": "node agent/keygen.js",
+    "verify": "node agent/verify-log.js",
+    "agent": "node agent/bridge.js"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.15",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@noble/ed25519": "^3.2.0",
+    "@noble/hashes": "^2.4.0",
+    "didwebvh-ts": "^3.1.0",
+    "pg": "^8.23.1",
+    "qrcode": "^1.5.4",
+    "zod": "^4.6.7"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Project-Weave-Tech/we-play-interop"
+  },
+  "keywords": [
+    "interop",
+    "did",
+    "trust-tasks",
+    "mcp",
+    "agents",
+    "verifiable-log"
+  ]
+}

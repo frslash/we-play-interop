@@ -1,0 +1,169 @@
+// We Play Interop: one small server. Reads are public; every write is a signed
+// Trust Task document, verified and appended to the hash-chained log.
+import { createHash } from 'node:crypto'
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import { dirname, join, normalize } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import QRCode from 'qrcode'
+import { identityFromSeedHex, newIdentity } from '../shared/did.js'
+import { Executor } from './actions.js'
+import { Board } from './board.js'
+import { config as defaultConfig } from './config.js'
+import { openDb } from './db.js'
+import { Llm } from './llm.js'
+import { Log, TaskError } from './log.js'
+import { handleMcp } from './mcp.js'
+import { createResolver } from './resolver.js'
+import * as views from './views.js'
+import { Weaver } from './weaver.js'
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
+const MAX_BODY = 64 * 1024
+const TYPES_OF = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.png': 'image/png', '.webmanifest': 'application/manifest+json' }
+// what the browser may load: the page, the shared core, and two audited crypto libraries
+const STATIC = [
+  ['/vendor/ed25519/', join(root, 'node_modules/@noble/ed25519/')],
+  ['/vendor/hashes/', join(root, 'node_modules/@noble/hashes/')],
+  ['/shared/', join(root, 'src/shared/')],
+  ['/', join(root, 'public/')],
+]
+
+function workspaceIdentity (config) {
+  if (config.workspaceKey) return identityFromSeedHex(config.workspaceKey)
+  if (config.production) throw new Error('WORKSPACE_KEY is required in production (npm run keygen makes one).')
+  const file = join(config.dataDir, 'dev-workspace-key')
+  if (existsSync(file)) return identityFromSeedHex(readFileSync(file, 'utf8'))
+  const id = newIdentity()
+  mkdirSync(config.dataDir, { recursive: true })
+  writeFileSync(file, id.seedHex, { mode: 0o600 })
+  console.warn(`No WORKSPACE_KEY set: made a local development key in ${file}. In production set WORKSPACE_KEY (npm run keygen).`)
+  return id
+}
+
+export async function createApp (config = defaultConfig, { resolver = createResolver(), gh } = {}) {
+  const identity = workspaceIdentity(config)
+  const db = await openDb(config)
+  const log = new Log({ db, identity, resolver, config })
+  await log.load()
+  const llm = new Llm(config.llm)
+  const board = new Board({ config, log })
+  const weaver = new Weaver({ config, log, board, llm })
+  const executor = new Executor({ config, log, board, ...(gh ? { gh } : {}) })
+  log.boardSlugs = () => board.projectSlugs()
+  const ctx = { config, log, board, llm, weaver, executor, identity, db }
+
+  const page = readFileSync(join(root, 'public/index.html'), 'utf8')
+  const importMap = /<script type="importmap">([\s\S]*?)<\/script>/.exec(page)?.[1] ?? ''
+  const csp = `default-src 'self'; script-src 'self' 'sha256-${createHash('sha256').update(importMap).digest('base64')}'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`
+
+  const sse = new Set()
+  log.on('entry', (e) => { const msg = `event: entry\ndata: ${JSON.stringify(e)}\n\n`; for (const res of sse) res.write(msg) })
+
+  const send = (res, status, body, headers = {}) => {
+    const json = typeof body !== 'string'
+    res.writeHead(status, { 'content-type': json ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8', 'access-control-allow-origin': '*', ...headers })
+    res.end(json ? JSON.stringify(body, null, 2) : body)
+  }
+  const readBody = (req) => new Promise((resolve, reject) => {
+    let size = 0; const chunks = []
+    req.on('data', (c) => { size += c.length; if (size > MAX_BODY) { reject(new TaskError('malformedRequest', 'a document is at most 64 KB', { status: 413 })); req.destroy() } else chunks.push(c) })
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', reject)
+  })
+  const ipOf = (req) => String(req.headers['fly-client-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim()
+
+  async function route (req, res) {
+    const url = new URL(req.url, 'http://local')
+    const path = url.pathname, q = Object.fromEntries(url.searchParams)
+    if (req.method === 'OPTIONS') return send(res, 204, '', { 'access-control-allow-methods': 'GET, POST', 'access-control-allow-headers': 'content-type, accept, mcp-protocol-version' })
+
+    if (path === '/mcp') {
+      if (req.method !== 'POST') return send(res, 405, { jsonrpc: '2.0', error: { code: -32000, message: 'POST only (stateless MCP)' }, id: null })
+      const raw = await readBody(req)
+      let body; try { body = JSON.parse(raw) } catch { return send(res, 400, { jsonrpc: '2.0', error: { code: -32700, message: 'parse error' }, id: null }) }
+      return handleMcp(ctx, req, res, body)
+    }
+    if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
+    if (path === '/api/info') return send(res, 200, views.info(ctx))
+    if (path === '/api/state') return send(res, 200, views.state(ctx))
+    if (path === '/api/map' || path === '/api/board') return send(res, 200, views.mapView(ctx))
+    if (path === '/api/log') return send(res, 200, views.entries(ctx, q))
+    if (path.startsWith('/api/log/')) { const e = log.byHash.get(path.slice(9)); return e ? send(res, 200, e) : send(res, 404, { error: 'no entry with that hash' }) }
+    if (path === '/api/verify') return send(res, 200, await log.verify())
+    if (path.startsWith('/api/participants/')) { const p = views.participant(ctx, decodeURIComponent(path.slice(18))); return p ? send(res, 200, p) : send(res, 404, { error: 'not in the workspace yet' }) }
+    if (path === '/api/qr.svg') {
+      const t = String(q.text ?? '')
+      if (!t || t.length > 600) return send(res, 400, 'text: 1 to 600 characters')
+      return send(res, 200, await QRCode.toString(t, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' }), { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=3600' })
+    }
+    if (path === '/api/events') {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'access-control-allow-origin': '*' })
+      res.write(`event: hello\ndata: ${JSON.stringify(log.head())}\n\n`)
+      sse.add(res)
+      const beat = setInterval(() => res.write(': keep-alive\n\n'), 25_000)
+      req.on('close', () => { clearInterval(beat); sse.delete(res) })
+      return
+    }
+    if (path === '/api/draft' && req.method === 'POST') {
+      try { return send(res, 200, views.draft(ctx, JSON.parse(await readBody(req)))) } catch (err) { return send(res, 400, { error: err.message }) }
+    }
+    if (path === '/api/entries' && req.method === 'POST') {
+      let doc
+      try {
+        doc = JSON.parse(await readBody(req))
+        const { entry, duplicate } = await log.accept(doc, { ip: ipOf(req) })
+        return send(res, duplicate ? 200 : 201, entry)
+      } catch (err) {
+        const e = err instanceof TaskError ? err : err instanceof SyntaxError ? new TaskError('malformedRequest', 'the body is not JSON') : new TaskError('internalError', 'something went wrong on our side', { status: 500, retryable: true })
+        if (!(err instanceof TaskError) && !(err instanceof SyntaxError)) console.error(err)
+        return send(res, e.status, log.errorDocument(e, doc))
+      }
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method not allowed' })
+    return serveStatic(path, res)
+  }
+
+  function serveStatic (path, res) {
+    if (path === '/' || path === '/index.html') {
+      res.writeHead(200, { 'content-type': TYPES_OF['.html'], 'content-security-policy': csp, 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' })
+      return res.end(page)
+    }
+    for (const [prefix, dir] of STATIC) {
+      if (!path.startsWith(prefix)) continue
+      const rel = normalize(decodeURIComponent(path.slice(prefix.length))).replace(/^(\.\.[/\\])+/, '')
+      const file = join(dir, rel)
+      const ext = rel.slice(rel.lastIndexOf('.'))
+      if (!file.startsWith(dir) || !TYPES_OF[ext] || !existsSync(file)) continue
+      if (prefix.startsWith('/vendor/') && ext !== '.js') continue
+      res.writeHead(200, { 'content-type': TYPES_OF[ext], 'x-content-type-options': 'nosniff', 'cache-control': prefix.startsWith('/vendor/') ? 'public, max-age=3600' : 'no-cache' })
+      return res.end(readFileSync(file))
+    }
+    send(res, 404, 'not found')
+  }
+
+  const server = createServer((req, res) => route(req, res).catch((err) => { console.error(err); if (!res.headersSent) send(res, 500, { error: 'internal error' }) }))
+
+  const timers = []
+  ctx.start = async () => {
+    await board.refresh()
+    timers.push(setInterval(() => board.refresh(), config.boardRefreshMinutes * 60_000))
+    timers.push(setInterval(() => board.snapshotIfChanged().catch((e) => console.error('score snapshot:', e)), 60_000))
+    timers.push(setInterval(() => weaver.tick(), 30_000))
+    timers.push(setInterval(() => executor.tick().catch((e) => console.error('executor:', e)), 30_000))
+  }
+  ctx.stop = async () => { timers.forEach(clearInterval); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.server = server
+  return ctx
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const ctx = await createApp()
+  ctx.server.listen(defaultConfig.port, () => {
+    console.log(`${defaultConfig.workspaceName} on :${defaultConfig.port} · workspace ${ctx.identity.did} · ${ctx.db.kind} · ${ctx.log.entries.length} entries`)
+    if (!ctx.llm.configured) console.warn('LLM_API_KEY is not set: the weaver runs its built-in tally instead of a model, and every round says so.')
+    if (!defaultConfig.githubToken) console.warn('GITHUB_TOKEN is not set: approved actions are prepared as links for a person to open, and the log says so.')
+  })
+  await ctx.start()
+  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, async () => { await ctx.stop(); process.exit(0) })
+}

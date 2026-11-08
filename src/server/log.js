@@ -1,0 +1,208 @@
+// The append-only, hash-chained log, and the rules for what may be appended.
+// Every write goes through accept(): shape, freshness, replay, signature,
+// who-may-say-what, delegation. Nothing is appended without a verified signature.
+import { EventEmitter } from 'node:events'
+import { canonicalize } from '../shared/crypto.js'
+import { hashCore, verifyChain } from '../shared/chain.js'
+import { sign, verifySignature } from '../shared/proof.js'
+import { AGENT_SCOPES, buildDocument, checkPayload, checkShape, NAME_OF, TYPES, WHO } from '../shared/types.js'
+import { insertEntry, loadEntries } from './db.js'
+import { State } from './state.js'
+
+const ERROR_TYPE = 'https://trusttasks.org/spec/trust-task-error/0.6'
+
+/** A refusal, answered as a Trust Task error document (trust-task-error). */
+export class TaskError extends Error {
+  constructor (code, message, { status = 400, retryable = false, retryAfter } = {}) {
+    super(message); this.code = code; this.status = status; this.retryable = retryable; this.retryAfter = retryAfter
+  }
+}
+
+export class Log extends EventEmitter {
+  constructor ({ db, identity, resolver, config }) {
+    super()
+    this.db = db; this.identity = identity; this.resolver = resolver; this.config = config
+    this.entries = []; this.byHash = new Map(); this.byDocId = new Map()
+    this.state = new State()
+    this.queue = Promise.resolve()
+    this.rate = new Map()
+    this.verified = null
+    this.boardSlugs = () => new Set() // set by the board once it has loaded
+  }
+
+  async load () {
+    for (const e of await loadEntries(this.db)) this.#index(e)
+    if (!this.entries.length) {
+      await this.appendAsWorkspace('genesis', {
+        name: this.config.workspaceName,
+        board: this.config.boardRepo,
+        workspaceRepo: this.config.workspaceRepo,
+        scope: 'interop between projects, all ways of doing it; the DTG board is one source of the map',
+        rules: {
+          vetoWindowMinutes: this.config.vetoWindowMinutes,
+          approvalsRequired: this.config.approvalsRequired,
+          freshDays: this.config.freshDays,
+          agentsMay: AGENT_SCOPES,
+          humansOnly: ['join', 'delegate', 'revoke', 'approve', 'veto', 'mode'],
+        },
+      })
+    } else if (this.state.workspace !== this.identity.did) {
+      throw new Error(`WORKSPACE_KEY does not match this log: the log was started by ${this.state.workspace}, the key is ${this.identity.did}. Set the original WORKSPACE_KEY.`)
+    }
+  }
+
+  #index (e) {
+    this.entries.push(e); this.byHash.set(e.hash, e); this.byDocId.set(e.document.id, e)
+    this.state.apply(e)
+  }
+
+  head () { const e = this.entries.at(-1); return e ? { seq: e.seq, hash: e.hash } : null }
+
+  /** Serialized append: one writer at a time, each entry pointing at the one before. */
+  #append (document, { author, onBehalfOf, delegation }) {
+    const run = async () => {
+      const prev = this.entries.at(-1)
+      const core = { seq: this.entries.length, parent: prev ? prev.hash : null, timestamp: new Date().toISOString(), author, onBehalfOf, ...(delegation ? { delegation } : {}), type: document.type, document }
+      const hash = hashCore(core)
+      const witness = sign(core, { seed: this.identity.seed, verificationMethod: this.identity.verificationMethod, created: core.timestamp, proofPurpose: 'assertionMethod' }).proof
+      const entry = { ...core, hash, witness }
+      await insertEntry(this.db, entry)
+      this.#index(entry)
+      this.emit('entry', entry)
+      return entry
+    }
+    const p = this.queue.then(run, run)
+    this.queue = p.catch(() => {})
+    return p
+  }
+
+  /** The workspace (and its weaver) speaking. */
+  async appendAsWorkspace (name, payload, { threadId } = {}) {
+    const doc = buildDocument({ type: TYPES[name], issuer: this.identity.did, payload, threadId })
+    const signed = sign(doc, { seed: this.identity.seed, verificationMethod: this.identity.verificationMethod, created: doc.issuedAt })
+    return this.#append(signed, { author: this.identity.did, onBehalfOf: this.identity.did })
+  }
+
+  /** Accept a document from a person or an agent, or throw a TaskError. */
+  async accept (doc, { ip = '' } = {}) {
+    const shape = checkShape(doc)
+    if (shape) throw new TaskError('malformedRequest', shape)
+    const name = NAME_OF[doc.type], st = this.state, now = Date.now()
+    if (WHO[name] === 'workspace' || doc.issuer === st.workspace) throw new TaskError('permissionDenied', `only the workspace writes ${name}`, { status: 403 })
+
+    const seen = this.byDocId.get(doc.id)
+    if (seen) {
+      if (canonicalize(seen.document) === canonicalize(doc)) return { entry: seen, duplicate: true } // a retry of the same bytes
+      throw new TaskError('idConflict', 'a different document with this id is already in the log', { status: 409 })
+    }
+    const skew = this.config.maxSkewMinutes * 60_000, at = Date.parse(doc.issuedAt)
+    if (at < now - skew) throw new TaskError('expired', `issuedAt is more than ${this.config.maxSkewMinutes} minutes old; sign it again`)
+    if (at > now + skew) throw new TaskError('malformedRequest', 'issuedAt is in the future; check the clock')
+    if (name !== 'delegate' && doc.expiresAt && Date.parse(doc.expiresAt) <= now) throw new TaskError('expired', 'the document has expired')
+    const bad = checkPayload(name, doc)
+    if (bad) throw new TaskError('malformedRequest', bad)
+
+    // the signature
+    let key
+    try { key = await this.resolver.keyFor(doc.issuer, doc.proof.verificationMethod, doc.proof.proofPurpose) } catch (err) {
+      throw new TaskError(/did:webvh: (https only|host)|did not resolve|fetch|timeout/i.test(err.message) ? 'indeterminate' : 'proofInvalid', `could not get the issuer's key: ${err.message}`, { retryable: /fetch|timeout/i.test(err.message) })
+    }
+    const sig = verifySignature(doc, key)
+    if (!sig.ok) throw new TaskError('proofInvalid', sig.reason)
+
+    // who may say this
+    const principal = doc.onBehalfOf ?? doc.issuer
+    let delegation = null
+    if (doc.onBehalfOf) {
+      if (WHO[name] !== 'anyone') throw new TaskError('permissionDenied', `agents may note, propose and vote; ${name} stays with humans`, { status: 403 })
+      delegation = st.delegations.get(doc.delegation)
+      if (!delegation) throw new TaskError('permissionDenied', 'the delegation named is not in the log', { status: 403 })
+      if (delegation.issuer !== doc.onBehalfOf || delegation.delegate !== doc.issuer) throw new TaskError('permissionDenied', 'that delegation is not from this human to this agent', { status: 403 })
+      if (delegation.revoked) throw new TaskError('permissionDenied', 'that delegation was revoked', { status: 403 })
+      if (Date.parse(delegation.expiresAt) <= now) throw new TaskError('expired', 'that delegation has expired; ask your human for a new one')
+      if (!delegation.scope.includes(name)) throw new TaskError('permissionDenied', `the delegation does not cover ${name}`, { status: 403 })
+      if (!st.isHuman(doc.onBehalfOf)) throw new TaskError('permissionDenied', 'onBehalfOf has not joined', { status: 403 })
+    } else {
+      if (st.isAgent(doc.issuer)) throw new TaskError('permissionDenied', 'this DID belongs to an agent: sign with onBehalfOf and delegation', { status: 403 })
+      if (name !== 'join' && !st.isHuman(doc.issuer)) throw new TaskError('permissionDenied', 'join first (member/join)', { status: 403 })
+    }
+    this.#checkContext(name, doc, principal)
+    this.#limit(principal, ip)
+    this.verified = null
+    const entry = await this.#append(doc, { author: doc.issuer, onBehalfOf: principal, delegation: delegation?.hash })
+    return { entry, duplicate: false }
+  }
+
+  #checkContext (name, doc, principal) {
+    const p = doc.payload, st = this.state
+    const proposal = (h) => { const pr = st.proposals.get(h); if (!pr) throw new TaskError('malformedRequest', 'no proposal with that hash'); return pr }
+    switch (name) {
+      case 'delegate': {
+        if (p.delegate === doc.issuer || p.delegate === st.workspace || st.isHuman(p.delegate)) throw new TaskError('permissionDenied', 'an agent needs a DID of its own, not a person\'s', { status: 403 })
+        const other = st.participants.get(p.delegate)
+        if (other?.kind === 'agent' && other.principal !== doc.issuer) throw new TaskError('permissionDenied', 'that agent already acts for someone else', { status: 403 })
+        break
+      }
+      case 'revoke': {
+        const d = st.delegations.get(p.delegation)
+        if (!d || d.issuer !== doc.issuer) throw new TaskError('permissionDenied', 'you can revoke only your own delegations', { status: 403 })
+        break
+      }
+      case 'vote': case 'approve': proposal(p.proposal); break
+      case 'veto': proposal(p.target); break
+      case 'project': {
+        const mine = st.participants.get(principal)?.projects ?? []
+        const prev = st.mapProjects.get(p.slug)
+        const owned = this.boardSlugs().has(p.slug) || st.membersOf(p.slug).length > 0
+        if (!mine.includes(p.slug) && (owned || (prev && prev.addedBy !== principal))) throw new TaskError('permissionDenied', `only people who joined for ${p.slug} (or their agents) change its entry; say what you know in a note`, { status: 403 })
+        break
+      }
+      case 'way': {
+        const prev = st.mapWays.get(p.id)
+        if (prev && prev.addedBy !== principal) throw new TaskError('permissionDenied', `the way ${p.id} is already described; say what to change in a note`, { status: 403 })
+        break
+      }
+      case 'run': {
+        const known = (slug) => st.mapProjects.has(slug) || this.boardSlugs().has(slug)
+        for (const s of p.sides) if (!known(s.project)) throw new TaskError('malformedRequest', `${s.project} is not on the map yet: add it first (map:project)`)
+        const mine = st.participants.get(principal)?.projects ?? []
+        if (!p.sides.some((s) => mine.includes(s.project)) && !p.sources?.length) throw new TaskError('malformedRequest', 'a run is entered by one of its two sides: join for your project, or add sources (public links) and it shows as reported')
+        break
+      }
+      case 'propose':
+        if (p.kind === 'record-run') {
+          const mine = st.participants.get(principal)?.projects ?? []
+          if (!mine.length) throw new TaskError('permissionDenied', 'the board takes a run from one of its two sides: join with your project (projects in member/join) to record runs', { status: 403 })
+          const sides = p.run.sides.map((s) => s.project)
+          if (!sides.some((s) => mine.includes(s)) && !p.sources?.length) throw new TaskError('malformedRequest', 'neither side is your project: add sources (public links) so the board shows it as reported by your project')
+        }
+        break
+    }
+  }
+
+  /** Rate limit: a person (with their agents) and an address each get a steady allowance. */
+  #limit (principal, ip) {
+    const now = Date.now(), windowMs = 60_000
+    for (const [k, max] of [['p:' + principal, 30], ['ip:' + ip, 120]]) {
+      const hits = (this.rate.get(k) ?? []).filter((t) => t > now - windowMs)
+      if (hits.length >= max) throw new TaskError('unavailable', 'too many entries in a minute; slow down', { status: 429, retryable: true, retryAfter: new Date(hits[0] + windowMs).toISOString() })
+      hits.push(now); this.rate.set(k, hits)
+    }
+  }
+
+  /** A signed trust-task-error answering a refused document. */
+  errorDocument (err, doc) {
+    const out = buildDocument({ type: ERROR_TYPE, issuer: this.identity.did, threadId: doc?.threadId ?? (typeof doc?.id === 'string' ? doc.id : undefined), payload: {
+      code: err.code, message: err.message, retryable: err.retryable, ...(err.retryAfter ? { retryAfter: err.retryAfter } : {}),
+      ...(typeof doc?.id === 'string' ? { inResponseTo: { typeUri: String(doc.type ?? ''), id: doc.id } } : {}),
+    } })
+    return sign(out, { seed: this.identity.seed, verificationMethod: this.identity.verificationMethod, created: out.issuedAt })
+  }
+
+  /** Re-verify the whole chain (cached until the next append). */
+  async verify () {
+    if (this.verified?.head?.hash === this.head()?.hash) return this.verified
+    this.verified = { ...(await verifyChain(this.entries, { keyFor: (d, vm, pp) => this.resolver.keyFor(d, vm, pp) })), verifiedAt: new Date().toISOString() }
+    return this.verified
+  }
+}
