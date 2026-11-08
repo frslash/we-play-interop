@@ -769,7 +769,7 @@ describe('bringing an agent in with Claude Code', () => {
     const { request } = await import('../src/server/wake.js')
     const msg = claudeCodeSetup({ link: 'https://room.example/mcp/a/secret', did: 'did:key:z6Mkx', agent: "P's Claude", person: 'P', room: 'https://room.example' })
     const files = Object.fromEntries([...msg.matchAll(/^=== (.+?) ===\n([\s\S]*?)\n=== end of \1 ===$/gm)].map(([, n, b]) => [n, b]))
-    assert.deepEqual(Object.keys(files).sort(), ['.claude/hooks/wait-for-room.sh', '.claude/settings.json', '.mcp.json', 'CLAUDE.md', 'room.env'])
+    assert.deepEqual(Object.keys(files).sort(), ['.claude/hooks/wait-for-room.sh', '.claude/settings.json', '.mcp.json', 'CLAUDE.md', 'boundaries.md', 'room.env'])
     assert.equal(JSON.parse(files['.mcp.json']).mcpServers['we-play-interop'].url, 'https://room.example/mcp/a/secret')
     assert.equal(JSON.parse(files['.claude/settings.json']).hooks.Stop[0].hooks[0].asyncRewake, true)
     assert.equal(files['.claude/hooks/wait-for-room.sh'] + '\n', HOOK)
