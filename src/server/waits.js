@@ -46,6 +46,9 @@ export class Waits {
     })
   }
 
+  /** Wake an agent that is waiting now, for something that is not a line in the record (its person's private note). */
+  poke (agent, why) { this.end(agent, { woke: true, reasons: [why], head: this.ctx.log.head() }) }
+
   end (agent, answer) {
     const w = this.waiters.get(agent)
     if (!w) return

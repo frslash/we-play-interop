@@ -84,6 +84,14 @@ export class Waker {
     return this.post(agent, hook, body)
   }
 
+  /** Its person left it a private note: start it (within the usual minute), to read its notebook. */
+  poke (agent) {
+    const hook = this.hooks.get(agent)
+    if (!hook || Date.now() - (this.lastAt.get(agent) ?? 0) < COOLDOWN_MS) return
+    this.lastAt.set(agent, Date.now())
+    return this.post(agent, hook, { room: this.ctx.config.publicUrl || null, agent, agentName: this.ctx.log.state.nameOf(agent), reasons: ['private'], latest: { id: null, from: 'your person', text: 'Your person left you a private note.' }, hint: 'Open the We Play Interop room with your connector and read my_notebook.' })
+  }
+
   /** Right after a link is set: start the agent once, so it says hello and its person sees it work. */
   hello (agent) {
     const hook = this.hooks.get(agent)

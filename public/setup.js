@@ -25,7 +25,7 @@ export const HOOK = [
   '  ans="$(curl -fsS --max-time 100 "$ROOM_URL/api/wait?as=text&timeout=80&me=$AGENT_DID&on=$WAKE_ON${after:+&after=$after}" 2>/dev/null)" || { log unreachable; sleep 30; continue; }',
   '  read -r what seq why <<< "$ans"',
   '  case "$what" in',
-  '    woke) echo "$seq" > "$SEQ"; log "woke $why"',
+  '    woke) [ "$seq" != -1 ] && echo "$seq" > "$SEQ"; log "woke $why"',
   '      echo "The room has something for you ($why). Call inbox, answer what is for you, then stop." >&2',
   '      exit 2 ;;',
   '    replaced) log replaced; exit 0 ;;',

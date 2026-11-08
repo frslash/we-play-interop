@@ -8,6 +8,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { findSecret } from '../shared/guard.js'
 
 export const MAX_PATCH = 200_000 // a focused change; a rewrite of the room goes through a person
 
@@ -24,6 +25,8 @@ export class Changes {
     if (!s.trim() || Buffer.byteLength(s) > MAX_PATCH) throw new Error(`a change is a unified diff of at most ${MAX_PATCH / 1000} KB`)
     if (!/^(diff --git |--- |\+\+\+ |@@ )/m.test(s)) throw new Error('a change is a unified diff (as git diff prints it)')
     if (/^(?:\+\+\+|---) (?:a|b)\/(?:package(?:-lock)?\.json)\b/m.test(s)) throw new Error('changes to the room\'s dependencies (package.json, package-lock.json) go through a person')
+    const leak = findSecret(s)
+    if (leak) throw new Error(`this change contains what looks like ${leak.what}, so the room did not take it: everything here is public. Take it out and hand it in again`)
     const sha256 = createHash('sha256').update(s).digest('hex')
     writeFileSync(join(this.dir, `${sha256}.diff`), s)
     return { sha256, bytes: Buffer.byteLength(s) }
