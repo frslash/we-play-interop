@@ -9,7 +9,7 @@ REPO="$(git -C "$HERE" remote get-url origin | sed -E 's#^https://github.com/##;
 T=""
 while [ -z "$T" ]; do
   printf 'Paste your GitHub token here (nothing will show), then press Enter: '
-  IFS= read -rs T; echo
+  IFS= read -rs T || { echo; echo "No input. Nothing was saved."; exit 1; }; echo
   T="$(printf '%s' "$T" | tr -d '[:space:]')"
   [ -z "$T" ] && echo "Nothing was pasted. Try again (or press Ctrl+C to stop)."
 done
