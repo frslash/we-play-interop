@@ -25,6 +25,7 @@ cat > "$PROFILE" <<EOF
 (version 1)
 (allow default)
 (deny file-read* file-write* (subpath "$HOME"))
+(allow file-read-metadata (literal "$HOME"))
 (allow file-read* file-write* (subpath "$ROOT"))
 EOF
 # run something inside the sandbox, from a folder of the sandbox
