@@ -26,7 +26,7 @@ export const HOOK = [
   '  read -r what seq why <<< "$ans"',
   '  case "$what" in',
   '    woke) [ "$seq" != -1 ] && echo "$seq" > "$SEQ"; log "woke $why"',
-  '      echo "The room has something for you ($why). Call inbox, answer what is for you, then stop." >&2',
+  '      case "$why" in *private*) echo "Your person left you a private note in the room. Read my_notebook, do what they ask, then stop." >&2 ;; *) echo "The room has something for you ($why). Call inbox, answer what is for you, then stop." >&2 ;; esac',
   '      exit 2 ;;',
   '    replaced) log replaced; exit 0 ;;',
   '    stop) log "stop $seq $why"; exit 0 ;;',

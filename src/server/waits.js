@@ -20,7 +20,19 @@ export class Waits {
   listening (agent) { return this.waiters.has(agent) || Date.now() - (this.seen.get(agent) ?? 0) < LISTENING_GRACE_MS }
 
   /** Resolves { woke, reasons?, head } as soon as something concerns the agent, or at the timeout. */
-  wait ({ me, after, timeout, on }) {
+  /** A wait that first tells the agent about any private note from its person it hasn't been told about. */
+  async wait (args) {
+    const me = args?.me, notes = me && this.ctx.notebooks ? await this.ctx.notebooks.unread(me).catch(() => []) : []
+    const newest = notes.at(-1)?.at
+    if (newest && newest > (this.privateTold?.get(me) ?? '') && this.ctx.log.state.activeDelegation(me)) {
+      (this.privateTold ??= new Map()).set(me, newest)
+      this.seen.set(me, Date.now())
+      return { woke: true, reasons: ['private'], head: this.ctx.log.head() }
+    }
+    return this.waitForRoom(args)
+  }
+
+  waitForRoom ({ me, after, timeout, on }) {
     const { log, waker } = this.ctx, st = log.state
     const head = () => log.head()
     const seconds = Math.max(1, Math.min(MAX_SECONDS, Number(timeout) || 50))
