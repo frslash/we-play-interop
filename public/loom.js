@@ -1,11 +1,12 @@
 // The loom: everyone in the room is a point of light, people on the outside with
 // their agents beside them, the weaver in the middle. Every message flies as a
-// thread from who said it to who it is for, and stays as a faint strand, so the
-// room's history becomes a weave. The weaver's connections are gold.
+// thread from who said it to who it is for, then fades over a couple of minutes,
+// so the picture is the room as it is now. The weaver's connections are gold.
 const NS = 'http://www.w3.org/2000/svg'
 const el = (tag, attrs = {}) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e }
 const hash = (s) => { let x = 2166136261; for (const c of s) x = Math.imul(x ^ c.charCodeAt(0), 16777619); return x >>> 0 }
 const MAX_STRANDS = 500 // a picture you can still read; older strands drop off
+export const FADE_MS = 120_000 // how long a line stays on the loom, from the moment it was said
 
 export function createLoom (wrap, { onSelect } = {}) {
   const svg = el('svg', { class: 'loom', role: 'img', 'aria-label': 'The room: each point is a person or an agent, each line a message' })
@@ -91,7 +92,8 @@ export function createLoom (wrap, { onSelect } = {}) {
   }
 
   /** A thread from one participant to another (or to the weaver, for everyone). */
-  function thread (fromDid, toDid, { gold = false, fast = false, strand = true } = {}) {
+  function thread (fromDid, toDid, { gold = false, fast = false, strand = true, age = 0 } = {}) {
+    if (age >= FADE_MS) return
     const a = pos.get(fromDid) ?? center, b = (toDid && pos.get(toDid)) || center
     const d = curve(a, b)
     const color = gold ? 'var(--gold)' : a.color ?? 'var(--accent)'
@@ -100,7 +102,7 @@ export function createLoom (wrap, { onSelect } = {}) {
     const len = path.getTotalLength()
     path.style.strokeDasharray = `${len}`
     path.style.strokeDashoffset = `${len}`
-    const dur = fast ? 380 : gold ? 1600 : 1100, gen = generation
+    const dur = fast ? 380 : gold ? 1600 : 1100, settle = dur + (fast ? 50 : 900), gen = generation
     path.animate([{ strokeDashoffset: len }, { strokeDashoffset: 0 }], { duration: dur, easing: 'cubic-bezier(.2,.7,.2,1)', fill: 'forwards' })
     if (!fast) comet(path, len, dur, color)
     setTimeout(() => {
@@ -111,7 +113,10 @@ export function createLoom (wrap, { onSelect } = {}) {
       path.setAttribute('stroke-width', (gold ? 1.6 : 1.1) * px)
       weave.append(path)
       while (weave.childNodes.length > MAX_STRANDS) weave.firstChild.remove()
-    }, dur + (fast ? 50 : 900))
+      // bright when it lands, lingers, then fades out: the fade's clock started when the line was said
+      const top = gold ? 0.75 : 0.6
+      path.animate([{ opacity: top }, { opacity: top * 0.45, offset: 0.6 }, { opacity: 0 }], { duration: FADE_MS, delay: -(age + settle), fill: 'forwards' }).onfinish = () => path.remove()
+    }, settle)
     pulse(fromDid)
   }
 

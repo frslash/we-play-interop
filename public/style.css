@@ -129,6 +129,9 @@ body[data-tab="watch"] #score, body[data-tab="watch"] #banner { display: none; }
 .cap:first-child { border-top: 0; }
 .cap .dot { flex: none; width: 9px; height: 9px; border-radius: 50%; transform: translateY(-1px); }
 .cap.weaver strong { color: var(--gold); }
+.cap.fading { animation: cap-fade 120s linear forwards; } /* the loom's two minutes; the delay is each line's age */
+@keyframes cap-fade { 0% { opacity: 1; } 60% { opacity: 0.55; } 100% { opacity: 0; } }
+.caps-note { margin: -4px 0 6px; font-size: 13px; }
 .watch-about { color: var(--muted); font-size: 14px; text-align: center; margin: 14px 8px 4px; }
 .section-title { font-size: 17px; margin: 8px 0 0; }
 

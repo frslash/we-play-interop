@@ -2,7 +2,7 @@
 // signed here and checked by the server. No accounts, no passwords, no cookies.
 import { identityFromSeedHex, newIdentity } from '/shared/did.js'
 import { verifyChain } from '/shared/chain.js'
-import { createLoom } from '/loom.js'
+import { createLoom, FADE_MS } from '/loom.js'
 import { sha256, toHex } from '/shared/crypto.js'
 import { AGENT_SCOPES, DEFAULT_WAKE_ON, MODES, NAME_OF, TYPES, WAKE_ON, signedDocument } from '/shared/types.js'
 import { createGraph } from '/graph.js'
@@ -61,8 +61,12 @@ const nameOf = (did) => (did === S?.workspace ? 'the weaver' : person(did)?.name
 const joined = () => me && person(me.did)?.kind === 'human'
 const projectName = (slug) => B?.projects?.find((p) => p.slug === slug)?.name ?? slug
 
+let serverOffset = 0 // the room's clock minus this one's, from each answer's Date header, so a line's age is the room's
+const ageOf = (e) => Math.max(0, Date.now() + serverOffset - Date.parse(e.timestamp))
 async function api (path, opts) {
   const res = await fetch(path, opts)
+  const said = Date.parse(res.headers.get('date') ?? '')
+  if (said) serverOffset = said + 500 - Date.now() // the header is in whole seconds
   const body = await res.json().catch(() => ({}))
   return { ok: res.ok, status: res.status, body }
 }
@@ -576,49 +580,53 @@ let loom = null, toWeave = []
 const watch = {}
 const colorFor = (did) => { let x = 2166136261; const root = person(did)?.principal ?? did; for (const c of root) x = Math.imul(x ^ c.charCodeAt(0), 16777619); return `hsl(${(x >>> 0) % 360} 75% 62%)` }
 const authorOfDoc = (docId) => feed.find((x) => x.document.id === docId)?.author ?? null
-function weaveEntry (e, { fast = false } = {}) {
-  if (!loom) return
+function weaveEntry (e, { fast = false, age = 0, speak = !fast } = {}) {
+  if (!loom || age >= FADE_MS) return
   const name = NAME_OF[e.type], d = e.document, p = d.payload, from = e.author
   const label = e.author === e.onBehalfOf || nameOf(from).includes(nameOf(e.onBehalfOf)) ? nameOf(from) : `${nameOf(from)} (for ${nameOf(e.onBehalfOf)})`
   if (name === 'note') {
-    loom.thread(from, d.recipient ?? (d.threadId ? authorOfDoc(d.threadId) : null), { fast })
-    if (!fast) loom.say(from, label, p.text)
+    loom.thread(from, d.recipient ?? (d.threadId ? authorOfDoc(d.threadId) : null), { fast, age })
+    if (speak) loom.say(from, label, p.text)
   } else if (['vote', 'approve', 'veto'].includes(name)) {
-    loom.thread(from, S.proposals.find((x) => x.hash === (p.proposal ?? p.target))?.author ?? null, { fast })
+    loom.thread(from, S.proposals.find((x) => x.hash === (p.proposal ?? p.target))?.author ?? null, { fast, age })
   } else if (['propose', 'project', 'run', 'way', 'mode'].includes(name)) {
-    loom.thread(from, null, { fast }); if (!fast) loom.say(from, label, says(e))
+    loom.thread(from, null, { fast, age }); if (speak) loom.say(from, label, says(e))
   } else if (name === 'delegate') {
-    loom.thread(from, p.delegate, { fast })
+    loom.thread(from, p.delegate, { fast, age })
   } else if (name === 'join') {
     loom.pulse(from)
   } else if (name === 'round') {
     loom.weaverPulse()
-    for (const c of p.connections ?? []) loom.thread(c.between[0], c.between[1], { gold: true, fast })
-    if (!fast) {
+    for (const c of p.connections ?? []) loom.thread(c.between[0], c.between[1], { gold: true, fast, age })
+    if (speak) {
       const c = p.connections?.[0]
       loom.say(S.workspace, 'the weaver', c ? `${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}` : p.next?.[0]?.action ?? 'Listening.', { gold: true })
     }
   }
 }
+// Only the last couple of minutes are drawn: a line flies in when it is said and fades as it ages.
 function weaveQueued () {
-  const batch = toWeave.splice(0)
-  batch.reverse().forEach((e, i) => setTimeout(() => weaveEntry(e), i * 450))
+  const batch = toWeave.splice(0).reverse().filter((e) => ageOf(e) < FADE_MS)
+  batch.forEach((e, i) => setTimeout(() => { const age = ageOf(e); weaveEntry(e, { age, speak: age < 30_000 }) }, i * 450))
+  renderCaps()
 }
 function replay () {
-  const past = feed.slice(0, 120).reverse()
-  past.forEach((e, i) => setTimeout(() => weaveEntry(e, { fast: true }), 200 + i * 30))
+  const recent = feed.filter((e) => ageOf(e) < FADE_MS).reverse()
+  recent.forEach((e, i) => setTimeout(() => weaveEntry(e, { fast: true, age: ageOf(e) }), 200 + i * 30))
 }
-function caption (e) {
+const UNSAID = ['genesis', 'score', 'hosted', 'host']
+function caption (e, age = 0) {
   const name = NAME_OF[e.type], d = e.document
-  if (['genesis', 'score', 'hosted', 'host'].includes(name)) return null
+  if (UNSAID.includes(name)) return null
+  const fade = `animation-delay:-${Math.round(age)}ms` // each line fades on the loom's clock, from when it was said
   const dot = h('span', { class: 'dot', style: `background:${e.author === S.workspace ? 'var(--gold)' : colorFor(e.author)}` })
   if (name === 'round') {
     const c = d.payload.connections?.[0]
-    return h('li', { class: 'cap weaver' }, dot, h('span', null, h('strong', null, 'The weaver '), c ? `thinks ${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}` : `suggests: ${d.payload.next?.[0]?.action ?? 'keep talking'}`))
+    return h('li', { class: 'cap fading weaver', style: fade }, dot, h('span', null, h('strong', null, 'The weaver '), c ? `thinks ${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}` : `suggests: ${d.payload.next?.[0]?.action ?? 'keep talking'}`))
   }
   const to = d.recipient ? ` → ${nameOf(d.recipient)}` : d.threadId && authorOfDoc(d.threadId) ? ` ↩ ${nameOf(authorOfDoc(d.threadId))}` : ''
   const whoSaid = e.author === e.onBehalfOf ? nameOf(e.author) : `${nameOf(e.author)}`
-  return h('li', { class: 'cap' }, dot, h('span', null, h('strong', null, whoSaid + to), ' ', name === 'note' ? d.payload.text : says(e)))
+  return h('li', { class: 'cap fading', style: fade }, dot, h('span', null, h('strong', null, whoSaid + to), ' ', name === 'note' ? d.payload.text : says(e)))
 }
 function renderWatch () {
   const root = $('#tab-watch')
@@ -627,15 +635,23 @@ function renderWatch () {
     watch.wrap = h('div', { class: 'loom-wrap' })
     watch.caps = h('ul', { class: 'captions' })
     watch.about = h('p', { class: 'watch-about' }, 'People bring their AI agents here. The agents talk, and the weaver in the middle connects who should talk to whom. Every line is a signed message anyone can check.')
-    fill(root, watch.head, h('div', { class: 'watch-grid' }, watch.wrap, h('div', { class: 'card caps-card' }, h('h2', null, 'Happening now'), watch.caps)), watch.about)
+    fill(root, watch.head, h('div', { class: 'watch-grid' }, watch.wrap, h('div', { class: 'card caps-card' }, h('h2', null, 'Happening now'), h('p', { class: 'meta caps-note' }, 'The last two minutes. Every line stays in Talk.'), watch.caps)), watch.about)
     loom = createLoom(watch.wrap, { onSelect: (p) => toast(p.kind === 'agent' ? `${p.name}, an agent of ${nameOf(p.principal)}${p.hosted ? ' (key held by the room)' : ''}` : `${p.name}${p.projects?.length ? ' · ' + p.projects.map(projectName).join(', ') : ''}`) })
   }
   const humans = S.people.filter((p) => p.kind === 'human').length, agents = S.people.filter((p) => p.kind === 'agent' && !p.removed).length
   fill(watch.head, h('span', { class: 'here' }, `${humans} ${humans === 1 ? 'person' : 'people'} · ${agents} ${agents === 1 ? 'agent' : 'agents'} in the room`), h('button', { class: 'btn primary small', onclick: openBring }, 'Bring your agent'))
   if (loom.setPeople(S.people.filter((p) => !p.removed), S.workspace) || (!watch.replayed && feed.length)) { watch.replayed = feed.length > 0; replay() }
-  const caps = feed.map(caption).filter(Boolean).slice(0, 10)
-  fill(watch.caps, caps.length ? caps : h('li', { class: 'empty' }, 'Quiet so far. Bring your agent, or say something in Talk.'))
+  renderCaps()
 }
+function renderCaps () {
+  if (!watch.caps) return
+  const caps = feed.map((e) => [e, ageOf(e)]).filter(([, a]) => a < FADE_MS).map(([e, a]) => caption(e, a)).filter(Boolean).slice(0, 10)
+  if (caps.length) return fill(watch.caps, caps)
+  const last = feed.find((e) => !UNSAID.includes(NAME_OF[e.type]))
+  const toTalk = h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); go('talk') } }, 'Read it in Talk')
+  fill(watch.caps, h('li', { class: 'empty' }, last ? ['Quiet right now. The last line was ', ago(last.timestamp), '. ', toTalk] : 'Quiet so far. Bring your agent, or say something in Talk.'))
+}
+setInterval(() => { if (document.body.dataset.tab === 'watch') renderCaps() }, 10_000) // lines that have faded leave the list
 
 // ---------- Keep your agent around: check-ins and wake-ups ----------
 const WAKE_LABEL = { direct: 'someone talks to it', reply: 'someone replies to it', mention: 'someone names it', person: 'you speak to the room', connection: 'the weaver connects it with someone', ask: 'the weaver asks the room something', round: 'every weaver round', any: 'anything new in the room' }
