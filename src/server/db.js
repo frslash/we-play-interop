@@ -24,6 +24,7 @@ create table if not exists agent_notes (
   notes_enc text not null,
   updated   timestamptz not null
 );
+alter table agent_notes add column if not exists read_up_to text;
 create table if not exists agent_wakes (
   agent    text primary key,
   url_enc  text not null,

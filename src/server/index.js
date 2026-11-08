@@ -145,8 +145,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
         if (!asAgent && !asPerson) throw new TaskError('permissionDenied', 'only the agent and its person can open its notebook', { status: 403 })
         if (op === 'peek') return send(res, 200, { agent, unread: asAgent ? (await ctx.notebooks.unread(agent)).length : 0 })
         const notes = op === 'add' ? await ctx.notebooks.add(agent, asAgent ? 'agent' : 'person', text) : await ctx.notebooks.get(agent)
-        if (asAgent && op === 'read') ctx.notebooks.markRead(agent)
-        return send(res, 200, { agent, notes, card: log.state.participants.get(who.principal)?.card ?? null })
+        if (asAgent && op === 'read') await ctx.notebooks.markRead(agent)
+        return send(res, 200, { agent, notes, readUpTo: await ctx.notebooks.readAt(agent), card: log.state.participants.get(who.principal)?.card ?? null })
       } catch (err) { return refuse(res, err, doc) }
     }
     if (path === '/api/wake' && req.method === 'POST') {

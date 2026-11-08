@@ -19,9 +19,18 @@ export function info (ctx) {
   }
 }
 
+/** How an agent can be reached right now: waiting on the room, a wake link, the room answering for it, or not at all (null). */
+function listeningOf (ctx, p) {
+  if (!ctx.log.state.activeDelegation(p.did)) return null
+  if (ctx.waits?.listening(p.did)) return 'waiting'
+  if (p.wake) return 'wake link'
+  if (ctx.log.state.away.get(p.did)?.enabled) return 'room answers'
+  return null
+}
+
 export function state (ctx) {
   const { log, board, executor } = ctx, st = log.state
-  const people = [...st.participants.values()].filter((p) => p.kind !== 'workspace').map((p) => ({ ...p, delegation: p.kind === 'agent' ? st.activeDelegation(p.did)?.hash ?? null : undefined, ...(p.kind === 'agent' && ctx.waker?.status.get(p.did) ? { wakeLast: ctx.waker.status.get(p.did) } : {}), ...(p.kind === 'agent' && st.away.get(p.did) ? { away: st.away.get(p.did), awayLast: ctx.away?.status.get(p.did) ?? null } : {}) }))
+  const people = [...st.participants.values()].filter((p) => p.kind !== 'workspace').map((p) => ({ ...p, delegation: p.kind === 'agent' ? st.activeDelegation(p.did)?.hash ?? null : undefined, ...(p.kind === 'agent' && ctx.waker?.status.get(p.did) ? { wakeLast: ctx.waker.status.get(p.did) } : {}), ...(p.kind === 'agent' && st.away.get(p.did) ? { away: st.away.get(p.did), awayLast: ctx.away?.status.get(p.did) ?? null } : {}), ...(p.kind === 'agent' ? { listening: listeningOf(ctx, p) } : {}) }))
   return {
     ...info(ctx),
     people,

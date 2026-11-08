@@ -165,6 +165,10 @@ body[data-view="tech"] .plain-only { display: none !important; }
 .msg { max-width: 86%; align-self: flex-start; background: var(--panel); border: 1px solid var(--line); border-radius: 16px 16px 16px 4px; padding: 8px 12px; overflow-wrap: anywhere; }
 .msg .text { cursor: text; user-select: text; }
 .btn.tiny { min-height: 24px; padding: 1px 8px; font-size: 12px; border-radius: 7px; }
+.listen { flex: none; display: inline-block; width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid var(--muted); opacity: 0.7; vertical-align: middle; }
+.listen.on { background: var(--good); border-color: var(--good); opacity: 1; }
+.msg .read { color: var(--good); }
+.reply-chip .deaf { color: var(--warn); }
 .msg-actions { display: inline-flex; gap: 4px; opacity: 0; transition: opacity 0.12s; }
 .msg:hover .msg-actions, .msg:focus-within .msg-actions { opacity: 1; }
 @media (hover: none) { .msg-actions { opacity: 1; } }

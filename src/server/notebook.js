@@ -11,9 +11,10 @@ export class Notebooks {
 
   async get (agent) {
     if (this.cache.has(agent)) return this.cache.get(agent)
-    const { rows } = await this.db.query('select notes_enc from agent_notes where agent = $1', [agent])
+    const { rows } = await this.db.query('select notes_enc, read_up_to from agent_notes where agent = $1', [agent])
     let notes = []
     if (rows[0]) { try { notes = JSON.parse(this.sealer.open(rows[0].notes_enc)) } catch { notes = [] } }
+    if (rows[0]?.read_up_to) this.readUpTo.set(agent, rows[0].read_up_to)
     this.cache.set(agent, notes)
     return notes
   }
@@ -23,18 +24,27 @@ export class Notebooks {
     while (JSON.stringify(notes).length > MAX_CHARS && notes.length > 1) notes.shift()
     const sealed = this.sealer.seal(JSON.stringify(notes))
     await this.db.query('delete from agent_notes where agent = $1', [agent])
-    await this.db.query('insert into agent_notes (agent, notes_enc, updated) values ($1, $2, $3)', [agent, sealed, new Date().toISOString()])
+    await this.db.query('insert into agent_notes (agent, notes_enc, updated, read_up_to) values ($1, $2, $3, $4)', [agent, sealed, new Date().toISOString(), this.readUpTo.get(agent) ?? null])
     this.cache.set(agent, notes)
     return notes
   }
 
   /** Notes from the person the agent has not read yet (counted for its inbox). */
   async unread (agent) {
+    const notes = await this.get(agent)
     const since = this.readUpTo.get(agent) ?? ''
-    return (await this.get(agent)).filter((n) => n.from === 'person' && n.at > since)
+    return notes.filter((n) => n.from === 'person' && n.at > since)
   }
 
-  markRead (agent) { this.readUpTo.set(agent, new Date().toISOString()) }
+  /** The agent opened its notebook: everything in it so far is read. Kept, so the person's page can say so after a restart. */
+  async markRead (agent) {
+    const at = new Date().toISOString()
+    this.readUpTo.set(agent, at)
+    await this.db.query('update agent_notes set read_up_to = $2 where agent = $1', [agent, at])
+  }
+
+  /** When the agent last opened its notebook (null: never). */
+  async readAt (agent) { await this.get(agent); return this.readUpTo.get(agent) ?? null }
 
   async delete (agent) { await this.db.query('delete from agent_notes where agent = $1', [agent]); this.cache.delete(agent); this.readUpTo.delete(agent) }
 }

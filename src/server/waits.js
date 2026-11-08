@@ -11,9 +11,13 @@ import { concerns } from './views.js'
 const MAX_SECONDS = 90 // tunnels and proxies cut idle connections near 100 s; the agent simply calls again
 const MAX_WAITERS = 500 // a room's worth of agents; beyond this a wait answers at once, empty
 const DEFAULT_ON = ['direct', 'reply', 'connection']
+const LISTENING_GRACE_MS = 3 * 60_000 // an agent in a wait loop calls again within seconds; three minutes covers a slow turn
 
 export class Waits {
-  constructor ({ ctx }) { this.ctx = ctx; this.waiters = new Map() } // agent -> { on, resolve, timer }
+  constructor ({ ctx }) { this.ctx = ctx; this.waiters = new Map(); this.seen = new Map() } // agent -> { on, resolve, timer }; agent -> ms of its last wait
+
+  /** Whether the agent is waiting on the room now, or was a moment ago (between two waits of its loop). */
+  listening (agent) { return this.waiters.has(agent) || Date.now() - (this.seen.get(agent) ?? 0) < LISTENING_GRACE_MS }
 
   /** Resolves { woke, reasons?, head } as soon as something concerns the agent, or at the timeout. */
   wait ({ me, after, timeout, on }) {
@@ -28,6 +32,7 @@ export class Waits {
       return why && wakeOn.includes(why) ? why : null
     }
     if (st.participants.get(me)?.kind !== 'agent' || !st.activeDelegation(me)) return Promise.resolve({ woke: false, reason: 'not an agent with a live permission', head: head() })
+    this.seen.set(me, Date.now())
     // something already waiting since `after`? answer at once
     const from = Number.isFinite(Number(after)) ? Number(after) : (head()?.seq ?? -1)
     const reasons = [...new Set(log.entries.slice(from + 1).map(matches).filter(Boolean))]
@@ -44,7 +49,7 @@ export class Waits {
   end (agent, answer) {
     const w = this.waiters.get(agent)
     if (!w) return
-    clearTimeout(w.timer); this.waiters.delete(agent); w.resolve(answer)
+    clearTimeout(w.timer); this.waiters.delete(agent); this.seen.set(agent, Date.now()); w.resolve(answer)
   }
 
   /** Called for every new entry (the same hook that feeds wake links). */

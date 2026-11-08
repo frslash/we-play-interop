@@ -517,6 +517,23 @@ describe('the workspace, end to end', () => {
     // one waiter per agent: a new wait ends the old one empty
     const first = ctx.waits.wait({ me: agent, timeout: 5 }), second = ctx.waits.wait({ me: agent, timeout: 1 })
     assert.equal((await first).replaced, true); await second
+    // the room says who is listening: this agent waited a moment ago; an agent nobody runs is not
+    const people = (await get('/api/state')).people
+    assert.equal(people.find((p) => p.did === agent).listening, 'waiting')
+    const idle = (await send(owner, 'host', { label: 'Idle agent' })).body.hosted.did
+    await send(owner, 'delegate', { delegate: idle, scope: ['note'], label: 'Idle agent' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    assert.equal((await get('/api/state')).people.find((p) => p.did === idle).listening, null)
+    // the person's page learns whether the agent has read a note: not yet, then yes once it opens its notebook, kept across a reload of the store
+    const book = async (op, text) => { const r = await fetch(`${base}/api/notebook`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signedDocument(owner, { type: TYPES.notebook, payload: { agent, op, ...(text ? { text } : {}) } })) }); return { status: r.status, body: await r.json() } }
+    const added = await book('add', 'Please say hi to Sam for me')
+    assert.equal(added.status, 200, JSON.stringify(added.body)); assert.equal(added.body.readUpTo, null)
+    const call = (name, args) => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args } }) }).then((r) => r.json())
+    await call('my_notebook', {})
+    const after = (await book('read')).body
+    const note = after.notes.find((n) => n.text === 'Please say hi to Sam for me')
+    assert.ok(after.readUpTo && note.at <= after.readUpTo, 'the note shows as read')
+    ctx.notebooks.cache.delete(agent); ctx.notebooks.readUpTo.delete(agent)
+    assert.equal(await ctx.notebooks.readAt(agent), after.readUpTo, 'read state survives a reload from the database')
   })
 
   test('anyone can verify the whole log, and tampering shows', async () => {

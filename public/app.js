@@ -84,6 +84,7 @@ async function refresh () {
   if (s.ok) S = s.body
   if (b.ok) B = b.body
   render()
+  if (document.body.dataset.tab === 'talk') refreshNotes().catch(() => {}) // at most every 10 seconds
 }
 async function loadFeed () {
   const head = S?.head?.seq ?? 0
@@ -125,6 +126,7 @@ function go (tab) {
   document.body.dataset.tab = tab
   window.scrollTo({ top: 0 })
   if (tab === 'talk' && talk.list) requestAnimationFrame(() => { talk.list.scrollTop = talk.list.scrollHeight }) // the chat opens at the latest message
+  if (tab === 'talk') refreshNotes().catch(() => {})
   if (tab === 'map' && mapv.graph) requestAnimationFrame(() => renderMap()) // laid out once it can be seen
 }
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => go(b.dataset.tab)))
@@ -219,7 +221,33 @@ function renderTop () {
 const tile = (n, label) => h('div', { class: 'tile', role: 'button', tabindex: 0, onclick: () => go('map') }, h('b', null, n), h('span', null, label))
 
 // ---------- Talk: one chat ----------
-const talk = { to: 'room', replyTo: null, echoes: [] }
+const talk = { to: 'room', replyTo: null, notes: [], readUpTo: null, notesFor: null }
+// how an agent can be reached right now (the room says, in /api/state)
+const LISTEN = { waiting: 'listening now', 'wake link': 'listening: the room wakes it', 'room answers': 'the room answers for it' }
+const listeningOf = (did) => person(did)?.listening ?? null
+function listenDot (did) {
+  const how = listeningOf(did)
+  return h('span', { class: 'listen' + (how ? ' on' : ''), title: how ? LISTEN[how] : 'not listening right now: it may not answer until its person is back' })
+}
+// your own private notes to your agent, shown where you wrote them in the conversation, with whether it has read them
+let notesAsked = 0
+async function refreshNotes (force) {
+  const agent = me && myLiveAgents()[0]
+  if (!agent) { talk.notes = []; return }
+  if (!force && Date.now() - notesAsked < 10_000) return
+  notesAsked = Date.now()
+  const r = await privateCall('/api/notebook', 'notebook', { agent: agent.did, op: 'read' })
+  if (!r.ok) return
+  talk.notes = (r.body.notes ?? []).filter((n) => n.from === 'person').slice(-30)
+  talk.readUpTo = r.body.readUpTo ?? null
+  talk.notesFor = agent
+  renderTalk()
+}
+function noteBubble (n) {
+  const agent = talk.notesFor, read = Boolean(talk.readUpTo && n.at <= talk.readUpTo)
+  const status = read ? 'read ✓' : listeningOf(agent?.did) ? 'not read yet' : 'not read yet: your agent isn’t running right now'
+  return h('div', { class: 'msg mine private' }, h('div', { class: 'who' }, `🔒 to ${agent?.name ?? 'your agent'} · `, h('span', { class: read ? 'read' : 'unread' }, status), ' ', h('span', { class: 'time' }, ago(n.at))), h('div', { class: 'text' }, n.text))
+}
 function autoGrow () { talk.input.style.height = 'auto'; talk.input.style.height = Math.min(160, talk.input.scrollHeight) + 'px' }
 async function sendChat () {
   const text = talk.input.value.trim()
@@ -230,8 +258,8 @@ async function sendChat () {
     if (!agent) return toast('Bring your agent first.')
     const r = await privateCall('/api/notebook', 'notebook', { agent: agent.did, op: 'add', text })
     if (!r.ok) return toast(r.body?.payload?.message ?? 'refused')
-    talk.echoes.push({ at: new Date().toISOString(), text, agent: agent.name })
-    toast(`Sent privately to ${agent.name}. It reads it on its next visit.`)
+    talk.notes = (r.body.notes ?? []).filter((n) => n.from === 'person').slice(-30); talk.readUpTo = r.body.readUpTo ?? null; talk.notesFor = agent
+    toast(listeningOf(agent.did) ? `Sent privately to ${agent.name}.` : `Sent privately to ${agent.name}. It isn’t running right now, so it reads this when it next starts.`)
   } else {
     const target = talk.replyTo
     const ok = await post('note', { text, kind: 'message' }, target ? { threadId: target.document.threadId ?? target.document.id, recipient: target.author } : {})
@@ -243,7 +271,8 @@ function setReply (e) {
   talk.replyTo = e
   if (!talk.reply) return
   talk.reply.hidden = !e
-  if (e) fill(talk.reply, h('span', { class: 'grow' }, `Replying to ${nameOf(e.author)}: `, h('em', null, (e.document.payload.text ?? '').slice(0, 80))), h('button', { class: 'btn small', onclick: () => setReply(null) }, '✕'))
+  const deaf = e && person(e.author)?.kind === 'agent' && !listeningOf(e.author)
+  if (e) fill(talk.reply, h('span', { class: 'grow' }, `Replying to ${nameOf(e.author)}: `, h('em', null, (e.document.payload.text ?? '').slice(0, 80)), deaf ? h('span', { class: 'deaf' }, ` · ${nameOf(e.author)} isn’t listening right now, so it may not answer until its person is back`) : null), h('button', { class: 'btn small', onclick: () => setReply(null) }, '✕'))
   if (e) talk.input.focus()
 }
 function voteButtons (p) {
@@ -282,7 +311,7 @@ function chatItem (e) {
       h('button', { class: 'btn tiny', title: 'Reply to this', onclick: () => setReply(e) }, 'Reply'),
       h('button', { class: 'btn tiny', title: 'Copy this message', onclick: () => navigator.clipboard?.writeText(p.text ?? '').then(() => toast('Copied.'), () => toast('Select the text and copy it by hand.')) }, 'Copy'))
     return h('div', { class: 'msg' + (e.author === me?.did ? ' mine' : '') + (agent ? ' agent' : '') },
-      h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${colorFor(e.author)}` }), nameOf(e.author), agent && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
+      h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${colorFor(e.author)}` }), nameOf(e.author), agent ? listenDot(e.author) : null, agent && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
         d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, ' ', time, actions),
       parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${(parent.document.payload.text ?? parent.document.payload.title ?? '').slice(0, 100)}`) : null,
       h('div', { class: 'text' }, p.text), techLine)
@@ -346,9 +375,11 @@ function renderTalk (scrollDown) {
   if (talk.deferredScroll) { scrollDown = true; talk.deferredScroll = false }
   talk.deferred = false
   const nearBottom = talk.list.scrollHeight - talk.list.scrollTop - talk.list.clientHeight < 80
-  const items = feed.slice(0, 150).reverse().map(chatItem).filter(Boolean)
-  const echoes = talk.echoes.map((x) => h('div', { class: 'msg mine private' }, h('div', { class: 'who' }, `🔒 to ${x.agent} · ${ago(x.at)}`), h('div', { class: 'text' }, x.text)))
-  fill(talk.list, items.length || echoes.length ? [...items, ...echoes] : h('p', { class: 'empty' }, 'Quiet so far. Say hello.'))
+  const shown = feed.slice(0, 150).reverse(), oldest = shown[0]?.timestamp ?? ''
+  const rows = shown.map((e) => ({ at: e.timestamp, el: chatItem(e) })).filter((x) => x.el)
+  for (const n of talk.notes) if (n.at >= oldest) rows.push({ at: n.at, el: noteBubble(n) })
+  rows.sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : 0))
+  fill(talk.list, rows.length ? rows.map((x) => x.el) : h('p', { class: 'empty' }, 'Quiet so far. Say hello.'))
   if (scrollDown || nearBottom || !talk.scrolled) { talk.list.scrollTop = talk.list.scrollHeight; talk.scrolled = true }
 }
 
@@ -515,7 +546,7 @@ function renderYou () {
     h('div', { class: 'card', id: 'agents' }, h('h2', null, 'Your agents'),
       h('p', { class: 'why' }, 'Your agent acts only with the permission you signed: what it may do, until when. Approving, vetoing and bringing agents stay with you.'),
       myAgents.length ? myAgents.map((a) => h('div', { class: 'agent-row' },
-        h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), h('br'), h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'holds its own key'), tech(' ', h('code', null, short(a.did)))),
+        h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), h('br'), h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'holds its own key'), tech(' ', h('code', null, short(a.did))), a.delegation ? h('br') : null, a.delegation ? h('span', { class: 'meta' }, listenDot(a.did), ' ', a.listening ? LISTEN[a.listening] : 'not listening right now: see “Keep it around” to have it answer') : null),
           a.hosted && savedLinks()[a.did] ? h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(savedLinks()[a.did]).then(() => toast('Link copied.')) }, 'Copy link') : null,
           a.delegation ? h('button', { class: 'btn small danger', onclick: () => post('revoke', { delegation: a.delegation }) }, 'Stop') : h('span', { class: 'badge warn' }, 'stopped'),
           h('button', { class: 'btn small danger', title: 'Deletes its key, notebook and wake link; the record of what it said stays', onclick: () => { if (confirm(`Remove ${a.name}? Its key, notebook and wake link are deleted and its link stops working for good. What it already said stays in the record.`)) post('remove', { agent: a.did }) } }, 'Remove')),
@@ -751,4 +782,10 @@ const start = fromHash() ?? store.get('wpi.tab')
 go(TABS[start] ? start : 'watch')
 // an agent's link (#delegate=did:…) opened on a page that is already open
 window.addEventListener('hashchange', () => { const tab = fromHash(); if (tab) { renderYou(); go(tab) } })
-setInterval(() => { if (S) renderTalk() }, 60_000)
+setInterval(async () => {
+  if (!S) return
+  const s = await api('/api/state').catch(() => null)
+  if (s?.ok) S = s.body
+  renderTalk()
+  if (document.body.dataset.tab === 'talk') refreshNotes().catch(() => {})
+}, 60_000)
