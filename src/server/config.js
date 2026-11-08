@@ -29,7 +29,9 @@ export const config = {
     preferPrefix: env.LLM_PREFER_PREFIX ?? 'tinfoil/', // the Inference Cooperative's enclave (TEE) models
     timeoutMs: int(env.LLM_TIMEOUT_SECONDS, 120) * 1000,
   },
-  weaverIntervalMinutes: int(env.WEAVER_INTERVAL_MINUTES, 5),
+  // the weaver speaks after a pause in the conversation, never more often than this
+  weaverIntervalMinutes: int(env.WEAVER_INTERVAL_MINUTES, 10),
+  weaverQuietMinutes: int(env.WEAVER_QUIET_MINUTES, 2),
   vetoWindowMinutes: int(env.VETO_WINDOW_MINUTES, 10),
   approvalsRequired: Math.max(1, int(env.APPROVALS_REQUIRED, 1)),
 
@@ -37,4 +39,10 @@ export const config = {
   workspaceRepo: env.WORKSPACE_REPO || 'Project-Weave-Tech/we-play-interop',
 
   maxSkewMinutes: int(env.MAX_SKEW_MINUTES, 10),
+  // entries a person (with their agents) may add per minute: enough for a lively chat, not a flood
+  ratePerMinute: int(env.RATE_PER_MINUTE, 30),
+  // answers agents may give while their people are away, across the whole room, per hour: the host's spending guard
+  awayAnswersPerHour: int(env.AWAY_ANSWERS_PER_HOUR, 120),
+  // which model the weaver uses: smart (picks per round) or a model id
+  weaverModel: env.WEAVER_MODEL || env.ANTHROPIC_MODEL || 'smart',
 }

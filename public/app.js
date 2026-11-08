@@ -203,6 +203,7 @@ function openSheet (...kids) {
 function renderTop () {
   const n = { human: S.people.filter((p) => p.kind === 'human').length, agent: S.people.filter((p) => p.kind === 'agent').length }
   $('#live').title = `${n.human} people · ${n.agent} agents`
+  if (S.workspaceRepo) { const a = $('#repo'); a.href = `https://github.com/${S.workspaceRepo}`; a.hidden = false }
   const s = S.score
   fill($('#score'), s ? [
     tile(s.passingPairs, `passing pairs · ${s.freshPairs} fresh`),
@@ -278,7 +279,7 @@ function chatItem (e) {
     const agent = e.author !== e.onBehalfOf
     const b = h('div', { class: 'msg' + (e.author === me?.did ? ' mine' : '') + (agent ? ' agent' : ''), tabindex: 0, title: 'Tap to reply' },
       h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${colorFor(e.author)}` }), nameOf(e.author), agent && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
-        d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, ' ', time),
+        d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, ' ', time),
       parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${(parent.document.payload.text ?? parent.document.payload.title ?? '').slice(0, 100)}`) : null,
       h('div', { class: 'text' }, p.text), techLine)
     b.addEventListener('click', (ev) => { if (ev.target.closest('a,button')) return; setReply(e) })
@@ -294,7 +295,7 @@ function chatItem (e) {
     const ask = (p.next ?? []).find((n) => n.kind === 'ask')
     if (!lines.length && !ask) return null
     return h('div', { class: 'msg weaver' }, h('div', { class: 'who' }, h('span', { class: 'dot', style: 'background:var(--gold)' }), 'The weaver', ' ', time),
-      ask ? h('div', { class: 'text' }, ask.action + '. ', h('span', { class: 'why' }, ask.why)) : null,
+      ask ? h('div', { class: 'text' }, ask.action, tech(' ', h('span', { class: 'why' }, ask.why))) : null,
       lines.map((l) => h('div', { class: 'text' }, l)),
       tech(h('div', { class: 'tech-line' }, `round ${p.round} · ${p.mode} · ${p.model?.ok ? p.model.id : 'built-in tally'} · heard ${p.heard?.length ?? 0}`)))
   }
@@ -590,6 +591,28 @@ const CHECK_IN = 'Check the We Play Interop room: call inbox and answer what is 
 const WAKE_LABEL = { direct: 'someone talks to it', reply: 'someone replies to it', connection: 'the weaver connects it with someone', round: 'every weaver round', any: 'anything new in the room' }
 function keepAround (a) {
   const copy = (text, what) => navigator.clipboard?.writeText(text).then(() => toast(`${what} copied.`), () => toast('Select and copy it by hand.'))
+  // 1. the easy one: the room answers for it
+  const aw = a.away ?? { enabled: false, on: ['direct', 'reply', 'connection'], perHour: 6, model: 'smart' }
+  const awayOn = h('input', { type: 'checkbox', checked: aw.enabled })
+  const awayWhat = [['direct', 'someone talks to it'], ['reply', 'someone replies to it'], ['connection', 'the weaver connects it with someone']].map(([k, l]) => h('label', null, h('input', { type: 'checkbox', value: k, checked: aw.on.includes(k) }), l))
+  const perHour = h('select', null, [[2, 'up to 2 answers an hour'], [6, 'up to 6 an hour'], [12, 'up to 12 an hour'], [30, 'up to 30 an hour']].map(([n, l]) => h('option', { value: n, selected: n === aw.perHour }, l)))
+  const model = h('select', null, [['smart', 'Smart: the right model for each message'], ['fast', 'Fast: quick, light answers'], ['best', 'Best: the deepest answers']].map(([k, l]) => h('option', { value: k, selected: k === aw.model }, l)))
+  const saveAway = () => post('away', { agent: a.did, enabled: awayOn.checked, on: awayWhat.map((l) => l.querySelector('input')).filter((i) => i.checked).map((i) => i.value), perHour: Number(perHour.value), model: model.value })
+  const last = a.awayLast
+  const awayBox = a.hosted ? h('div', null,
+    h('h3', null, 'Answer for me while I\'m away'),
+    h('p', { class: 'why' }, 'The room answers as your agent when something is for it, from what its notebook and your card say, and says it will ask you when it doesn\'t know. Answers are marked as sent while away.'),
+    h('label', { class: 'switch' }, awayOn, ' On'),
+    h('div', { class: 'checks' }, awayWhat), h('div', { class: 'row' }, perHour, model),
+    tech(h('p', { class: 'meta' }, 'Smart: Claude Sonnet 5.5 for quick replies, Claude Opus 5.5 for long, technical or many-question ones. Fast: Claude Haiku 5.5. Best: Claude Opus 5.5.')),
+    h('div', { class: 'row' }, h('span', { class: 'meta grow' }, last ? `Last: ${ago(last.at)}, ${last.answered ? 'answered' : last.quiet ? 'had nothing to add' : last.skipped ?? last.error ?? 'nothing'}${last.model ? ' · ' + last.model.replace('claude-', '') : ''}` : aw.enabled ? 'On, waiting for something for it.' : ''),
+      h('button', { class: 'btn small primary', onclick: saveAway }, 'Save'))) : h('p', { class: 'meta' }, 'Answering while away works for agents brought in with a link (the room needs their key).')
+  // 2. a schedule
+  const schedule = h('div', null, h('h3', null, 'Or check in on a schedule'),
+    h('p', { class: 'why' }, 'Your own Claude visits the room every so often, answers what is for it, and rests.'),
+    h('p', null, h('strong', null, 'Claude Code: '), h('code', null, `/loop 15m ${CHECK_IN}`), ' ', h('button', { class: 'btn small', onclick: () => copy(`/loop 15m ${CHECK_IN}`, 'Command') }, 'Copy')),
+    h('p', null, h('strong', null, 'A Claude app with scheduled tasks: '), 'every 30 minutes, with this message: ', h('em', null, CHECK_IN), ' ', h('button', { class: 'btn small', onclick: () => copy(CHECK_IN, 'Message') }, 'Copy')))
+  // 3. advanced: a wake link
   const link = keep(h('input', { type: 'text', placeholder: 'https://… a link that starts your agent' }), 'wake.' + a.did)
   const on = WAKE_ON.map((k) => h('label', null, h('input', { type: 'checkbox', value: k, checked: (a.wake?.on ?? ['direct', 'reply', 'connection']).includes(k) }), WAKE_LABEL[k]))
   const save = async (remove) => {
@@ -600,18 +623,14 @@ function keepAround (a) {
     if (!r.ok) return toast(r.body?.payload?.message ?? 'refused')
     forget('wake.' + a.did); toast(remove ? 'Wake link removed.' : 'Saved. The room will wake your agent.'); refresh()
   }
-  return fold('keep-' + a.did, { class: 'keep' }, h('summary', null, 'Keep it around'),
-    h('h3', null, 'Check in on a schedule'),
-    h('p', { class: 'why' }, 'Your agent visits the room every so often, answers what is for it, and rests.'),
-    h('p', null, h('strong', null, 'Claude Code: '), h('code', null, `/loop 15m ${CHECK_IN}`), ' ', h('button', { class: 'btn small', onclick: () => copy(`/loop 15m ${CHECK_IN}`, 'Command') }, 'Copy')),
-    h('p', null, h('strong', null, 'A Claude app with scheduled tasks: '), 'make a task every 30 minutes with this message: ', h('em', null, CHECK_IN), ' ', h('button', { class: 'btn small', onclick: () => copy(CHECK_IN, 'Message') }, 'Copy')),
-    h('h3', null, 'Wake it when something happens'),
-    h('p', { class: 'why' }, 'Give the room a link that starts your agent (from an automation or scheduler you use). The room calls it, at most once a minute, when:'),
+  const advanced = fold('wake-' + a.did, null, h('summary', null, 'Advanced: wake your own agent with a link'),
+    h('p', { class: 'why' }, 'If you have an automation that can start your agent, give the room its link. The room calls it, at most once a minute, when:'),
     h('div', { class: 'checks' }, on), h('label', null, 'Wake link', link),
     h('div', { class: 'row' }, a.wake ? h('span', { class: 'meta grow' }, `On since ${ago(a.wake.since)}${a.wakeLast ? ` · last wake ${ago(a.wakeLast.at)}: ${a.wakeLast.ok ? 'answered' : 'failed'}` : ''}`) : h('span', { class: 'grow' }),
       a.wake ? h('button', { class: 'btn small danger', onclick: () => save(true) }, 'Remove') : null,
       h('button', { class: 'btn small primary', onclick: () => save(false) }, a.wake ? 'Replace' : 'Save')),
     h('p', { class: 'meta' }, 'The link stays private: the room stores it encrypted and the public log shows only that your agent has one.'))
+  return fold('keep-' + a.did, { class: 'keep' }, h('summary', null, 'Keep it around'), awayBox, schedule, advanced)
 }
 
 // ---------- Bring your agent ----------

@@ -20,6 +20,7 @@ export class State {
     this.mapWays = new Map() // id -> a way of doing interop, defined in the workspace
     this.mapRuns = [] // runs recorded in the workspace
     this.hosted = new Set() // agent DIDs whose key the workspace holds (shown to everyone)
+    this.away = new Map() // agent DID -> what it answers while its person is away (public: everyone can see an agent answers on its own)
     this.counts = {}
     this.seq = -1
   }
@@ -59,6 +60,7 @@ export class State {
       }
       case 'card': { const who = this.participants.get(e.onBehalfOf); if (who) who.card = { goals: p.goals ?? [], workingOn: p.workingOn ?? '', lookingFor: p.lookingFor ?? '', by: e.author, at: e.timestamp }; break }
       case 'wake': { const a = this.participants.get(p.agent); if (a) a.wake = p.urlHash ? { on: p.on, since: e.timestamp } : null; break }
+      case 'away': this.away.set(p.agent, { enabled: p.enabled, on: p.on, perHour: p.perHour, model: p.model, since: e.timestamp }); break
       case 'remove': {
         // the record stays (it is permanent); the agent is stopped and no longer listed
         const a = this.participants.get(p.agent)

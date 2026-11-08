@@ -18,6 +18,7 @@ import { handleHostedMcp, handleMcp } from './mcp.js'
 import { HostedAgents } from './hosted.js'
 import { Waker } from './wake.js'
 import { Notebooks } from './notebook.js'
+import { Away } from './away.js'
 import { NAME_OF } from '../shared/types.js'
 import { createResolver } from './resolver.js'
 import * as views from './views.js'
@@ -47,7 +48,7 @@ function workspaceIdentity (config) {
   return id
 }
 
-export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch } = {}) {
+export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, awayGatherMs } = {}) {
   const identity = workspaceIdentity(config)
   const db = await openDb(config)
   const log = new Log({ db, identity, resolver, config })
@@ -64,6 +65,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   await waker.load()
   ctx.waker = waker
   ctx.notebooks = new Notebooks({ db, sealer: hosted })
+  ctx.away = new Away({ ctx, ...(awayGatherMs !== undefined ? { gatherMs: awayGatherMs } : {}) })
+  log.on('entry', (e) => ctx.away.onEntry(e))
   log.on('entry', (e) => waker.onEntry(e))
 
   const page = readFileSync(join(root, 'public/index.html'), 'utf8')
@@ -216,7 +219,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     timers.push(setInterval(() => weaver.tick(), 30_000))
     timers.push(setInterval(() => executor.tick().catch((e) => console.error('executor:', e)), 30_000))
   }
-  ctx.stop = async () => { timers.forEach(clearInterval); waker.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { timers.forEach(clearInterval); waker.stop(); ctx.away.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }

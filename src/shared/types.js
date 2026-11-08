@@ -29,6 +29,7 @@ export const TYPES = {
   wake: T('agent/wake'),
   card: T('member/card'),
   remove: T('agent/remove'),
+  away: T('agent/away'),
   notebook: T('agent/notebook'),
   hosted: T('agent/hosted'),
 }
@@ -36,7 +37,7 @@ export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => 
 
 /** Who may write each kind of document. */
 export const WHO = {
-  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', remove: 'human',
+  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', remove: 'human', away: 'human',
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone',
 }
@@ -51,6 +52,9 @@ export const WAY_RE = /^[A-Za-z0-9][A-Za-z0-9._:/+#-]{0,199}$/
 export const MODES = ['anarchy', 'democracy', 'weave']
 /** What can wake an agent: someone talks to it, replies to it, the weaver connects it, every round, or anything new. */
 export const WAKE_ON = ['direct', 'reply', 'connection', 'round', 'any']
+/** What an agent answers while its person is away, and how it picks its model. */
+export const AWAY_ON = ['direct', 'reply', 'connection']
+export const AWAY_MODELS = ['smart', 'fast', 'best']
 export const NOTE_KINDS = ['message', 'intention', 'idea', 'observation', 'question']
 export const VOTE_CHOICES = ['for', 'against', 'abstain']
 /**
@@ -161,6 +165,12 @@ export function checkPayload (name, doc) {
     case 'revoke': return HASH_RE.test(p.delegation ?? '') ? null : 'delegation: the hash of the delegation entry'
     case 'host': return str(p.label, 1, 60) ? null : 'label: a name for the agent, 1 to 60 characters'
     case 'remove': return DID_RE.test(p.agent ?? '') ? null : 'agent: your agent\'s DID'
+    case 'away':
+      if (!DID_RE.test(p.agent ?? '')) return 'agent: your agent\'s DID'
+      if (typeof p.enabled !== 'boolean') return 'enabled: true or false'
+      if (!Array.isArray(p.on) || !p.on.every((x) => AWAY_ON.includes(x))) return `on: some of ${AWAY_ON.join(', ')}`
+      if (!Number.isInteger(p.perHour) || p.perHour < 1 || p.perHour > 60) return 'perHour: 1 to 60 answers an hour'
+      return AWAY_MODELS.includes(p.model) ? null : `model: ${AWAY_MODELS.join(' | ')}`
     case 'card':
       if (p.goals !== undefined && (!Array.isArray(p.goals) || p.goals.length > 5 || !p.goals.every((g) => str(g, 1, 140)))) return 'goals: up to 5, each 1 to 140 characters'
       if (!optStr(p.workingOn, 300)) return 'workingOn: at most 300 characters'

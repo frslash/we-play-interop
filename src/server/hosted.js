@@ -55,6 +55,12 @@ export class HostedAgents {
     for (const [k, a] of this.byTokenHash) if (a.did === did) this.byTokenHash.delete(k)
   }
 
+  /** The signing identity of a hosted agent, by its DID (for answering while its person is away), or null. */
+  identityOf (did) {
+    const rec = [...this.byTokenHash.values()].find((a) => a.did === did)
+    return rec ? identityFromSeedHex(this.open(rec.sealed)) : null
+  }
+
   /** The agent behind a connector secret, with its signing identity, or null. */
   byToken (token) {
     const rec = this.byTokenHash.get(sha(String(token)))

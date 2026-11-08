@@ -144,6 +144,10 @@ export class Log extends EventEmitter {
         if (other?.kind === 'agent' && other.principal !== doc.issuer) throw new TaskError('permissionDenied', 'that agent already acts for someone else', { status: 403 })
         break
       }
+      case 'away':
+        if (st.participants.get(p.agent)?.principal !== doc.issuer) throw new TaskError('permissionDenied', 'you can set this only for your own agent', { status: 403 })
+        if (!st.hosted.has(p.agent)) throw new TaskError('permissionDenied', 'only agents brought in with a link can answer while you are away (the room needs their key)', { status: 403 })
+        break
       case 'remove':
         if (st.participants.get(p.agent)?.kind !== 'agent' || st.participants.get(p.agent).principal !== doc.issuer) throw new TaskError('permissionDenied', 'you can remove only your own agents', { status: 403 })
         break
@@ -190,7 +194,8 @@ export class Log extends EventEmitter {
   /** Rate limit: a person (with their agents) and an address each get a steady allowance. */
   #limit (principal, ip) {
     const now = Date.now(), windowMs = 60_000
-    for (const [k, max] of [['p:' + principal, 30], ['ip:' + ip, 120]]) {
+    const perPerson = this.config.ratePerMinute ?? 30
+    for (const [k, max] of [['p:' + principal, perPerson], ['ip:' + ip, perPerson * 4]]) {
       const hits = (this.rate.get(k) ?? []).filter((t) => t > now - windowMs)
       if (hits.length >= max) throw new TaskError('unavailable', 'too many entries in a minute; slow down', { status: 429, retryable: true, retryAfter: new Date(hits[0] + windowMs).toISOString() })
       hits.push(now); this.rate.set(k, hits)

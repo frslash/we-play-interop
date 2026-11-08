@@ -12,7 +12,7 @@ import { verifyChain } from '../src/shared/chain.js'
 import { TYPES, signedDocument } from '../src/shared/types.js'
 import { computeBoard } from '../src/server/board.js'
 import { computeMap } from '../src/server/map.js'
-import { ClaudeLlm } from '../src/server/claude.js'
+import { ClaudeLlm, route } from '../src/server/claude.js'
 import { State } from '../src/server/state.js'
 import { config as baseConfig } from '../src/server/config.js'
 import { createApp } from '../src/server/index.js'
@@ -89,9 +89,21 @@ describe('the weaver on Claude (official SDK)', () => {
     assert.deepEqual(sent.output_config, { effort: 'medium' })
     for (const k of ['temperature', 'top_p', 'top_k', 'thinking']) assert.ok(!(k in sent), `${k} is not sent`)
     reply = { model: 'claude-opus-5-5', stop_reason: 'refusal', stop_details: { category: 'cyber' }, content: [], usage: {} }
-    await assert.rejects(llm.chat([{ role: 'user', content: '{}' }]), /declined this round \(cyber\)/)
+    await assert.rejects(llm.chat([{ role: 'user', content: '{}' }]), /declined \(cyber\)/)
     reply = { model: 'claude-opus-4-8', stop_reason: 'end_turn', content: [{ type: 'text', text: '{}' }], usage: { iterations: [{ type: 'message' }, { type: 'fallback_message' }] } }
     assert.equal((await llm.chat([{ role: 'user', content: '{}' }])).fallback, true)
+  })
+})
+
+describe('picking the right model for the moment', () => {
+  test('quick replies on Sonnet, deep ones and busy rounds on Opus, fast on Haiku, a set model wins', () => {
+    assert.equal(route('reply', { text: 'Hey, nice to meet you!' }).model, 'claude-sonnet-5-5')
+    assert.equal(route('reply', { text: 'Does your did:key signature verify against our VRC schema?' }).model, 'claude-opus-5-5')
+    assert.equal(route('reply', { text: 'hi', prefer: 'fast' }).model, 'claude-haiku-5-5')
+    assert.equal(route('reply', { text: 'hi', prefer: 'best' }).model, 'claude-opus-5-5')
+    assert.equal(route('round', { chars: 3000, inputs: 2 }).model, 'claude-sonnet-5-5')
+    assert.equal(route('round', { chars: 30000, inputs: 2 }).model, 'claude-opus-5-5')
+    assert.equal(route('round', { prefer: 'claude-fable-5-1' }).model, 'claude-fable-5-1')
   })
 })
 
@@ -165,8 +177,8 @@ describe('the workspace, end to end', () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-'))
     webvh = await makeWebvh()
     ghCalls = []
-    const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: 'test', vetoWindowMinutes: 0, approvalsRequired: 1, weaverIntervalMinutes: 0, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, apiKey: '' } }
-    ctx = await createApp(config, { resolver: createResolver({ fetch: webvh.fetch }), gh, wakeFetch })
+    const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: 'test', vetoWindowMinutes: 0, approvalsRequired: 1, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, apiKey: '' } }
+    ctx = await createApp(config, { resolver: createResolver({ fetch: webvh.fetch }), gh, wakeFetch, awayGatherMs: 0 })
     await new Promise((r) => ctx.server.listen(0, r))
     base = `http://localhost:${ctx.server.address().port}`
     await ctx.board.refresh()
@@ -309,7 +321,7 @@ describe('the workspace, end to end', () => {
     await send(other, 'note', { text: 'agree, alpha and gamma', kind: 'observation' })
     const r2 = (await ctx.weaver.tick()).document.payload
     assert.equal(r2.model.ok, true); assert.equal(r2.heard.length, 0)
-    assert.equal(r2.next[0].kind, 'ask') // still no goal held
+    assert.ok(!r2.next.some((x) => x.kind === 'ask'), 'it asked a moment ago; it does not ask again within the hour')
     const made = ctx.log.state.proposals.get(r2.next.find((x) => x.kind === 'run').proposal)
     assert.equal(made.byWeaver, true); assert.deepEqual(made.run.sides, ['alpha', 'gamma'])
     assert.ok(!r2.next.some((x) => x.run?.sides?.includes('nowhere')))
@@ -325,6 +337,10 @@ describe('the workspace, end to end', () => {
     await send(human, 'note', { text: 'ok, that is the goal', kind: 'observation' })
     const r = (await ctx.weaver.tick()).document.payload
     assert.ok(!r.next.some((x) => x.kind === 'ask'), 'a goal is held, so no need to ask')
+    // nothing new said since: the weaver stays silent instead of repeating itself
+    await send(human, 'note', { text: 'ok, that is the goal', kind: 'observation' })
+    const again = await ctx.weaver.tick()
+    assert.ok(again === null || !again.document.payload.next.some((x) => r.next.some((y) => (y.proposal ?? y.action) === (x.proposal ?? x.action))), 'no repeats')
     assert.ok(r.next.some((x) => x.kind === 'run'), 'the held goal watches the map, so the map can suggest')
   })
 
@@ -438,6 +454,41 @@ describe('the workspace, end to end', () => {
     assert.equal(rows[0].n, 0, 'its key is deleted')
     assert.equal((await send(owner, 'delegate', { delegate: agent, scope: ['note'] }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })).status, 201)
     assert.equal(ctx.log.state.activeDelegation(agent), null, 'a removed agent cannot be switched back on')
+  })
+
+  test('an agent answers while its person is away, within its limits, and never loops', async () => {
+    const owner = newIdentity()
+    await send(owner, 'join', { name: 'Person D' })
+    const made = await send(owner, 'host', { label: "Person D's Claude" })
+    const agent = made.body.hosted.did
+    await send(owner, 'delegate', { delegate: agent, scope: ['note'], label: "Person D's Claude" }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    await ctx.notebooks.add(agent, 'person', 'I build a mesh login. Happy to try OIDC with anyone.')
+    assert.equal((await send(other, 'away', { agent, enabled: true, on: ['direct'], perHour: 1, model: 'smart' })).body.payload.code, 'permissionDenied') // not theirs
+    assert.equal((await send(owner, 'away', { agent, enabled: true, on: ['direct'], perHour: 1, model: 'smart' })).status, 201)
+    const realLlm = ctx.llm, asked = []
+    ctx.llm = { configured: true, route, chat: async (msgs, pick) => { asked.push({ msgs, pick }); return { content: JSON.stringify({ reply: 'Thanks! Person D builds a mesh login and would love to try OIDC. I will ask them for a time.', remember: 'Person B wants to try OIDC together' }), model: pick.model, picked: pick.why, usage: { input_tokens: 1 }, latencyMs: 1 } } }
+    const q = await send(other, 'note', { text: 'Hi! Want to try logging in to each other with OIDC?', kind: 'message' }, { recipient: agent })
+    for (let i = 0; i < 50 && !ctx.away.status.get(agent); i++) await new Promise((r) => setTimeout(r, 20))
+    const st = ctx.away.status.get(agent)
+    assert.equal(st.ok, true); assert.equal(st.picked, 'a deep or technical question') // OIDC counts as technical
+    const answer = ctx.log.byHash.get(st.answered)
+    assert.equal(answer.author, agent); assert.equal(answer.onBehalfOf, owner.did)
+    assert.equal(answer.document.payload.auto, true)
+    assert.equal(answer.document.recipient, other.did); assert.equal(answer.document.threadId, q.body.document.id)
+    assert.match(JSON.stringify(asked[0].msgs), /mesh login/, 'it answers from its notebook')
+    assert.ok((await ctx.notebooks.get(agent)).some((n) => n.from === 'agent' && /OIDC together/.test(n.text)), 'and remembers for its person')
+    // its own limit: one an hour
+    ctx.away.status.delete(agent)
+    await send(other, 'note', { text: 'Another question for you', kind: 'message' }, { recipient: agent })
+    for (let i = 0; i < 50 && !ctx.away.status.get(agent); i++) await new Promise((r) => setTimeout(r, 20))
+    assert.match(ctx.away.status.get(agent).skipped, /limit of 1/)
+    // an automatic answer never wakes another away-agent
+    const before = asked.length
+    await send(owner, 'away', { agent, enabled: true, on: ['direct'], perHour: 60, model: 'fast' })
+    await send(other, 'note', { text: 'auto ping', kind: 'message', auto: true }, { recipient: agent })
+    await new Promise((r) => setTimeout(r, 100))
+    assert.equal(asked.length, before)
+    ctx.llm = realLlm
   })
 
   test('anyone can verify the whole log, and tampering shows', async () => {

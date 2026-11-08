@@ -13,7 +13,7 @@ export function info (ctx) {
     workspaceRepo: config.workspaceRepo,
     mode: st.mode,
     head: log.head(),
-    weaver: { model: llm.configured ? (llm.model ?? 'chosen at first round') : null, configured: llm.configured, endpoint: llm.endpoint ?? config.llm.baseUrl, nextRoundAt: new Date(weaver.nextRoundAt()).toISOString(), rounds: st.roundCount, lastError: weaver.lastError },
+    weaver: { model: llm.configured ? (llm.model ?? 'chosen at first round') : null, configured: llm.configured, endpoint: llm.endpoint ?? config.llm.baseUrl, nextRoundAt: new Date(weaver.nextRoundAt()).toISOString(), rounds: st.roundCount, lastError: weaver.lastError, lastSilent: weaver.lastSilent ?? null, speaksAfterQuietMinutes: config.weaverQuietMinutes, atMostEveryMinutes: config.weaverIntervalMinutes },
     rules: { vetoWindowMinutes: config.vetoWindowMinutes, approvalsRequired: config.approvalsRequired, freshDays: config.freshDays, actsOutside: config.githubToken ? 'opens pull requests and issues itself' : 'prepares links for a person to open (no GitHub token set)' },
     types: TYPES,
   }
@@ -21,7 +21,7 @@ export function info (ctx) {
 
 export function state (ctx) {
   const { log, board, executor } = ctx, st = log.state
-  const people = [...st.participants.values()].filter((p) => p.kind !== 'workspace').map((p) => ({ ...p, delegation: p.kind === 'agent' ? st.activeDelegation(p.did)?.hash ?? null : undefined, ...(p.kind === 'agent' && ctx.waker?.status.get(p.did) ? { wakeLast: ctx.waker.status.get(p.did) } : {}) }))
+  const people = [...st.participants.values()].filter((p) => p.kind !== 'workspace').map((p) => ({ ...p, delegation: p.kind === 'agent' ? st.activeDelegation(p.did)?.hash ?? null : undefined, ...(p.kind === 'agent' && ctx.waker?.status.get(p.did) ? { wakeLast: ctx.waker.status.get(p.did) } : {}), ...(p.kind === 'agent' && st.away.get(p.did) ? { away: st.away.get(p.did), awayLast: ctx.away?.status.get(p.did) ?? null } : {}) }))
   return {
     ...info(ctx),
     people,

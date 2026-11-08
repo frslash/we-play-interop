@@ -11,6 +11,8 @@ import { parseJsonAnswer } from './llm.js'
 
 const clip = (s, n) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s }
 const MAX_NEW_PROPOSALS = 5 // what a room can read between two rounds; anarchy only, the other modes add one at most
+const BUSY = 12 // this many new messages means a lot is happening: speak without waiting for a pause
+const ASK_AGAIN_MS = 60 * 60_000 // ask the room the same kind of question at most once an hour
 const STEP_KINDS = ['goal', 'run', 'issue', 'other', 'ask'] // ask: a question to the room, not a proposal
 const SUGGESTED_GOAL = { kind: 'goal', action: 'More passing runs between more pairs of projects, kept fresh', why: "The DTG board's own aim, offered as one place to start. Vote it up or down, or propose the goal you want instead.", measure: 'freshPairs', direction: 'up', holds: [] }
 
@@ -43,8 +45,8 @@ export class Weaver {
   constructor ({ config, log, board, llm }) { this.config = config; this.log = log; this.board = board; this.llm = llm; this.busy = false; this.lastError = null }
 
   newInputs () {
-    const st = this.log.state
-    return this.log.entries.filter((e) => e.seq > st.lastRoundSeq && !['round', 'genesis'].includes(NAME_OF[e.type]) && !(NAME_OF[e.type] === 'propose' && e.author === st.workspace))
+    const st = this.log.state, heard = Math.max(st.lastRoundSeq, this.heardUpTo ?? -1)
+    return this.log.entries.filter((e) => e.seq > heard && !['round', 'genesis'].includes(NAME_OF[e.type]) && !(NAME_OF[e.type] === 'propose' && e.author === st.workspace))
   }
 
   nextRoundAt () {
@@ -52,10 +54,20 @@ export class Weaver {
     return st.lastRoundAt ? st.lastRoundAt + this.config.weaverIntervalMinutes * 60_000 : Date.now()
   }
 
+  /**
+   * The weaver speaks when it can add something: after the conversation pauses
+   * (WEAVER_QUIET_MINUTES with nothing new), never more often than every
+   * WEAVER_INTERVAL_MINUTES, and sooner only when a lot is happening at once.
+   * While people or their agents are talking to each other, it waits.
+   */
   async tick () {
     if (this.busy || Date.now() < this.nextRoundAt()) return null
     const inputs = this.newInputs()
-    if (!inputs.length) return null
+    const st = this.log.state
+    const spoken = inputs.filter((e) => e.author !== st.workspace)
+    if (!spoken.length) return null
+    const quietFor = Date.now() - Date.parse(spoken.at(-1).timestamp)
+    if (quietFor < this.config.weaverQuietMinutes * 60_000 && spoken.length < BUSY) return null
     this.busy = true
     try { return await this.round(inputs) } catch (err) { this.lastError = err.message; console.error('weaver round failed:', err); return null } finally { this.busy = false }
   }
@@ -66,6 +78,7 @@ export class Weaver {
     const intentions = this.log.entries.filter((e) => NAME_OF[e.type] === 'note' && e.document.payload.kind === 'intention').slice(-30)
     return {
       mode: st.mode.mode,
+      alreadySaid: st.rounds.slice(-3).map((r) => ({ at: r.at, next: (r.next ?? []).map((n) => n.action), connections: (r.connections ?? []).map((c) => `${st.nameOf(c.between[0])} & ${st.nameOf(c.between[1])}: ${c.why}`) })),
       goals: (() => {
         const g = st.goals(), score = this.board.score()
         const view = (pr) => ({ hash: pr.hash, goal: pr.title, why: clip(pr.body, 300), support: st.tally(pr), ...(pr.measure ? { measure: pr.measure, direction: pr.direction ?? 'up', now: score[pr.measure] ?? null } : {}) })
@@ -127,7 +140,7 @@ export class Weaver {
     } else {
       next = open.slice(0, MAX_NEW_PROPOSALS).map((p) => ({ proposal: p.hash, kind: p.kind, action: p.title, why: 'Anarchy: every direction gets tried.', holds: [] }))
     }
-    if (steered && (!next.length || ctx.mode === 'anarchy')) { const b = fromBoard(); if (b) next.push(b) }
+    if (steered) { const b = fromBoard(); if (b) next.push(b) } // a fallback option; repeats are dropped and the list trimmed later
     if (!ctx.goals.held.length) {
       next.unshift({ kind: 'ask', action: 'Say what winning looks like here', why: ctx.goals.candidates.length ? 'No goal has more support than opposition yet. Vote on the goals proposed, or propose your own.' : 'No goal is proposed yet. Propose one (a proposal of kind goal), with a number to watch if you like.', holds: [] })
       const offered = [...st.proposals.values()].some((pr) => pr.byWeaver && pr.kind === 'goal')
@@ -187,6 +200,7 @@ export class Weaver {
 The room works toward more interoperability between projects, by every way of doing interop: identifiers and DIDs, credentials, login (OIDC, passkeys), messaging, data formats, sync, networking, storage, governance, payments.
 The workspace keeps a map: projects, the ways each speaks, and runs (two projects tried one or more ways together, with an outcome). The DTG board (dtg-interop) is one source of the map, with its own scenarios; people add projects and ways from anywhere.
 How the map is kept (taken from the DTG board): a pair counts as working only through a run; a run is entered by one of its two sides; a run fades after 30 days; a DTG scenario with a "missing" piece cannot be played by anyone; never rank or compare projects; each project changes only its own entry, so a correction to another project's entry is a note or an issue, never an edit.
+Speak only when you add something new. Do not repeat anything in "alreadySaid". Do not suggest that people talk when they are already talking to each other, and stay out of conversations that are going well. Keep it short: at most one or two next steps and connections, each in one sentence. When there is nothing new worth saying, return empty arrays; silence is fine.
 People just talk here, in plain words or technical ones; nobody fills in forms. Infer from what they say: their intentions (who wants to reach which project or person: "intentions"), where they pull apart ("tensions"), who should meet ("connections"), and the goals they seem to share (propose them as kind "goal" so the room can say yes or no). Read each person's public card (goals, working on, looking for) and match it with what others are building.
 What winning looks like is decided by the room, not by you: "goals.held" are the goals people back now (with support and, if they chose one, a number on the map to watch). Weave toward the held goals. If none is held, your first next step is kind "ask": invite people to say what winning looks like, and you may suggest a goal (kind "goal", with "measure" and "direction" if it watches a number). Do not assume a goal nobody holds. There is no end state.
 Mode now: ${ctx.mode}. anarchy = list one next action per distinct direction (up to ${MAX_NEW_PROPOSALS}). democracy = the next action is the open proposal with the most votes; explain it. weave = exactly one next action: the one that holds the most of the stated intentions; say which intentions it holds.
@@ -249,6 +263,31 @@ Use only hashes that appear in the input. Prefer an existing proposal over a new
     }
   }
 
+  /** Drop what was already said recently, and suggestions for people who are already talking. */
+  onlyNew (result) {
+    const st = this.log.state, recent = st.rounds.slice(-10), now = Date.now()
+    const person = (d) => st.participants.get(d)?.principal ?? d
+    const pair = (a, b) => [person(a), person(b)].sort().join('|')
+    const suggested = new Set(recent.flatMap((r) => (r.connections ?? []).map((c) => pair(...c.between))))
+    const talking = new Set()
+    for (const e of this.log.entries.slice(-300)) {
+      if (NAME_OF[e.type] !== 'note') continue
+      const d = e.document, other = d.recipient ?? (d.threadId ? this.log.byDocId.get(d.threadId)?.author : null)
+      if (other) talking.add(pair(e.author, other))
+    }
+    const wanted = new Set(recent.flatMap((r) => (r.intentions ?? []).map((i) => `${person(i.who)}|${i.toward}`)))
+    const pulling = new Set(recent.flatMap((r) => (r.tensions ?? []).map((t) => pair(...t.between))))
+    const raised = new Set(recent.slice(-3).flatMap((r) => (r.next ?? []).flatMap((n) => [n.proposal, n.action]).filter(Boolean)))
+    const askedRecently = recent.some((r) => now - Date.parse(r.at) < ASK_AGAIN_MS && (r.next ?? []).some((n) => n.kind === 'ask'))
+    return {
+      ...result,
+      connections: (result.connections ?? []).filter((c) => { const k = pair(...c.between); return !suggested.has(k) && !talking.has(k) }),
+      intentions: (result.intentions ?? []).filter((i) => !wanted.has(`${person(i.who)}|${i.toward}`)),
+      tensions: (result.tensions ?? []).filter((t) => !pulling.has(pair(...t.between))),
+      next: (result.next ?? []).filter((x) => (x.kind === 'ask' ? !askedRecently : !raised.has(x.proposal) && !raised.has(x.action))),
+    }
+  }
+
   async round (inputs = this.newInputs()) {
     const st = this.log.state
     const ctx = this.context(inputs)
@@ -258,12 +297,22 @@ Use only hashes that appear in the input. Prefer an existing proposal over a new
     if (this.llm.configured) {
       const messages = this.prompt(ctx)
       try {
-        const r = await this.llm.chat(messages)
-        model = { id: r.model, ok: true, latencyMs: r.latencyMs, usage: r.usage, finishReason: r.finishReason, jsonMode: r.jsonMode, promptChars: messages[1].content.length }
+        const pick = this.llm.route ? this.llm.route('round', { chars: messages[1].content.length, inputs: inputs.length, mode: ctx.mode, prefer: this.config.weaverModel }) : {}
+        const r = await this.llm.chat(messages, pick)
+        model = { id: r.model, ok: true, ...(r.picked ? { picked: r.picked } : {}), ...(r.fallback ? { fallback: true } : {}), latencyMs: r.latencyMs, usage: r.usage, finishReason: r.finishReason, jsonMode: r.jsonMode, promptChars: messages[1].content.length }
         try { result = this.sanitize(parseJsonAnswer(r.content), ctx, fallback) } catch (err) { model = { ...model, ok: false, note: `answer was not usable (${err.message}); this round is the built-in tally` } }
       } catch (err) {
         model = { id: this.llm.model, ok: false, latencyMs: err.latencyMs ?? null, note: `${err.message.slice(0, 300)}; this round is the built-in tally` }
       }
+    }
+    result = this.onlyNew(result)
+    const cap = ctx.mode === 'anarchy' ? MAX_NEW_PROPOSALS : 1 // weave and democracy: one step at a time
+    result.next = [...result.next.filter((x) => x.kind === 'ask'), ...result.next.filter((x) => x.kind !== 'ask').slice(0, cap)]
+    const lastSeq = inputs.at(-1)?.seq ?? st.seq
+    if (!result.next.length && !result.connections?.length && !result.intentions?.length && !result.tensions?.length) {
+      this.heardUpTo = lastSeq // heard it all; nothing new to say, so say nothing
+      this.lastSilent = { at: new Date().toISOString(), model }
+      return null
     }
     // new directions become proposals of their own, so people can vote, approve or veto them
     const n = st.roundCount + 1
@@ -277,7 +326,6 @@ Use only hashes that appear in the input. Prefer an existing proposal over a new
       step.proposal = e.hash
       added++
     }
-    const lastSeq = inputs.at(-1)?.seq ?? st.seq
     return this.log.appendAsWorkspace('round', {
       round: n, mode: ctx.mode, lastSeq, inputs: inputs.map((e) => e.hash),
       score: { ...this.board.score(), snapshot: st.score?.hash ?? null },

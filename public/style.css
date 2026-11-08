@@ -236,3 +236,9 @@ body[data-view="tech"] .plain-only { display: none !important; }
   .sheet-card { max-width: 620px; }
 }
 @media (max-width: 999px) { .map-side { display: none; } }
+
+.chip.repo { text-decoration: none; color: var(--ink); gap: 5px; }
+.chip.repo:hover { border-color: var(--muted); }
+.badge.away { background: var(--warn-soft); color: var(--warn); font-size: 11px; padding: 0 6px; }
+.switch { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); font-size: 15px; margin: 4px 0 8px; }
+.keep h3 { margin-top: 14px; }
