@@ -18,13 +18,13 @@ export class HostedAgents {
     this.byTokenHash = new Map()
   }
 
-  #seal (hex) {
+  seal (hex) {
     const iv = randomBytes(12), c = createCipheriv('aes-256-gcm', this.key, iv)
     const enc = Buffer.concat([c.update(hex, 'utf8'), c.final()])
     return [iv, c.getAuthTag(), enc].map(b64url).join('.')
   }
 
-  #open (sealed) {
+  open (sealed) {
     const [iv, tag, enc] = sealed.split('.').map((x) => Buffer.from(x, 'base64url'))
     const d = createDecipheriv('aes-256-gcm', this.key, iv); d.setAuthTag(tag)
     return Buffer.concat([d.update(enc), d.final()]).toString('utf8')
@@ -43,7 +43,7 @@ export class HostedAgents {
   /** A new agent key for this human; returns its DID and the connector secret (shown once). */
   async create (principal, label) {
     const id = newIdentity(), token = b64url(randomBytes(32)), tokenHash = sha(token)
-    const sealed = this.#seal(id.seedHex)
+    const sealed = this.seal(id.seedHex)
     await this.db.query('insert into hosted_agents (did, principal, label, token_hash, seed_enc, created) values ($1,$2,$3,$4,$5,$6)', [id.did, principal, label, tokenHash, sealed, new Date().toISOString()])
     this.byTokenHash.set(tokenHash, { did: id.did, principal, label, sealed })
     return { did: id.did, token }
@@ -53,6 +53,6 @@ export class HostedAgents {
   byToken (token) {
     const rec = this.byTokenHash.get(sha(String(token)))
     if (!rec) return null
-    return { ...rec, identity: identityFromSeedHex(this.#open(rec.sealed)) }
+    return { ...rec, identity: identityFromSeedHex(this.open(rec.sealed)) }
   }
 }

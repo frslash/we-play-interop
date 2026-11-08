@@ -19,6 +19,12 @@ create table if not exists entries (
   entry        text not null
 );
 create index if not exists entries_type on entries (type);
+create table if not exists agent_wakes (
+  agent    text primary key,
+  url_enc  text not null,
+  wake_on  text not null,
+  set_at   timestamptz not null
+);
 create table if not exists hosted_agents (
   did        text primary key,
   principal  text not null,

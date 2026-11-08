@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -112,7 +113,8 @@ async function makeWebvh () {
 }
 
 describe('the workspace, end to end', () => {
-  let ctx, base, dir, webvh, ghCalls
+  let ctx, base, dir, webvh, ghCalls, wakeCalls = []
+  const wakeFetch = async (url, init) => { wakeCalls.push({ url, body: JSON.parse(init.body) }); return new Response('ok', { status: 200 }) }
   const human = newIdentity(), other = newIdentity(), agent = newIdentity(), stranger = newIdentity()
   const postDoc = async (doc) => { const r = await fetch(`${base}/api/entries`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc) }); return { status: r.status, body: await r.json() } }
   const send = (id, name, payload, extra) => postDoc(signedDocument(id, { type: TYPES[name], payload, ...extra }))
@@ -142,7 +144,7 @@ describe('the workspace, end to end', () => {
     webvh = await makeWebvh()
     ghCalls = []
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: 'test', vetoWindowMinutes: 0, approvalsRequired: 1, weaverIntervalMinutes: 0, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, apiKey: '' } }
-    ctx = await createApp(config, { resolver: createResolver({ fetch: webvh.fetch }), gh })
+    ctx = await createApp(config, { resolver: createResolver({ fetch: webvh.fetch }), gh, wakeFetch })
     await new Promise((r) => ctx.server.listen(0, r))
     base = `http://localhost:${ctx.server.address().port}`
     await ctx.board.refresh()
@@ -340,6 +342,30 @@ describe('the workspace, end to end', () => {
     const here = JSON.parse((await call(url, 'who_is_here')).content[0].text)
     assert.ok(here.find((p) => p.did === did && p.hosted && p.you))
     assert.equal((await rpc(base + '/mcp/a/not-a-real-link', 'tools/list', {})).status, 404)
+  })
+
+  test('an agent can be woken: the room calls its wake link when something is for it', async () => {
+    const made = await send(other, 'host', { label: "Person B's Claude" })
+    const agent = made.body.hosted.did
+    await send(other, 'delegate', { delegate: agent, scope: ['note', 'vote'], label: "Person B's Claude" }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    const url = 'https://automation.example/hooks/secret-token-123'
+    const urlHash = createHash('sha256').update(url).digest('hex')
+    const setWake = async (id, payload, link) => { const r = await fetch(`${base}/api/wake`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ document: signedDocument(id, { type: TYPES.wake, payload }), url: link }) }); return { status: r.status, body: await r.json() } }
+    assert.equal((await setWake(human, { agent, urlHash, on: ['direct'] }, url)).body.payload.code, 'permissionDenied') // not your agent
+    assert.equal((await setWake(other, { agent, urlHash, on: ['direct'] }, url + 'x')).body.payload.code, 'malformedRequest') // link does not match what was signed
+    const ok = await setWake(other, { agent, urlHash, on: ['direct', 'reply'] }, url)
+    assert.equal(ok.status, 201)
+    assert.ok(!JSON.stringify(ctx.log.entries).includes('secret-token-123'), 'the wake link is never in the log')
+    wakeCalls.length = 0
+    await send(human, 'note', { text: 'Your agent around? Want to compare notes?', kind: 'message' }, { recipient: agent })
+    await send(human, 'note', { text: 'A second one, right after.', kind: 'message' }, { recipient: agent })
+    await send(human, 'note', { text: 'Something for everyone.', kind: 'message' })
+    await new Promise((r) => setTimeout(r, 50))
+    assert.equal(wakeCalls.length, 1, 'one wake a minute at most; the rest rides on the next one')
+    assert.equal(wakeCalls[0].url, url); assert.deepEqual(wakeCalls[0].body.reasons, ['direct'])
+    assert.equal((await get(`/api/participants/${encodeURIComponent(agent)}`)).wake.last.ok, true)
+    const removed = await setWake(other, { agent, urlHash: null, on: [] }, null)
+    assert.equal(removed.status, 201); assert.ok(!ctx.waker.hooks.has(agent))
   })
 
   test('anyone can verify the whole log, and tampering shows', async () => {

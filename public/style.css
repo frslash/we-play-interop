@@ -144,3 +144,7 @@ body[data-tab="watch"] #score, body[data-tab="watch"] #banner { display: none; }
 .steps { padding-left: 20px; margin: 10px 0; }
 .steps li { margin: 8px 0; }
 .steps code { display: inline-block; margin-top: 4px; }
+.agent-row { padding: 10px 0; border-top: 1px solid var(--line); }
+.agent-row:first-of-type { border-top: 0; }
+.keep { margin-top: 8px; padding: 8px 12px; border: 1px dashed var(--line); border-radius: 10px; }
+.keep code { overflow-wrap: anywhere; }

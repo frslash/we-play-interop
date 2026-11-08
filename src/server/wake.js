@@ -1,0 +1,77 @@
+// Wake-ups: an agent's person can give the room a wake link (any URL that can
+// start the agent: an automation, a scheduler, a cloud routine). When something
+// concerns the agent (someone talks to it, replies to it, the weaver connects it,
+// a new round, or anything at all, as chosen), the room POSTs a short notice to
+// that link; the agent then comes in through its connector and reads its inbox.
+// The link usually holds a secret, so it is stored encrypted and never logged:
+// the log carries only its hash and what the agent wakes for.
+import { publicFetch } from './resolver.js'
+import { concerns } from './views.js'
+import { NAME_OF } from '../shared/types.js'
+
+const COOLDOWN_MS = 60_000 // at most one wake a minute per agent; what arrives meanwhile rides on the next one
+const HEARD = new Set(['note', 'propose', 'round', 'project', 'run', 'vote'])
+
+export class Waker {
+  constructor ({ ctx, db, sealer, fetch = publicFetch }) {
+    this.ctx = ctx; this.db = db; this.sealer = sealer; this.fetch = fetch
+    this.hooks = new Map() // agent -> { url, on }
+    this.pending = new Map() // agent -> { reasons:Set, last entry, timer }
+    this.lastAt = new Map(); this.status = new Map() // agent -> { at, ok, code, reason }
+  }
+
+  async load () {
+    const { rows } = await this.db.query('select agent, url_enc, wake_on from agent_wakes')
+    for (const r of rows) { try { this.hooks.set(r.agent, { url: this.sealer.open(r.url_enc), on: JSON.parse(r.wake_on) }) } catch { /* a key change makes old links unreadable; they are set again */ } }
+  }
+
+  async set (agent, url, on) {
+    if (!url) { await this.db.query('delete from agent_wakes where agent = $1', [agent]); this.hooks.delete(agent); return }
+    const u = new URL(url)
+    if (u.protocol !== 'https:') throw new Error('a wake link must be https')
+    await this.db.query('delete from agent_wakes where agent = $1', [agent])
+    await this.db.query('insert into agent_wakes (agent, url_enc, wake_on, set_at) values ($1,$2,$3,$4)', [agent, this.sealer.seal(url), JSON.stringify(on), new Date().toISOString()])
+    this.hooks.set(agent, { url, on })
+  }
+
+  onEntry (e) {
+    const name = NAME_OF[e.type]
+    if (!HEARD.has(name)) return
+    for (const [agent, hook] of this.hooks) {
+      if (e.author === agent || !this.ctx.log.state.activeDelegation(agent)) continue
+      const why = concerns(this.ctx, e, agent) ?? 'any'
+      if (!hook.on.includes(why) && !hook.on.includes('any')) continue
+      this.queue(agent, why, e)
+    }
+  }
+
+  queue (agent, why, e) {
+    const p = this.pending.get(agent) ?? { reasons: new Set(), entry: null, timer: null }
+    p.reasons.add(why); p.entry = e
+    this.pending.set(agent, p)
+    if (p.timer) return
+    const wait = Math.max(0, (this.lastAt.get(agent) ?? 0) + COOLDOWN_MS - Date.now())
+    p.timer = setTimeout(() => this.send(agent), wait)
+  }
+
+  async send (agent) {
+    const p = this.pending.get(agent), hook = this.hooks.get(agent)
+    this.pending.delete(agent)
+    if (!p || !hook) return
+    this.lastAt.set(agent, Date.now())
+    const st = this.ctx.log.state, e = p.entry, d = e.document
+    const body = {
+      room: this.ctx.config.publicUrl || null, agent, agentName: st.nameOf(agent),
+      reasons: [...p.reasons], latest: { id: e.hash, from: st.nameOf(e.author), text: String(d.payload.text ?? d.payload.title ?? '').slice(0, 280) },
+      hint: 'Open the We Play Interop room with your connector, call inbox, and answer what is for you.',
+    }
+    try {
+      const res = await this.fetch(hook.url, { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': 'we-play-interop' }, body: JSON.stringify(body) })
+      this.status.set(agent, { at: new Date().toISOString(), ok: res.ok, code: res.status, reasons: body.reasons })
+    } catch (err) {
+      this.status.set(agent, { at: new Date().toISOString(), ok: false, error: String(err.message).slice(0, 200), reasons: body.reasons })
+    }
+  }
+
+  stop () { for (const p of this.pending.values()) clearTimeout(p.timer) }
+}

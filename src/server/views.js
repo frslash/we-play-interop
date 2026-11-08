@@ -21,7 +21,7 @@ export function info (ctx) {
 
 export function state (ctx) {
   const { log, board, executor } = ctx, st = log.state
-  const people = [...st.participants.values()].filter((p) => p.kind !== 'workspace').map((p) => ({ ...p, delegation: p.kind === 'agent' ? st.activeDelegation(p.did)?.hash ?? null : undefined }))
+  const people = [...st.participants.values()].filter((p) => p.kind !== 'workspace').map((p) => ({ ...p, delegation: p.kind === 'agent' ? st.activeDelegation(p.did)?.hash ?? null : undefined, ...(p.kind === 'agent' && ctx.waker?.status.get(p.did) ? { wakeLast: ctx.waker.status.get(p.did) } : {}) }))
   return {
     ...info(ctx),
     people,
@@ -59,10 +59,26 @@ export function message (ctx, e, me) {
   return { ...base, text: gist(e, st).text }
 }
 
-export function messages (ctx, { after = -1, limit = 40, me } = {}) {
-  const all = ctx.log.entries, items = []
+/** Why an entry concerns an agent (direct, reply, connection, round), or null. */
+export function concerns (ctx, e, agent) {
+  const name = NAME_OF[e.type], d = e.document
+  if (e.author === agent) return null
+  if (name === 'note' && d.recipient === agent) return 'direct'
+  if (name === 'note' && d.threadId && ctx.log.byDocId.get(d.threadId)?.author === agent) return 'reply'
+  if (name === 'round' && (d.payload.connections ?? []).some((c) => c.between.includes(agent))) return 'connection'
+  if (name === 'round') return 'round'
+  return null
+}
+
+export function messages (ctx, { after = -1, limit = 40, me, forMe } = {}) {
+  const all = ctx.log.entries, items = [], only = forMe && me && forMe !== '0'
   let i = Math.max(0, Number(after) + 1)
-  for (; i < all.length && items.length < Math.min(Number(limit) || 40, 100); i++) if (HEARD.has(NAME_OF[all[i].type])) items.push(message(ctx, all[i], me))
+  for (; i < all.length && items.length < Math.min(Number(limit) || 40, 100); i++) {
+    if (!HEARD.has(NAME_OF[all[i].type])) continue
+    const why = me ? concerns(ctx, all[i], me) : null
+    if (only && (!why || why === 'round')) continue
+    items.push({ ...message(ctx, all[i], me), ...(why && why !== 'round' ? { forYou: why } : {}) })
+  }
   return { items, more: i < all.length, head: ctx.log.head() }
 }
 
@@ -81,7 +97,7 @@ export function read (ctx, path) {
 export function participant (ctx, did) {
   const st = ctx.log.state, p = st.participants.get(did)
   const delegations = [...st.delegations.values()].filter((d) => d.delegate === did || d.issuer === did)
-  return p ? { ...p, activeDelegation: st.activeDelegation(did) ?? null, delegations } : null
+  return p ? { ...p, activeDelegation: st.activeDelegation(did) ?? null, delegations, ...(p.wake ? { wake: { ...p.wake, last: ctx.waker?.status.get(did) ?? null } } : {}) } : null
 }
 
 export function entries (ctx, { after = -1, limit = 100, type } = {}) {

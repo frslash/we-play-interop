@@ -15,6 +15,7 @@ import { Llm } from './llm.js'
 import { Log, TaskError } from './log.js'
 import { handleHostedMcp, handleMcp } from './mcp.js'
 import { HostedAgents } from './hosted.js'
+import { Waker } from './wake.js'
 import { NAME_OF } from '../shared/types.js'
 import { createResolver } from './resolver.js'
 import * as views from './views.js'
@@ -44,7 +45,7 @@ function workspaceIdentity (config) {
   return id
 }
 
-export async function createApp (config = defaultConfig, { resolver = createResolver(), gh } = {}) {
+export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch } = {}) {
   const identity = workspaceIdentity(config)
   const db = await openDb(config)
   const log = new Log({ db, identity, resolver, config })
@@ -57,6 +58,10 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   const hosted = new HostedAgents({ db, identity })
   await hosted.load()
   const ctx = { config, log, board, llm, weaver, executor, identity, db, hosted }
+  const waker = new Waker({ ctx, db, sealer: hosted, ...(wakeFetch ? { fetch: wakeFetch } : {}) })
+  await waker.load()
+  ctx.waker = waker
+  log.on('entry', (e) => waker.onEntry(e))
 
   const page = readFileSync(join(root, 'public/index.html'), 'utf8')
   const importMap = /<script type="importmap">([\s\S]*?)<\/script>/.exec(page)?.[1] ?? ''
@@ -119,10 +124,25 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (path === '/api/draft' && req.method === 'POST') {
       try { return send(res, 200, views.draft(ctx, JSON.parse(await readBody(req)))) } catch (err) { return send(res, 400, { error: err.message }) }
     }
+    if (path === '/api/wake' && req.method === 'POST') {
+      let doc
+      try {
+        const body = JSON.parse(await readBody(req)); doc = body.document
+        if (NAME_OF[doc?.type] !== 'wake') throw new TaskError('malformedRequest', 'document: an agent:wake document, signed by the agent\'s person')
+        const url = typeof body.url === 'string' && body.url ? body.url : null
+        if ((url === null) !== (doc.payload?.urlHash === null)) throw new TaskError('malformedRequest', 'send the wake link with its hash, or neither to remove it')
+        if (url && (!/^https:\/\//.test(url) || url.length > 2000)) throw new TaskError('malformedRequest', 'a wake link is an https URL')
+        if (url && createHash('sha256').update(url).digest('hex') !== doc.payload.urlHash) throw new TaskError('malformedRequest', 'the wake link does not match the hash you signed')
+        const { entry } = await log.accept(doc, { ip: ipOf(req) })
+        await waker.set(doc.payload.agent, url, doc.payload.on)
+        return send(res, 201, entry)
+      } catch (err) { return refuse(res, err, doc) }
+    }
     if (path === '/api/entries' && req.method === 'POST') {
       let doc
       try {
         doc = JSON.parse(await readBody(req))
+        if (NAME_OF[doc?.type] === 'wake') throw new TaskError('malformedRequest', 'send wake settings to /api/wake, with the link')
         const isHost = NAME_OF[doc?.type] === 'host'
         if (isHost && hosted.liveFor(doc.issuer, log.state) >= MAX_HOSTED) throw new TaskError('permissionDenied', `you already have ${MAX_HOSTED} hosted agents; stop one first`, { status: 403 })
         const { entry, duplicate } = await log.accept(doc, { ip: ipOf(req) })
@@ -134,14 +154,16 @@ export async function createApp (config = defaultConfig, { resolver = createReso
           return send(res, 201, { ...entry, hosted: { did: agent.did, connector: `${base}/mcp/a/${agent.token}` } })
         }
         return send(res, duplicate ? 200 : 201, entry)
-      } catch (err) {
-        const e = err instanceof TaskError ? err : err instanceof SyntaxError ? new TaskError('malformedRequest', 'the body is not JSON') : new TaskError('internalError', 'something went wrong on our side', { status: 500, retryable: true })
-        if (!(err instanceof TaskError) && !(err instanceof SyntaxError)) console.error(err)
-        return send(res, e.status, log.errorDocument(e, doc))
-      }
+      } catch (err) { return refuse(res, err, doc) }
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method not allowed' })
     return serveStatic(path, res)
+  }
+
+  function refuse (res, err, doc) {
+    const e = err instanceof TaskError ? err : err instanceof SyntaxError ? new TaskError('malformedRequest', 'the body is not JSON') : new TaskError('internalError', 'something went wrong on our side', { status: 500, retryable: true })
+    if (!(err instanceof TaskError) && !(err instanceof SyntaxError)) console.error(err)
+    return send(res, e.status, log.errorDocument(e, doc))
   }
 
   function serveStatic (path, res) {
@@ -172,7 +194,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     timers.push(setInterval(() => weaver.tick(), 30_000))
     timers.push(setInterval(() => executor.tick().catch((e) => console.error('executor:', e)), 30_000))
   }
-  ctx.stop = async () => { timers.forEach(clearInterval); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { timers.forEach(clearInterval); waker.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }

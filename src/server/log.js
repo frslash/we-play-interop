@@ -143,6 +143,9 @@ export class Log extends EventEmitter {
         if (other?.kind === 'agent' && other.principal !== doc.issuer) throw new TaskError('permissionDenied', 'that agent already acts for someone else', { status: 403 })
         break
       }
+      case 'wake':
+        if (st.participants.get(p.agent)?.principal !== doc.issuer) throw new TaskError('permissionDenied', 'you can set wake-ups only for your own agent', { status: 403 })
+        break
       case 'revoke': {
         const d = st.delegations.get(p.delegation)
         if (!d || d.issuer !== doc.issuer) throw new TaskError('permissionDenied', 'you can revoke only your own delegations', { status: 403 })

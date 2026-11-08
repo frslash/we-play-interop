@@ -26,13 +26,14 @@ export const TYPES = {
   score: T('score/snapshot'),
   result: T('action/result'),
   host: T('agent/host'),
+  wake: T('agent/wake'),
   hosted: T('agent/hosted'),
 }
 export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v, k]))
 
 /** Who may write each kind of document. */
 export const WHO = {
-  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human',
+  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human',
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone',
 }
@@ -45,6 +46,8 @@ export const BOARD_WAY_PREFIXES = ['credential:', 'task:', 'ceremony:', 'basic:'
 export const WAY_RE = /^[A-Za-z0-9][A-Za-z0-9._:/+#-]{0,199}$/
 
 export const MODES = ['anarchy', 'democracy', 'weave']
+/** What can wake an agent: someone talks to it, replies to it, the weaver connects it, every round, or anything new. */
+export const WAKE_ON = ['direct', 'reply', 'connection', 'round', 'any']
 export const NOTE_KINDS = ['message', 'intention', 'idea', 'observation', 'question']
 export const VOTE_CHOICES = ['for', 'against', 'abstain']
 /**
@@ -154,6 +157,11 @@ export function checkPayload (name, doc) {
     }
     case 'revoke': return HASH_RE.test(p.delegation ?? '') ? null : 'delegation: the hash of the delegation entry'
     case 'host': return str(p.label, 1, 60) ? null : 'label: a name for the agent, 1 to 60 characters'
+    case 'wake':
+      if (!DID_RE.test(p.agent ?? '')) return 'agent: your agent\'s DID'
+      if (p.urlHash !== null && !HASH_RE.test(p.urlHash ?? '')) return 'urlHash: SHA-256 (hex) of the wake link, or null to remove it'
+      if (!Array.isArray(p.on) || !p.on.every((x) => WAKE_ON.includes(x))) return `on: some of ${WAKE_ON.join(', ')}`
+      return null
     case 'note':
       if (!str(p.text, 1, 2000)) return 'text: 1 to 2000 characters'
       if (!NOTE_KINDS.includes(p.kind)) return `kind: ${NOTE_KINDS.join(' | ')}`
