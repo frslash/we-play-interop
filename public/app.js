@@ -171,6 +171,16 @@ function setView (v) {
 }
 document.querySelectorAll('.view-switch button').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)))
 setView(store.get('wpi.view') === 'tech' ? 'tech' : 'plain')
+// Light, dark, or as the device is: one button that cycles, remembered in this browser
+const THEMES = { system: ['◐', 'as your device is'], light: ['☀', 'light'], dark: ['☾', 'dark'] }
+function setTheme (t) {
+  const theme = THEMES[t] ? t : 'system'
+  if (theme === 'system') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = theme
+  const b = $('#theme'); b.textContent = THEMES[theme][0]; b.setAttribute('aria-label', `Theme: ${THEMES[theme][1]}`); b.title = `Theme: ${THEMES[theme][1]} (tap to change)`
+  store.set('wpi.theme', theme === 'system' ? null : theme)
+}
+$('#theme').addEventListener('click', () => { const order = ['system', 'light', 'dark'], now = document.documentElement.dataset.theme ?? 'system'; setTheme(order[(order.indexOf(now) + 1) % order.length]); toast(`Theme: ${THEMES[document.documentElement.dataset.theme ?? 'system'][1]}`) })
+setTheme(store.get('wpi.theme'))
 $('#bring').addEventListener('click', () => openBring())
 $('#sheet').addEventListener('click', (ev) => { if (ev.target.id === 'sheet') closeBring() })
 document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeBring() })
