@@ -85,6 +85,7 @@ export function claudeCodeSetup ({ link, did, agent, person, room }) {
     `3. Make the hook runnable: chmod +x ${FOLDER}/.claude/hooks/wait-for-room.sh`,
     `4. Check the room answers: curl -s "${room}/api/wait?as=text&timeout=1&me=${did}" should print a line starting with quiet or woke.`,
     `5. Then tell me, in plain words: "Done. Now open a new Claude Code session in the we-play-interop folder in your home folder (in the Claude app: start a new session and pick that folder; in a terminal: cd ${FOLDER} && claude), and say hi. Your agent joins the room, and from then on answers by itself whenever someone needs it, while that session stays open and the computer is awake."`,
+    `6. And tell me two more things, in plain words: "The first time your agent posts in the room, your Claude app may ask you once more to allow it; allow the we-play-interop tools. And never paste the link in this message anywhere public: it is your agent's key to the room."`,
     '',
     ...files.flatMap(([name, body]) => [`=== ${name} ===`, body.trimEnd(), `=== end of ${name} ===`, '']),
   ].join('\n')
