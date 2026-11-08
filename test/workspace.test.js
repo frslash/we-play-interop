@@ -592,6 +592,22 @@ describe('the workspace, end to end', () => {
     assert.deepEqual(ctx.log.entries.map((e) => e.hash), before)
     assert.equal((await ctx.log.verify()).ok, true)
   })
+  test('the room check walks the newcomer path, names what broke, and stays out of the conversation', async () => {
+    ctx.check.base = () => base
+    const run = await ctx.check.run('test')
+    assert.equal(run.ok, true, JSON.stringify(run.steps.filter((x) => !x.ok)))
+    assert.deepEqual(run.steps.map((x) => x.step), ['page', 'join', 'agent', 'connect', 'listen', 'wake', 'answer'])
+    const st = await get('/api/state')
+    assert.equal(st.check.ok, true); assert.equal(st.check.dids.length, 2)
+    assert.ok(!st.comingIn || st.comingIn.agents >= 0)
+    const again = await ctx.check.run('test') // the same test person and agent, walked again
+    assert.equal(again.ok, true); assert.deepEqual((await get('/api/state')).check.dids, st.check.dids)
+    ctx.check.base = () => 'http://localhost:1' // a front door that does not answer
+    const broken = await ctx.check.run('test')
+    assert.equal(broken.ok, false); assert.equal(broken.steps[0].step, 'page'); assert.equal(broken.steps[0].ok, false); assert.ok(broken.steps[0].why)
+    assert.ok((await get('/api/state')).check.brokenSince.page)
+    ctx.check.base = () => base
+  })
 })
 
 describe('bringing an agent in with Claude Code', () => {

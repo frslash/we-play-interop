@@ -280,3 +280,8 @@ body[data-view="tech"] .plain-only { display: none !important; }
 @media (max-width: 520px) { .welcome h2 { margin-right: 0; margin-top: 28px; } }
 .chip.me { flex-shrink: 0; }
 @media (max-width: 700px) { .repo-word { display: none; } .chip.repo { padding: 3px 7px; } }
+.check-line { font-size: 13px; margin: 8px 0; padding: 6px 10px; border-radius: 8px; }
+.check-line.ok { background: var(--good-soft); color: var(--good); }
+.check-line.bad { background: var(--warn-soft); color: var(--warn); }
+.check-line a { color: inherit; }
+input[type=url] { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); min-height: 44px; font: inherit; }

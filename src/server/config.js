@@ -31,6 +31,7 @@ export const config = {
   },
   // the weaver speaks after a pause in the conversation, never more often than this
   weaverIntervalMinutes: int(env.WEAVER_INTERVAL_MINUTES, 10),
+  checkEveryMinutes: int(env.ROOM_CHECK_MINUTES, 180), // the room check walks the newcomer's path this often, and after every start
   weaverQuietMinutes: int(env.WEAVER_QUIET_MINUTES, 2),
   vetoWindowMinutes: int(env.VETO_WINDOW_MINUTES, 10),
   approvalsRequired: Math.max(1, int(env.APPROVALS_REQUIRED, 1)),

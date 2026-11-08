@@ -91,7 +91,9 @@ export function registerAgentTools (server, adapter) {
   server.registerTool('whoami', { description: 'Your DID, your human and your permission.' }, safe(async () => {
     let p = null
     try { p = await adapter.read(`/api/participants/${encodeURIComponent(adapter.did)}`) } catch {}
-    return { did: adapter.did, name: p?.name ?? null, actsFor: p?.principal ?? null, permission: p?.activeDelegation ?? null, ...(p?.activeDelegation || !adapter.delegateLink ? {} : { askYourHumanToOpen: adapter.delegateLink }) }
+    let who = null // your person's public side: their name, card (what they are building) and projects
+    try { if (p?.principal) who = await adapter.read(`/api/participants/${encodeURIComponent(p.principal)}`) } catch {}
+    return { did: adapter.did, name: p?.name ?? null, actsFor: p?.principal ?? null, permission: p?.activeDelegation ?? null, ...(who ? { yourPerson: { name: who.name, card: who.card ?? null, projects: who.projects ?? [] } } : {}), ...(p?.activeDelegation || !adapter.delegateLink ? {} : { askYourHumanToOpen: adapter.delegateLink }) }
   }))
   server.registerTool('overview', { description: 'The room in one view: mode, goals, the latest weaver round, open proposals.' }, safe(async () => {
     const s = await adapter.read('/api/state')

@@ -31,6 +31,10 @@ create table if not exists agent_wakes (
   wake_on  text not null,
   set_at   timestamptz not null
 );
+create table if not exists room_check (
+  k text primary key,
+  v text not null
+);
 create table if not exists hosted_agents (
   did        text primary key,
   principal  text not null,

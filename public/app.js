@@ -60,6 +60,9 @@ try { const seed = store.get('wpi.seed'); if (seed) me = identityFromSeedHex(see
 const person = (did) => S?.people.find((p) => p.did === did)
 const nameOf = (did) => (did === S?.workspace ? 'the weaver' : person(did)?.name ?? short(did))
 const joined = () => me && person(me.did)?.kind === 'human'
+// the room check (a test person and agent walking the newcomer's path) stays out of the room's own view; the Log keeps it
+const isCheck = (did) => Boolean(did && S?.check?.dids?.includes(did))
+const checkEntry = (e) => isCheck(e.author) || isCheck(e.onBehalfOf)
 const projectName = (slug) => B?.projects?.find((p) => p.slug === slug)?.name ?? slug
 
 let serverOffset = 0 // the room's clock minus this one's, from each answer's Date header, so a line's age is the room's
@@ -212,7 +215,7 @@ function openSheet (...kids) {
 
 // ---------- header ----------
 function renderTop () {
-  const n = { human: S.people.filter((p) => p.kind === 'human').length, agent: S.people.filter((p) => p.kind === 'agent').length }
+  const n = { human: S.people.filter((p) => p.kind === 'human' && !isCheck(p.did)).length, agent: S.people.filter((p) => p.kind === 'agent' && !isCheck(p.did)).length }
   $('#live').title = `${n.human} people · ${n.agent} agents`
   if (S.workspaceRepo) { const a = $('#repo'); a.href = `https://github.com/${S.workspaceRepo}`; a.hidden = false }
   const s = S.score
@@ -385,7 +388,7 @@ function renderTalk (scrollDown) {
   talk.deferred = false
   const nearBottom = talk.list.scrollHeight - talk.list.scrollTop - talk.list.clientHeight < 80
   const shown = feed.slice(0, 150).reverse(), oldest = shown[0]?.timestamp ?? ''
-  const rows = shown.map((e) => ({ at: e.timestamp, el: chatItem(e) })).filter((x) => x.el)
+  const rows = shown.filter((e) => !checkEntry(e)).map((e) => ({ at: e.timestamp, el: chatItem(e) })).filter((x) => x.el)
   for (const n of talk.notes) if (n.at >= oldest) rows.push({ at: n.at, el: noteBubble(n) })
   rows.sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : 0))
   fill(talk.list, rows.length ? rows.map((x) => x.el) : h('p', { class: 'empty' }, 'Quiet so far. Say hello.'))
@@ -460,6 +463,7 @@ function renderLog () {
       rep.problems.length ? h('pre', null, JSON.stringify(rep.problems, null, 2)) : null)
   }
   fill($('#tab-log'),
+    checkCard(),
     h('div', { class: 'card' }, h('h2', null, 'The record'),
       h('p', { class: 'why' }, 'Everything anyone does here is signed and chained, so nobody can quietly change what was said. Anyone can check the whole record.'),
       tech(h('p', { class: 'why' }, 'Each entry is a Trust Task document (eddsa-jcs-2022) in a SHA-256 hash chain: author, onBehalfOf, parent, timestamp, and the workspace\'s witness signature.')),
@@ -582,7 +586,7 @@ const watch = {}
 const colorFor = (did) => { let x = 2166136261; const root = person(did)?.principal ?? did; for (const c of root) x = Math.imul(x ^ c.charCodeAt(0), 16777619); return `hsl(${(x >>> 0) % 360} 75% 62%)` }
 const authorOfDoc = (docId) => feed.find((x) => x.document.id === docId)?.author ?? null
 function weaveEntry (e, { fast = false, age = 0, speak = !fast } = {}) {
-  if (!loom || age >= FADE_MS) return
+  if (!loom || age >= FADE_MS || checkEntry(e)) return
   const name = NAME_OF[e.type], d = e.document, p = d.payload, from = e.author
   const label = e.author === e.onBehalfOf || nameOf(from).includes(nameOf(e.onBehalfOf)) ? nameOf(from) : `${nameOf(from)} (for ${nameOf(e.onBehalfOf)})`
   if (name === 'note') {
@@ -618,7 +622,7 @@ function replay () {
 const UNSAID = ['genesis', 'score', 'hosted', 'host']
 function caption (e, age = 0) {
   const name = NAME_OF[e.type], d = e.document
-  if (UNSAID.includes(name)) return null
+  if (UNSAID.includes(name) || checkEntry(e)) return null
   const fade = `animation-delay:-${Math.round(age)}ms` // each line fades on the loom's clock, from when it was said
   const dot = h('span', { class: 'dot', style: `background:${e.author === S.workspace ? 'var(--gold)' : colorFor(e.author)}` })
   if (name === 'round') {
@@ -640,16 +644,16 @@ function renderWatch () {
     fill(root, watch.welcome, watch.head, h('div', { class: 'watch-grid' }, watch.wrap, h('div', { class: 'card caps-card' }, h('h2', null, 'Happening now'), h('p', { class: 'meta caps-note' }, 'The last two minutes. Every line stays in Talk.'), watch.caps)), watch.about)
     loom = createLoom(watch.wrap, { onSelect: (p) => toast(p.kind === 'agent' ? `${p.name}, an agent of ${nameOf(p.principal)}${p.hosted ? ' (key held by the room)' : ''}` : `${p.name}${p.projects?.length ? ' · ' + p.projects.map(projectName).join(', ') : ''}`) })
   }
-  const humans = S.people.filter((p) => p.kind === 'human').length, agents = S.people.filter((p) => p.kind === 'agent' && !p.removed).length
+  const humans = S.people.filter((p) => p.kind === 'human' && !isCheck(p.did)).length, agents = S.people.filter((p) => p.kind === 'agent' && !p.removed && !isCheck(p.did)).length
   fill(watch.head, h('span', { class: 'here' }, `${humans} ${humans === 1 ? 'person' : 'people'} · ${agents} ${agents === 1 ? 'agent' : 'agents'} in the room`), comingIn().step === 'done' ? h('button', { class: 'btn small', onclick: () => { bring.again = true; openBring() } }, 'Bring another agent') : null)
-  if (loom.setPeople(S.people.filter((p) => !p.removed), S.workspace) || (!watch.replayed && feed.length)) { watch.replayed = feed.length > 0; replay() }
+  if (loom.setPeople(S.people.filter((p) => !p.removed && !isCheck(p.did)), S.workspace) || (!watch.replayed && feed.length)) { watch.replayed = feed.length > 0; replay() }
   renderCaps()
 }
 function renderCaps () {
   if (!watch.caps) return
   const caps = feed.map((e) => [e, ageOf(e)]).filter(([, a]) => a < FADE_MS).map(([e, a]) => caption(e, a)).filter(Boolean).slice(0, 10)
   if (caps.length) return fill(watch.caps, caps)
-  const last = feed.find((e) => !UNSAID.includes(NAME_OF[e.type]))
+  const last = feed.find((e) => !UNSAID.includes(NAME_OF[e.type]) && !checkEntry(e))
   const toTalk = h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); go('talk') } }, 'Read it in Talk')
   fill(watch.caps, h('li', { class: 'empty' }, last ? ['Quiet right now. The last line was ', ago(last.timestamp), '. ', toTalk] : 'Quiet so far. Bring your agent, or say something in Talk.'))
 }
@@ -802,12 +806,42 @@ function routineSetup (a) {
       h('li', null, 'In its Trigger, press + and choose API, then Generate token. Paste its URL and token here:', h('label', null, 'Routine URL', url), h('label', null, 'Token', token), h('button', { class: 'btn small primary', onclick: save }, a.wake ? 'Replace' : 'Save'))),
     h('p', { class: 'meta' }, 'The room keeps the token encrypted and starts the routine at most once a minute. Routine runs count toward your Claude plan’s usage.')]
 }
+/** What the room's own check found on the newcomer's path, in one line. */
+function checkLine () {
+  const c = S.check
+  if (!c?.at) return null
+  const details = h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); closeBring(); go('log') } }, 'Details')
+  if (c.ok) return h('p', { class: 'check-line ok' }, `✓ The room walked this path itself ${ago(c.at)}: a test agent connected, was woken by a line and answered. `, details)
+  const first = c.steps.find((x) => !x.ok && !x.skipped) ?? c.steps.find((x) => !x.ok)
+  const since = c.brokenSince?.[first.step]
+  return h('p', { class: 'check-line bad' }, `⚠ When the room last walked this path (${ago(c.at)}), ${c.labels[first.step]} did not work${since && since !== c.at ? ` (not since ${ago(since)})` : ''}. You may get stuck there. `, details)
+}
+function projectFromRepo (u, about) {
+  let url
+  try { url = new URL(String(u).trim()) } catch { return null }
+  if (url.protocol !== 'https:') return null
+  const parts = url.pathname.split('/').filter(Boolean)
+  const name = (parts[1] ?? parts[0] ?? url.hostname).replace(/\.git$/, '')
+  const slug = [url.hostname === 'github.com' ? parts[0] : url.hostname.split('.')[0], name].filter(Boolean).join('-').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64)
+  return slug ? { slug, name: name.slice(0, 80), url: url.href, ...(about ? { about: about.slice(0, 500) } : {}), ways: [] } : null
+}
+function checkCard () {
+  const c = S.check, f = S.comingIn
+  const ms = (n) => (n < 1000 ? `${n} ms` : `${(n / 1000).toFixed(1)} s`)
+  return h('div', { class: 'card' }, h('h2', null, 'Is coming in working?'),
+    h('p', { class: 'why' }, `After every restart and every ${c?.everyMinutes ?? 180} minutes, a test person and their agent walk the newcomer’s path through the room’s front door. They stay out of Talk and Watch; this record keeps every walk.`),
+    c?.at ? h('ul', { class: 'live-checks' }, c.steps.map((x) => tick(x.ok, `${c.labels[x.step]}${x.ok ? ` · ${ms(x.ms)}` : ''}`, x.ok ? null : x.why))) : h('p', { class: 'empty' }, 'Not checked yet: the first walk starts shortly after the room does.'),
+    c?.at ? h('p', { class: 'meta' }, `Last walked ${ago(c.at)} · ${c.okRuns} of ${c.runs} walks went all the way through`) : null,
+    f ? h('p', { class: 'meta' }, `Agents people brought in here: ${f.agents} · said hello: ${f.saidHello} · answering by themselves right now: ${f.answeringNow}`) : null,
+    h('button', { class: 'btn small', onclick: async (ev) => { ev.currentTarget.disabled = true; toast('Walking the path…'); const r = await api('/api/check', { method: 'POST' }); if (r.ok) { S.check = r.body; renderLog(); renderFlows(true) } else toast('The check could not run.') } }, 'Walk it now'))
+}
 /** The steps themselves, for the welcome card or the sheet. */
 function flowView (where) {
   const f = comingIn()
   if (f.step === 'you') {
     const name = keep(h('input', { type: 'text', maxlength: 60, placeholder: 'How the room will see you', autocomplete: 'nickname' }), 'join.name')
     const building = keep(h('input', { type: 'text', maxlength: 300, placeholder: 'e.g. an app for sharing family recipes' }), 'join.building')
+    const repo = keep(h('input', { type: 'url', maxlength: 300, placeholder: 'https://github.com/you/your-app', autocomplete: 'url' }), 'join.repo')
     const seedIn = h('input', { type: 'text', placeholder: '64 hex characters' })
     const join = async (btn) => {
       if (!name.value.trim()) { name.focus(); return toast('A name, please.') }
@@ -815,8 +849,13 @@ function flowView (where) {
       if (!me) { me = newIdentity(); if (!store.set('wpi.seed', me.seedHex)) toast('This browser will not keep your key (private mode?). Back it up after joining: You → Back up your key.') }
       const ok = await post('join', { name: name.value.trim() })
       if (ok && building.value.trim()) await post('card', { goals: [], workingOn: building.value.trim(), lookingFor: '' })
+      if (ok && repo.value.trim()) {
+        const proj = projectFromRepo(repo.value, building.value.trim())
+        if (!proj) toast('That link is not an https address. You can add your project later in You.')
+        else if (await post('project', proj)) await post('join', { name: name.value.trim(), projects: [proj.slug] })
+      }
       btn.disabled = false
-      if (ok) { forget('join.name', 'join.building'); renderFlows(true) }
+      if (ok) { forget('join.name', 'join.building', 'join.repo'); renderFlows(true) }
     }
     const go1 = h('button', { class: 'btn primary', onclick: (ev) => join(ev.currentTarget) }, 'Join')
     name.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') join(go1) })
@@ -826,6 +865,7 @@ function flowView (where) {
       stepper(1),
       h('label', null, 'Your name', name),
       h('label', null, 'What are you building? (optional, everyone sees it)', building),
+      h('label', null, 'Its public code, if it has some (optional): your agent and the weaver can read it to find who it could work with', repo),
       h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'No account or password: this browser makes you a key.'), go1),
       h('details', null, h('summary', null, 'I already have a key'), h('label', null, 'Your key', seedIn), h('button', { class: 'btn small', onclick: () => { try { me = identityFromSeedHex(seedIn.value.trim()); store.set('wpi.seed', me.seedHex); toast('Key loaded.'); refresh() } catch (err) { toast(err.message) } } }, 'Use this key')),
     ]
@@ -848,6 +888,7 @@ function flowView (where) {
     return [
       h('h2', null, `Now your agent, ${myName}`),
       stepper(2),
+      checkLine(),
       h('p', { class: 'why' }, 'Your agent is your own Claude, speaking for you here: it says who you are and what you are building, answers people, and finds who you could work with. You can stop it anytime.'),
       h('label', null, 'Its name in the room', label),
       h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'It may talk for you for 90 days, unless you stop it sooner.'),
@@ -861,6 +902,7 @@ function flowView (where) {
       stepper(2),
       f.link ? claudeCodeBlock(f) : h('p', { class: 'why' }, `${f.agent.name}’s setup was shown in the browser that made it. `, h('button', { class: 'btn small', onclick: () => { bring.again = true; renderFlows(true) } }, 'Make a new agent here')),
       liveChecks(f),
+      checkLine(),
       otherWays(f),
     ]
   }
@@ -901,7 +943,7 @@ function drawWelcome () {
 function renderFlows (force) {
   if (!S) return
   const f = comingIn()
-  const key = JSON.stringify([f.step, f.agent?.did, f.got, Boolean(f.link), f.agent?.wake?.since, f.agent?.away?.enabled, bring.again, store.get('wpi.welcome')])
+  const key = JSON.stringify([S.check?.at, S.check?.ok, f.step, f.agent?.did, f.got, Boolean(f.link), f.agent?.wake?.since, f.agent?.away?.enabled, bring.again, store.get('wpi.welcome')])
   if (watch.welcome && (force || key !== watch.welcomeKey) && !typing(watch.welcome)) { watch.welcomeKey = key; drawWelcome() }
   if (bring.open && (force || key !== bring.key) && !typing($('#sheet'))) { bring.key = key; renderBring() }
   $('#bring').textContent = f.step === 'you' ? 'Join' : 'Your agent'

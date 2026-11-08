@@ -42,11 +42,11 @@ export function gist (e, st) {
 }
 
 export class Weaver {
-  constructor ({ config, log, board, llm }) { this.config = config; this.log = log; this.board = board; this.llm = llm; this.busy = false; this.lastError = null }
+  constructor ({ config, log, board, llm }) { this.config = config; this.log = log; this.board = board; this.llm = llm; this.busy = false; this.lastError = null; this.skip = () => [] } // skip: DIDs it does not hear (the room check), set by the app
 
   newInputs () {
     const st = this.log.state, heard = Math.max(st.lastRoundSeq, this.heardUpTo ?? -1)
-    return this.log.entries.filter((e) => e.seq > heard && !['round', 'genesis'].includes(NAME_OF[e.type]) && !(NAME_OF[e.type] === 'propose' && e.author === st.workspace))
+    return this.log.entries.filter((e) => e.seq > heard && !['round', 'genesis'].includes(NAME_OF[e.type]) && !(NAME_OF[e.type] === 'propose' && e.author === st.workspace) && !this.skip().includes(e.author))
   }
 
   nextRoundAt () {
@@ -87,8 +87,8 @@ export class Weaver {
       newInputs: inputs.map((e) => gist(e, st)),
       openProposals: open.filter((pr) => pr.kind !== 'goal').map((pr) => ({ hash: pr.hash, kind: pr.kind, title: pr.title, body: clip(pr.body, 400), run: pr.run, by: st.nameOf(pr.principal), byWeaver: pr.byWeaver, tally: st.tally(pr), approvals: pr.approvals.size, status: st.statusOf(pr) })),
       intentions: intentions.map((e) => ({ entry: e.hash, who: st.nameOf(e.onBehalfOf), text: clip(e.document.payload.text, 300) })),
-      people: [...st.participants.values()].filter((p) => p.kind === 'human').map((p) => ({ name: p.name, projects: p.projects })),
-      inRoom: [...st.participants.values()].filter((p) => p.kind !== 'workspace').map((p) => ({ did: p.did, name: p.name, kind: p.kind, ...(p.principal ? { actsFor: st.nameOf(p.principal) } : { projects: p.projects, ...(p.card ? { card: { goals: p.card.goals, workingOn: p.card.workingOn, lookingFor: p.card.lookingFor } } : {}) }) })),
+      people: [...st.participants.values()].filter((p) => p.kind === 'human' && !this.skip().includes(p.did)).map((p) => ({ name: p.name, projects: p.projects })),
+      inRoom: [...st.participants.values()].filter((p) => p.kind !== 'workspace' && !this.skip().includes(p.did)).map((p) => ({ did: p.did, name: p.name, kind: p.kind, ...(p.principal ? { actsFor: st.nameOf(p.principal) } : { projects: p.projects, ...(p.card ? { card: { goals: p.card.goals, workingOn: p.card.workingOn, lookingFor: p.card.lookingFor } } : {}) }) })),
       map: {
         score: this.board.score(),
         fadingSoon: m.fadingSoon.slice(0, 10),

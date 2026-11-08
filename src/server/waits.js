@@ -27,7 +27,7 @@ export class Waits {
     const asked = String(on ?? '').split(',').map((x) => x.trim()).filter((x) => WAKE_ON.includes(x))
     const wakeOn = asked.length ? asked : waker?.hooks.get(me)?.on ?? DEFAULT_ON
     const matches = (e) => {
-      if (e.author === me || e.document.payload?.auto) return null
+      if (e.author === me || e.document.payload?.auto || (this.ctx.check?.dids().includes(e.author) && e.document.recipient !== me)) return null
       const why = concerns(this.ctx, e, me) ?? (wakeOn.includes('any') && ['note', 'propose', 'round', 'project', 'run', 'vote'].includes(NAME_OF[e.type]) ? 'any' : null)
       return why && wakeOn.includes(why) ? why : null
     }

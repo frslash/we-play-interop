@@ -31,9 +31,14 @@ function listeningOf (ctx, p) {
 export function state (ctx) {
   const { log, board, executor } = ctx, st = log.state
   const people = [...st.participants.values()].filter((p) => p.kind !== 'workspace').map((p) => ({ ...p, delegation: p.kind === 'agent' ? st.activeDelegation(p.did)?.hash ?? null : undefined, ...(p.kind === 'agent' && ctx.waker?.status.get(p.did) ? { wakeLast: ctx.waker.status.get(p.did) } : {}), ...(p.kind === 'agent' && st.away.get(p.did) ? { away: st.away.get(p.did), awayLast: ctx.away?.status.get(p.did) ?? null } : {}), ...(p.kind === 'agent' ? { listening: listeningOf(ctx, p), connected: ctx.connected?.get(p.did) ?? null } : {}) }))
+  const checkDids = ctx.check?.dids() ?? []
+  const theirs = people.filter((p) => p.kind === 'agent' && p.hosted && !checkDids.includes(p.did))
+  const comingIn = { agents: theirs.length, saidHello: theirs.filter((p) => p.firstSaid).length, answeringNow: theirs.filter((p) => p.listening).length }
   return {
     ...info(ctx),
     people,
+    check: ctx.check?.view() ?? null,
+    comingIn,
     proposals: [...st.proposals.values()].reverse().map((pr) => ({ ...st.proposalView(pr), waitingFor: executor.waitingFor(pr) })),
     rounds: [...st.rounds].reverse(),
     score: board.score(),

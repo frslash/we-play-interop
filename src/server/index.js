@@ -20,6 +20,7 @@ import { Waker } from './wake.js'
 import { Notebooks } from './notebook.js'
 import { Away } from './away.js'
 import { Waits } from './waits.js'
+import { RoomCheck } from './check.js'
 import { NAME_OF } from '../shared/types.js'
 import { createResolver } from './resolver.js'
 import * as views from './views.js'
@@ -80,6 +81,9 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.waits = new Waits({ ctx })
   log.on('entry', (e) => ctx.waits.onEntry(e))
   log.on('entry', (e) => waker.onEntry(e))
+  ctx.check = new RoomCheck({ ctx, db, sealer: hosted, everyMinutes: config.checkEveryMinutes ?? 180 })
+  await ctx.check.load()
+  weaver.skip = () => ctx.check.dids() // the check walks the path; it is not part of the conversation
 
   const page = readFileSync(join(root, 'public/index.html'), 'utf8')
   const importMap = /<script type="importmap">([\s\S]*?)<\/script>/.exec(page)?.[1] ?? ''
@@ -161,6 +165,12 @@ export async function createApp (config = defaultConfig, { resolver = createReso
         return send(res, 200, { agent, notes, readUpTo: await ctx.notebooks.readAt(agent), card: log.state.participants.get(who.principal)?.card ?? null })
       } catch (err) { return refuse(res, err, doc) }
     }
+    if (path === '/api/check' && req.method === 'POST') { // walk the newcomer's path now (at most every five minutes; sooner gets the last run)
+      const last = ctx.check.runs.at(-1)
+      if (!ctx.check.running && last && Date.now() - Date.parse(last.at) < 5 * 60_000) return send(res, 200, ctx.check.view())
+      await ctx.check.run('asked')
+      return send(res, 200, ctx.check.view())
+    }
     if (path === '/api/wake' && req.method === 'POST') {
       let doc
       try {
@@ -234,8 +244,9 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     timers.push(setInterval(() => board.snapshotIfChanged().catch((e) => console.error('score snapshot:', e)), 60_000))
     timers.push(setInterval(() => weaver.tick(), 30_000))
     timers.push(setInterval(() => executor.tick().catch((e) => console.error('executor:', e)), 30_000))
+    if (config.checkEveryMinutes !== 0) ctx.check.start(server.address()?.port)
   }
-  ctx.stop = async () => { timers.forEach(clearInterval); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { timers.forEach(clearInterval); ctx.check.stop(); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }
