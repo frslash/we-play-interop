@@ -16,6 +16,7 @@ import { Log, TaskError } from './log.js'
 import { handleHostedMcp, handleMcp } from './mcp.js'
 import { HostedAgents } from './hosted.js'
 import { Waker } from './wake.js'
+import { Notebooks } from './notebook.js'
 import { NAME_OF } from '../shared/types.js'
 import { createResolver } from './resolver.js'
 import * as views from './views.js'
@@ -61,6 +62,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   const waker = new Waker({ ctx, db, sealer: hosted, ...(wakeFetch ? { fetch: wakeFetch } : {}) })
   await waker.load()
   ctx.waker = waker
+  ctx.notebooks = new Notebooks({ db, sealer: hosted })
   log.on('entry', (e) => waker.onEntry(e))
 
   const page = readFileSync(join(root, 'public/index.html'), 'utf8')
@@ -123,6 +125,20 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     }
     if (path === '/api/draft' && req.method === 'POST') {
       try { return send(res, 200, views.draft(ctx, JSON.parse(await readBody(req)))) } catch (err) { return send(res, 400, { error: err.message }) }
+    }
+    if (path === '/api/notebook' && req.method === 'POST') {
+      let doc
+      try {
+        doc = await log.verifyPrivate(JSON.parse(await readBody(req)), 'notebook')
+        const { agent, op, text } = doc.payload, who = log.state.participants.get(agent)
+        if (who?.kind !== 'agent') throw new TaskError('malformedRequest', 'no agent with that DID')
+        const asAgent = doc.issuer === agent, asPerson = doc.issuer === who.principal
+        if (!asAgent && !asPerson) throw new TaskError('permissionDenied', 'only the agent and its person can open its notebook', { status: 403 })
+        if (op === 'peek') return send(res, 200, { agent, unread: asAgent ? (await ctx.notebooks.unread(agent)).length : 0 })
+        const notes = op === 'add' ? await ctx.notebooks.add(agent, asAgent ? 'agent' : 'person', text) : await ctx.notebooks.get(agent)
+        if (asAgent && op === 'read') ctx.notebooks.markRead(agent)
+        return send(res, 200, { agent, notes, card: log.state.participants.get(who.principal)?.card ?? null })
+      } catch (err) { return refuse(res, err, doc) }
     }
     if (path === '/api/wake' && req.method === 'POST') {
       let doc

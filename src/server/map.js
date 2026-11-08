@@ -13,6 +13,14 @@ const runsOnly = (status) => status === 'runs'
 const facetValues = (list) => (list ?? []).filter((v) => typeof v === 'string' || runsOnly(v?.status)).map((v) => (typeof v === 'string' ? v : v.value))
 
 /** What a board project brings, in running code, as way ids. */
+/** A readable name for a board way: "task:https://…/spec/vrc/relationships/propose/0.2" -> "vrc relationships propose". */
+export function friendly (id) {
+  const [kind, ...rest] = id.split(':'), v = rest.join(':')
+  if (kind === 'task') { const path = v.split('/spec/')[1] ?? v.split('/').pop(); return path.split('/').filter((x) => !/^\d+(\.\d+)*$/.test(x)).join(' ').replace(/-/g, ' ') }
+  if (kind === 'ceremony' || kind === 'basic') return v.replace(/-/g, ' ')
+  return v
+}
+
 export function boardWaysOf (p) {
   const ways = new Set()
   for (const c of p.credentials ?? []) if (runsOnly(c.status)) { for (const id of c.profiles ?? []) ways.add(`credential:${id}`); for (const proof of c.proof ?? []) ways.add(proof) }
@@ -52,7 +60,7 @@ export function computeMap ({ board, state, today = new Date(), freshDays = 30 }
   const way = (id) => {
     if (!ways.has(id)) {
       const prefix = BOARD_WAY_PREFIXES.find((x) => id.startsWith(x))
-      ways.set(id, { id, name: prefix ? id.slice(prefix.length) : id, kind: prefix ? BOARD_KIND[prefix.slice(0, -1)] : id.startsWith('did:') ? 'identity' : 'other', about: '', url: null, defined: false, projects: new Set(), passingPairs: 0 })
+      ways.set(id, { id, name: prefix ? friendly(id) : id, kind: prefix ? BOARD_KIND[prefix.slice(0, -1)] : id.startsWith('did:') ? 'identity' : 'other', about: '', url: null, defined: false, projects: new Set(), passingPairs: 0 })
     }
     return ways.get(id)
   }

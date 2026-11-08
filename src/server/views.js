@@ -33,11 +33,44 @@ export function state (ctx) {
   }
 }
 
+/**
+ * The map as a graph: projects and people, and the lines between them.
+ *   connection  a passing run, fresh        faded     a pass older than 30 days
+ *   broken      the latest run failed        potential both speak a way, never tried
+ *   tether      a person and their project   suggested the weaver thinks they should talk
+ *   intention   someone wants to reach this  tension   they pull apart (votes both ways, a veto)
+ */
+export function graph (ctx, m) {
+  const st = ctx.log.state
+  const asPerson = (did) => st.participants.get(did)?.principal ?? did // an agent's lines belong to its person
+  const nodes = new Map(), edges = new Map()
+  for (const p of m.projects) nodes.set(p.slug, { id: p.slug, kind: 'project', label: p.name, about: p.about, ways: p.ways, sources: p.sources, url: p.url, members: p.members })
+  for (const p of st.participants.values()) if (p.kind === 'human') nodes.set(p.did, { id: p.did, kind: 'person', label: p.name, projects: p.projects, card: p.card ?? null, agents: [...st.participants.values()].filter((a) => a.principal === p.did).map((a) => a.name) })
+  const edge = (a, b, kind, label) => { if (!nodes.has(a) || !nodes.has(b) || a === b) return; const k = [a, b].sort().join('|') + '|' + kind; const cur = edges.get(k); if (cur) { cur.weight++; if (label && !cur.labels.includes(label)) cur.labels.push(label) } else edges.set(k, { a, b, kind, weight: 1, labels: label ? [label] : [] }) }
+  for (const p of m.pairs) {
+    const ways = p.ways
+    const pass = ways.filter((w) => w.latestPass), fresh = pass.filter((w) => w.fresh)
+    const broken = ways.filter((w) => w.latest.outcome !== 'pass' && (!w.latestPass || w.latestPass < w.latest.date))
+    if (fresh.length) edge(p.pair[0], p.pair[1], 'connection', fresh.map((w) => w.name).join(', '))
+    else if (pass.length) edge(p.pair[0], p.pair[1], 'faded', pass.map((w) => w.name).join(', '))
+    if (broken.length) edge(p.pair[0], p.pair[1], 'broken', broken.map((w) => `${w.name}: ${w.latest.outcome}`).join(', '))
+  }
+  for (const o of m.sharedWays.slice(0, 14)) edge(o.pair[0], o.pair[1], 'potential', o.ways.slice(0, 3).join(', '))
+  for (const p of st.participants.values()) if (p.kind === 'human') for (const slug of p.projects ?? []) edge(p.did, slug, 'tether', 'part of it')
+  for (const r of st.rounds.slice(-10)) {
+    for (const c of r.connections ?? []) edge(asPerson(c.between[0]), asPerson(c.between[1]), 'suggested', c.why)
+    for (const i of r.intentions ?? []) edge(asPerson(i.who), nodes.has(i.toward) ? i.toward : asPerson(i.toward), 'intention', i.wants)
+    for (const t of r.tensions ?? []) edge(asPerson(t.between[0]), asPerson(t.between[1]), 'tension', t.about)
+  }
+  return { nodes: [...nodes.values()], edges: [...edges.values()] }
+}
+
 /** The whole map, the DTG board's own view, and the score over time. */
 export function mapView (ctx) {
   const { board, log } = ctx, d = board.view
+  const m = board.map()
   return {
-    ...board.map(), score: board.score(),
+    ...m, score: board.score(), graph: graph(ctx, m),
     dtg: d ? { score: d.score, generated: d.generated, scenarios: d.scenarios, plays: d.plays, missing: d.missing, readyToTry: d.opportunities, catalog: d.catalog } : null,
     history: log.state.scoreHistory, fetchedAt: board.fetchedAt, error: board.error,
   }

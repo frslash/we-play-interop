@@ -368,6 +368,39 @@ describe('the workspace, end to end', () => {
     assert.equal(removed.status, 201); assert.ok(!ctx.waker.hooks.has(agent))
   })
 
+  test('an agent keeps a private notebook about its person, and a public card', async () => {
+    const rpc = async (url, name, args = {}) => { const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) }); return JSON.parse((await r.json()).result.content[0].text) }
+    const made = await send(human, 'host', { label: 'Notebook Claude' })
+    const agent = made.body.hosted.did, url = made.body.hosted.connector.replace(/^https?:\/\/[^/]+/, base)
+    await send(human, 'delegate', { delegate: agent, scope: ['note', 'card'], label: 'Notebook Claude' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
+    const notebook = async (id, payload) => { const r = await fetch(`${base}/api/notebook`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signedDocument(id, { type: TYPES.notebook, payload })) }); return { status: r.status, body: await r.json() } }
+    // the person leaves a private note; the agent sees it waiting in its inbox, then reads it
+    assert.equal((await notebook(human, { agent, op: 'add', text: 'Private: I want to find people doing membership credentials. Do not mention my health.' })).status, 200)
+    assert.equal((await rpc(url, 'inbox')).notesFromYourPerson, 1)
+    const read = await rpc(url, 'my_notebook')
+    assert.match(read.notes[0].text, /membership credentials/); assert.equal(read.notes[0].from, 'person')
+    assert.ok(!(await rpc(url, 'inbox')).notesFromYourPerson, 'read notes are no longer waiting')
+    await rpc(url, 'remember', { text: 'They are at the builder weekend until Sunday.' })
+    assert.equal((await notebook(human, { agent, op: 'read' })).body.notes.length, 2)
+    // nobody else, and never the log
+    assert.equal((await notebook(other, { agent, op: 'read' })).body.payload.code, 'permissionDenied')
+    assert.ok(!JSON.stringify(ctx.log.entries).includes('membership credentials. Do not'), 'notebooks never enter the log')
+    const sent = signedDocument(human, { type: TYPES.notebook, payload: { agent, op: 'read' } })
+    await fetch(`${base}/api/notebook`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(sent) })
+    assert.equal((await fetch(`${base}/api/notebook`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(sent) })).status, 409, 'a request cannot be replayed')
+    // the public card, written by the agent for its person
+    const card = await rpc(url, 'update_card', { goals: ['Membership credentials that work across apps'], lookingFor: 'people building with Meshnet or VMC' })
+    assert.equal(card.accepted, true)
+    assert.deepEqual(ctx.log.state.participants.get(human.did).card.goals, ['Membership credentials that work across apps'])
+    // the map as a graph: people tethered to projects, runs as connections, intentions
+    await ctx.weaver.round()
+    const g = (await get('/api/map')).graph
+    assert.ok(g.nodes.some((n) => n.kind === 'person' && n.id === human.did))
+    assert.ok(g.edges.some((e) => e.kind === 'tether' && [e.a, e.b].includes('alpha')))
+    assert.ok(g.edges.some((e) => e.kind === 'connection' && [e.a, e.b].sort().join('|') === 'alpha|meshnet'))
+    assert.ok(g.edges.some((e) => e.kind === 'intention' && e.a === human.did || e.b === human.did), 'the card names meshnet: an intention')
+  })
+
   test('anyone can verify the whole log, and tampering shows', async () => {
     const report = await get('/api/verify')
     assert.equal(report.ok, true, JSON.stringify(report.problems))

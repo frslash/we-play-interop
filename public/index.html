@@ -16,12 +16,13 @@
   <div class="brand"><span class="mark" aria-hidden="true"></span><span>We Play Interop</span></div>
   <div class="top-right">
     <span id="live" class="live" title="Live updates">offline</span>
+    <div class="view-switch" role="group" aria-label="How to show things"><button type="button" data-view="plain">Plain</button><button type="button" data-view="tech">Technical</button></div>
     <button id="bring" class="chip me" type="button">Bring your agent</button>
   </div>
 </header>
 
-<section id="score" class="score" aria-label="Score"></section>
-<div id="banner" class="banner" hidden></div>
+<section id="score" class="score tech-only" aria-label="Score"></section>
+<div id="banner" class="banner tech-only" hidden></div>
 
 <nav class="tabs" aria-label="Sections">
   <button data-tab="watch" class="on">Watch</button>

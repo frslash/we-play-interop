@@ -56,6 +56,7 @@ export class State {
         this.participants.set(p.delegate, { ...prev, did: p.delegate, kind: 'agent', name: p.label || `agent of ${this.nameOf(e.author)}`, principal: e.author, hosted: this.hosted.has(p.delegate), since: prev?.since ?? e.timestamp })
         break
       }
+      case 'card': { const who = this.participants.get(e.onBehalfOf); if (who) who.card = { goals: p.goals ?? [], workingOn: p.workingOn ?? '', lookingFor: p.lookingFor ?? '', by: e.author, at: e.timestamp }; break }
       case 'wake': { const a = this.participants.get(p.agent); if (a) a.wake = p.urlHash ? { on: p.on, since: e.timestamp } : null; break }
       case 'hosted': { this.hosted.add(p.agent); const a = this.participants.get(p.agent); if (a) a.hosted = true; break }
       case 'revoke': { const d = this.delegations.get(p.delegation); if (d && d.issuer === e.author) d.revoked = true; break }

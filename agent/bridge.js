@@ -66,6 +66,10 @@ registerAgentTools(server, {
   did: me.did,
   delegateLink: link,
   read: (path) => api(path),
+  notebook: async (op, text) => {
+    const doc = signedDocument(me, { type: TYPES.notebook, payload: { agent: me.did, op, ...(text ? { text } : {}) } })
+    return api('/api/notebook', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc) })
+  },
   act: async (name, payload, extra = {}) => { const r = await act(name, payload, extra); return { accepted: true, id: r.hash, seq: r.seq } },
 })
 

@@ -19,6 +19,11 @@ create table if not exists entries (
   entry        text not null
 );
 create index if not exists entries_type on entries (type);
+create table if not exists agent_notes (
+  agent     text primary key,
+  notes_enc text not null,
+  updated   timestamptz not null
+);
 create table if not exists agent_wakes (
   agent    text primary key,
   url_enc  text not null,

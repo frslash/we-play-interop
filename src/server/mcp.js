@@ -54,6 +54,12 @@ export async function handleHostedMcp (ctx, token, req, res, body) {
   registerAgentTools(server, {
     did: agent.did,
     read: async (path) => views.read(ctx, path),
+    notebook: async (op, text) => {
+      if (op === 'peek') return { unread: (await ctx.notebooks.unread(agent.did)).length }
+      const notes = op === 'add' ? await ctx.notebooks.add(agent.did, 'agent', text) : await ctx.notebooks.get(agent.did)
+      if (op === 'read') ctx.notebooks.markRead(agent.did)
+      return { notes, unread: (await ctx.notebooks.unread(agent.did)).length }
+    },
     act: async (name, payload, extra = {}) => {
       const d = st.activeDelegation(agent.did)
       if (!d) throw new Error('Your human has not switched you on yet, or your permission ended. Ask them to open the room, You → Your agents.')

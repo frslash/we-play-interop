@@ -4,7 +4,8 @@ import { identityFromSeedHex, newIdentity } from '/shared/did.js'
 import { verifyChain } from '/shared/chain.js'
 import { createLoom } from '/loom.js'
 import { sha256, toHex } from '/shared/crypto.js'
-import { AGENT_SCOPES, MEASURES, MODES, NAME_OF, NOTE_KINDS, PROPOSAL_KINDS, TYPES, WAKE_ON, WAY_KINDS, signedDocument } from '/shared/types.js'
+import { AGENT_SCOPES, MODES, NAME_OF, TYPES, WAKE_ON, signedDocument } from '/shared/types.js'
+import { createGraph } from '/graph.js'
 
 // ---------- tiny DOM helpers (user text only ever goes in as text) ----------
 const $ = (s) => document.querySelector(s)
@@ -108,8 +109,18 @@ function go (tab) {
   store.set('wpi.tab', tab)
   document.body.dataset.tab = tab
   window.scrollTo({ top: 0 })
+  if (tab === 'talk' && talk.list) requestAnimationFrame(() => { talk.list.scrollTop = talk.list.scrollHeight }) // the chat opens at the latest message
+  if (tab === 'map' && mapv.graph) requestAnimationFrame(() => renderMap()) // laid out once it can be seen
 }
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => go(b.dataset.tab)))
+// Plain or Technical, like a language switch: the same room, two ways of showing it.
+function setView (v) {
+  document.body.dataset.view = v
+  document.querySelectorAll('.view-switch button').forEach((b) => b.classList.toggle('on', b.dataset.view === v))
+  store.set('wpi.view', v)
+}
+document.querySelectorAll('.view-switch button').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)))
+setView(store.get('wpi.view') === 'tech' ? 'tech' : 'plain')
 $('#bring').addEventListener('click', () => openBring())
 $('#sheet').addEventListener('click', (ev) => { if (ev.target.id === 'sheet') closeBring() })
 document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeBring() })
@@ -123,7 +134,8 @@ function says (e) {
     case 'join': return `joined${p.projects?.length ? ' for ' + p.projects.map(projectName).join(', ') : ''}.`
     case 'delegate': return `let an agent act for them: ${p.scope.join(', ')}, until ${new Date(e.document.expiresAt).toLocaleDateString()}.`
     case 'revoke': return 'revoked an agent.'
-    case 'note': return `${p.kind}: ${p.text}`
+    case 'note': return p.kind === 'message' ? p.text : `${p.kind}: ${p.text}`
+    case 'card': return `updated their card${p.goals?.length ? ': ' + p.goals.join(' · ') : ''}`
     case 'propose': return p.kind === 'goal' ? `proposed a goal: ${p.title}` : `proposed (${p.kind}): ${p.title}`
     case 'vote': return `voted ${p.choice} on "${pr(p.proposal)}"${p.reason ? ': ' + p.reason : ''}`
     case 'approve': return `approved "${pr(p.proposal)}"`
@@ -140,35 +152,37 @@ function says (e) {
 }
 const who = (e) => e.author === e.onBehalfOf ? nameOf(e.author) : `${nameOf(e.author)} for ${nameOf(e.onBehalfOf)}`
 
-// ---------- proposal card ----------
-const STATUS_BADGE = { open: '', approved: 'warn', vetoed: 'bad', done: 'good', prepared: 'warn', failed: 'bad' }
-function proposalCard (p, { compact = false } = {}) {
-  const myVote = p.votes.find((v) => v.principal === me?.did)?.choice
-  const result = p.results.at(-1)
-  const actions = joined() && ['open', 'approved'].includes(p.status) ? h('div', { class: 'row' },
-    h('button', { class: 'btn small' + (myVote === 'for' ? ' primary' : ''), onclick: () => post('vote', { proposal: p.hash, choice: 'for' }) }, 'For'),
-    h('button', { class: 'btn small' + (myVote === 'against' ? ' primary' : ''), onclick: () => post('vote', { proposal: p.hash, choice: 'against' }) }, 'Against'),
-    !p.approvals.some((a) => a.did === me?.did) && h('button', { class: 'btn small', onclick: () => post('approve', { proposal: p.hash }) }, 'Approve'),
-    h('button', { class: 'btn small danger', onclick: () => { const reason = prompt('Why stop this? (it goes in the public log)'); if (reason) post('veto', { target: p.hash, reason }) } }, 'Veto'),
-  ) : null
-  return h('div', { class: compact ? 'next' : 'card' },
-    h('div', { class: 'row' }, h('span', { class: 'badge' }, p.kind), p.status !== 'open' && h('span', { class: 'badge ' + STATUS_BADGE[p.status] }, p.status), h('span', { class: 'meta grow' }, `${p.byWeaver ? 'the weaver' : p.authorName} · ${ago(p.at)}`)),
-    !compact && h('h2', null, p.title),
-    !compact && p.body && h('p', { class: 'why', style: null }, p.body),
-    p.run && h('p', { class: 'meta' }, runLine(p.run)),
-    p.change && h('p', { class: 'meta' }, `Pull request #${p.change.pr} at commit ${p.change.sha.slice(0, 10)}`),
-    h('p', { class: 'meta' }, `${p.tally.for} for · ${p.tally.against} against · ${p.approvals.length} approval${p.approvals.length === 1 ? '' : 's'}`, p.vetoes.length ? ` · vetoed by ${p.vetoes.map((v) => v.name).join(', ')}: ${p.vetoes[0].reason}` : '', p.waitingFor && !['stays inside the workspace', 'vetoed', 'already acted on'].includes(p.waitingFor) ? ` · ${p.waitingFor}` : ''),
-    result && h('p', { class: 'meta' }, result.detail ?? '', ' ', result.url && h('a', { href: result.url, target: '_blank', rel: 'noopener' }, result.status === 'prepared' ? 'Open it yourself' : 'Open')),
-    actions,
-  )
-}
+// ---------- small shared pieces ----------
+const wayName = (id) => B?.ways?.find((w) => w.id === id)?.name ?? id
 const runLine = (run) => {
   const sides = run.sides.map((s) => (typeof s === 'string' ? projectName(s) : `${projectName(s.project)} ${s.version}`)).join(' × ')
   const what = run.ways ? run.ways.map(wayName).join(', ') : run.subjects.map((s) => `${s.kind} ${s.id}`).join(', ')
   return `${sides}: ${what}${run.outcome ? ` → ${run.outcome}` : ''}${run.date ? ` (${run.date})` : ''}`
 }
+const tech = (...kids) => h('span', { class: 'tech-only' }, ...kids) // shown only in the Technical view
+/** Ways in plain words, grouped: "Credentials: VRC, VIC · Signatures: eddsa-jcs-2022 · Trust tasks: 15 kinds". */
+function waysSummary (ids) {
+  const groups = {}
+  const label = { credential: 'Credentials', task: 'Trust tasks', ceremony: 'Ceremonies', basic: 'Basics', did: 'Identity' }
+  for (const id of ids) { const k = id.split(':')[0]; const g = label[k] ? k : 'other'; (groups[g] ??= []).push(wayName(id)) }
+  return Object.entries(groups).map(([g, names]) => `${label[g] ?? 'Also'}: ${names.length > 4 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', ')}`).join(' · ')
+}
+const cleanBody = (b) => (b ?? '').replace(/\s*\(From weaver round.*$/s, '')
+const myLiveAgents = () => (S?.people ?? []).filter((p) => p.kind === 'agent' && p.principal === me?.did && p.delegation)
 
-// ---------- header, score, banner ----------
+/** Ask the room for something private (a notebook), signed by me, never logged. */
+async function privateCall (path, type, payload) {
+  const doc = signedDocument(me, { type: TYPES[type], payload })
+  return api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc) })
+}
+
+// ---------- the sheet (bring your agent, details of a node) ----------
+function openSheet (...kids) {
+  $('#sheet').hidden = false
+  fill($('#sheet .sheet-card'), h('button', { class: 'btn small sheet-x', onclick: closeBring, 'aria-label': 'Close' }, '✕'), ...kids)
+}
+
+// ---------- header ----------
 function renderTop () {
   const n = { human: S.people.filter((p) => p.kind === 'human').length, agent: S.people.filter((p) => p.kind === 'agent').length }
   $('#live').title = `${n.human} people · ${n.agent} agents`
@@ -180,221 +194,182 @@ function renderTop () {
     tile(s.faded + s.fadingSoon, 'faded or fading'),
   ] : [tile('–', 'map loading')])
   const notes = []
-  if (!S.weaver.configured) notes.push('The weaver has no model connected (LLM_API_KEY is not set), so each round is a plain tally of what was said and voted.')
+  if (!S.weaver.configured) notes.push('The weaver has no model connected (LLM_API_KEY is not set), so its rounds are a plain tally.')
   if (S.board?.error) notes.push(`The DTG board could not be read just now (${S.board.error.message}); the map shows the last good copy.`)
   const banner = $('#banner'); banner.hidden = !notes.length; banner.textContent = notes.join(' ')
 }
 const tile = (n, label) => h('div', { class: 'tile', role: 'button', tabindex: 0, onclick: () => go('map') }, h('b', null, n), h('span', null, label))
 
-// ---------- Goals: what winning looks like, decided by the room ----------
-const MEASURE_LABEL = { passingPairs: 'pairs with a passing run', freshPairs: 'pairs with a fresh pass', connected: 'projects connected', projects: 'projects on the map', ways: 'ways on the map', waysTried: 'ways tried between two projects', runs: 'runs', freshRuns: 'runs in the last 30 days', missing: 'missing pieces (DTG board)', faded: 'faded marks', fadingSoon: 'marks fading within a week', dtgPlays: 'DTG scenario plays' }
-function goalsCard () {
-  const goals = S.proposals.filter((p) => p.kind === 'goal' && p.status !== 'vetoed')
-  const net = (p) => p.tally.for - p.tally.against
-  const held = goals.filter((p) => net(p) > 0).sort((a, b) => net(b) - net(a))
-  const proposed = goals.filter((p) => net(p) <= 0)
-  const goalLine = (p) => {
-    const myVote = p.votes.find((v) => v.principal === me?.did)?.choice
-    return h('li', null,
-      h('strong', null, p.title),
-      p.body ? h('div', { class: 'why' }, p.body.replace(/\s*\(From weaver round.*$/s, '')) : null,
-      h('div', { class: 'meta' }, `${p.tally.for} for · ${p.tally.against} against · proposed by ${p.byWeaver ? 'the weaver' : p.authorName}`, p.measure ? ` · watching ${MEASURE_LABEL[p.measure]} (${p.direction === 'down' ? 'down' : 'up'}), now ${S.score?.[p.measure] ?? '–'}` : ''),
-      joined() ? h('div', { class: 'row' },
-        h('button', { class: 'btn small' + (myVote === 'for' ? ' primary' : ''), onclick: () => post('vote', { proposal: p.hash, choice: 'for' }) }, 'Yes, this'),
-        h('button', { class: 'btn small' + (myVote === 'against' ? ' primary' : ''), onclick: () => post('vote', { proposal: p.hash, choice: 'against' }) }, 'Not this'),
-        h('button', { class: 'btn small danger', onclick: () => { const reason = prompt('Why stop this goal? (public)'); if (reason) post('veto', { target: p.hash, reason }) } }, 'Veto')) : null)
+// ---------- Talk: one chat ----------
+const talk = { to: 'room', replyTo: null, echoes: [] }
+function autoGrow () { talk.input.style.height = 'auto'; talk.input.style.height = Math.min(160, talk.input.scrollHeight) + 'px' }
+async function sendChat () {
+  const text = talk.input.value.trim()
+  if (!text) return
+  if (!joined()) { openBring(); return toast('First, pick a name.') }
+  if (talk.to === 'agent') {
+    const agent = myLiveAgents()[0]
+    if (!agent) return toast('Bring your agent first.')
+    const r = await privateCall('/api/notebook', 'notebook', { agent: agent.did, op: 'add', text })
+    if (!r.ok) return toast(r.body?.payload?.message ?? 'refused')
+    talk.echoes.push({ at: new Date().toISOString(), text, agent: agent.name })
+    toast(`Sent privately to ${agent.name}. It reads it on its next visit.`)
+  } else {
+    const target = talk.replyTo
+    const ok = await post('note', { text, kind: 'message' }, target ? { threadId: target.document.threadId ?? target.document.id, recipient: target.author } : {})
+    if (!ok) return
   }
-  const title = keep(h('input', { type: 'text', maxlength: 140, placeholder: 'e.g. Every project here can log in with every other one' }), 'goal.title')
-  const why = keep(h('input', { type: 'text', maxlength: 4000, placeholder: 'Why it matters (optional)' }), 'goal.why')
-  const measure = keep(h('select', null, h('option', { value: '' }, 'no number, just the goal'), MEASURES.map((m) => h('option', { value: m }, MEASURE_LABEL[m]))), 'goal.measure')
-  const direction = keep(h('select', null, h('option', { value: 'up' }, 'should go up'), h('option', { value: 'down' }, 'should go down')), 'goal.dir')
-  return h('div', { class: 'card' },
-    h('h2', null, 'What winning looks like'),
-    h('p', { class: 'why' }, 'Decided here, by everyone. A goal is held while more people back it than oppose it and nobody vetoed it; the weaver steers toward the goals held.'),
-    held.length ? h('ul', { class: 'plain' }, held.map(goalLine)) : h('p', { class: 'empty' }, 'No goal is held yet.'),
-    proposed.length ? [h('h3', null, 'Proposed, not held yet'), h('ul', { class: 'plain' }, proposed.map(goalLine))] : null,
-    fold('propose-goal', null, h('summary', null, 'Propose a goal'),
-      h('label', null, 'The goal', title), h('label', null, 'Why', why), h('label', null, 'A number to watch', measure), h('label', null, 'It', direction),
-      h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: async () => {
-        if (!title.value.trim()) return toast('Say the goal.')
-        if (await post('propose', { kind: 'goal', title: title.value.trim(), ...(why.value.trim() ? { body: why.value.trim() } : {}), ...(measure.value ? { measure: measure.value, direction: direction.value } : {}) })) forget('goal.title', 'goal.why', 'goal.measure', 'goal.dir')
-      } }, joined() ? 'Sign and propose' : 'Join to propose'))))
+  talk.input.value = ''; forget('chat.text'); autoGrow(); setReply(null); renderTalk(true)
 }
-
-// ---------- Now ----------
-function renderNow () {
-  const r = S.rounds[0]
-  const roundCard = r ? h('div', { class: 'card' },
-    h('div', { class: 'row' }, h('h2', { class: 'grow' }, `The weaver, round ${r.round}`), h('span', { class: 'badge' }, r.mode)),
-    h('p', { class: 'meta' }, `${ago(r.at)} · ${r.model?.ok ? 'model ' + r.model.id : 'built-in tally'}${r.model?.note ? ' · ' + r.model.note : ''}`),
-    h('h3', null, r.next.length > 1 ? 'Next actions' : 'Next action'),
-    r.next.length ? r.next.map((n) => {
-      const p = n.proposal && S.proposals.find((x) => x.hash === n.proposal)
-      return h('div', { class: 'next' }, h('strong', null, n.action), h('div', { class: 'why' }, n.why), n.holds?.length ? h('div', { class: 'meta' }, `holds ${n.holds.length} intention${n.holds.length === 1 ? '' : 's'}`) : null, p && proposalCard(p, { compact: true }))
-    }) : h('p', { class: 'empty' }, 'Nothing to propose yet. Say what you want to see happen.'),
-    r.agreements?.length ? [h('h3', null, 'Where people agree'), h('ul', { class: 'plain' }, r.agreements.map((a) => h('li', null, a.point)))] : null,
-    r.conflicts?.length ? [h('h3', null, 'Where people differ'), h('ul', { class: 'plain' }, r.conflicts.map((c) => h('li', null, c.point)))] : null,
-    r.threads?.length ? h('details', null, h('summary', null, `${r.threads.length} thread${r.threads.length === 1 ? '' : 's'}`), h('ul', { class: 'plain' }, r.threads.map((t) => h('li', null, h('strong', null, t.title), t.summary ? h('div', { class: 'why' }, t.summary) : null)))) : null,
-    r.heard?.length ? h('details', null, h('summary', null, `What it heard (${r.heard.length})`), h('ul', { class: 'plain' }, r.heard.map((x) => h('li', { class: 'why' }, x.gist)))) : null,
-    h('p', { class: 'meta' }, `Next round from ${new Date(S.weaver.nextRoundAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}, if something new was said.`),
-  ) : h('div', { class: 'card' }, h('h2', null, 'The weaver'), h('p', { class: 'empty' }, `No round yet. The weaver runs every few minutes once someone says something. Next from ${new Date(S.weaver.nextRoundAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`))
-
-  const text = keep(h('textarea', { placeholder: 'What should happen next for interop? An intention, an idea, something you saw, a question…', maxlength: 2000 }), 'note.text')
-  const kind = keep(h('select', null, NOTE_KINDS.map((k) => h('option', { value: k }, k))), 'note.kind')
-  const compose = h('div', { class: 'card' }, h('h2', null, 'Say something'),
-    text, h('div', { class: 'row' }, h('label', { class: 'grow' }, 'This is', kind),
-      h('button', { class: 'btn primary', onclick: async () => { if (!text.value.trim()) return; if (await post('note', { text: text.value.trim(), kind: kind.value })) { text.value = ''; forget('note.text') } } }, joined() ? 'Sign and send' : 'Join to send')))
-
-  const items = feed.slice(0, 60)
-  const feedCard = h('div', { class: 'card' }, h('h2', null, 'What is happening'),
-    items.length ? h('ul', { class: 'plain' }, items.map((e) => h('li', { class: 'feed-item' }, h('strong', null, who(e)), h('span', { class: 'meta' }, ago(e.timestamp)), h('span', { class: 'what' }, says(e))))) : h('p', { class: 'empty' }, 'Quiet so far.'))
-  fill($('#tab-talk'), goalsCard(), roundCard, compose, proposalsSection(), feedCard)
+function setReply (e) {
+  talk.replyTo = e
+  if (!talk.reply) return
+  talk.reply.hidden = !e
+  if (e) fill(talk.reply, h('span', { class: 'grow' }, `Replying to ${nameOf(e.author)}: `, h('em', null, (e.document.payload.text ?? '').slice(0, 80))), h('button', { class: 'btn small', onclick: () => setReply(null) }, '✕'))
+  if (e) talk.input.focus()
 }
-
-// ---------- Proposals ----------
-let proposalFilter = 'live'
-function proposalsSection () {
-  const list = S.proposals.filter((p) => p.kind !== 'goal' && (proposalFilter === 'all' || ['open', 'approved'].includes(p.status)))
-  const seg = h('div', { class: 'seg' }, [['live', 'Open'], ['all', 'All']].map(([k, label]) => h('button', { class: proposalFilter === k ? 'on' : '', onclick: () => { proposalFilter = k; renderNow() } }, label)))
-  return h('div', null,
-    h('div', { class: 'row' }, h('h2', { class: 'grow section-title' }, 'Proposals'), seg),
-    h('p', { class: 'meta' }, `Approved proposals act after a ${S.rules.vetoWindowMinutes}-minute veto window; ${S.rules.actsOutside}.`),
-    list.length ? list.map((p) => proposalCard(p)) : h('p', { class: 'empty card' }, 'No open proposals.'),
-    newProposal(),
-  )
+function voteButtons (p) {
+  if (!joined() || !['open', 'approved'].includes(p.status)) return null
+  const mine = p.votes.find((v) => v.principal === me.did)?.choice
+  const goal = p.kind === 'goal', outside = ['record-run', 'issue', 'workspace-change'].includes(p.kind)
+  return h('div', { class: 'row' },
+    h('button', { class: 'btn small' + (mine === 'for' ? ' primary' : ''), onclick: () => post('vote', { proposal: p.hash, choice: 'for' }) }, goal ? 'Yes, this' : 'For'),
+    h('button', { class: 'btn small' + (mine === 'against' ? ' primary' : ''), onclick: () => post('vote', { proposal: p.hash, choice: 'against' }) }, goal ? 'Not this' : 'Against'),
+    outside && !p.approvals.some((a) => a.did === me.did) ? h('button', { class: 'btn small', onclick: () => post('approve', { proposal: p.hash }) }, 'Approve') : null,
+    h('button', { class: 'btn small danger', onclick: () => { const reason = prompt('Why stop this? (it is public)'); if (reason) post('veto', { target: p.hash, reason }) } }, 'Veto'))
 }
-
-function newProposal () {
-  const kind = keep(h('select', null, PROPOSAL_KINDS.filter((k) => k !== 'goal').map((k) => h('option', { value: k }, { run: 'run: invite two projects to try ways together', 'record-run': 'record-run: a DTG run → pull request to the DTG board', issue: 'issue: on the dtg-interop board', 'workspace-change': 'workspace-change: merge a pull request into this workspace', other: 'other' }[k]))), 'prop.kind')
-  const title = keep(h('input', { type: 'text', maxlength: 140, placeholder: 'One line' }), 'prop.title')
-  const body = keep(h('textarea', { maxlength: 4000, placeholder: 'Why, and what done looks like' }), 'prop.body')
-  const extra = h('div')
-  const projSelect = (dtgOnly) => h('select', null, h('option', { value: '' }, 'choose a project'), (B?.projects ?? []).filter((p) => !dtgOnly || p.sources.includes('dtg')).map((p) => h('option', { value: p.slug }, p.name)))
-  const fields = {}
-  const draw = () => {
-    for (const k of Object.keys(fields)) delete fields[k]
-    queueMicrotask(() => { for (const [f, el] of Object.entries(fields)) keep(el, 'prop.' + f) })
-    const k = kind.value
-    if (k === 'run' || k === 'record-run') {
-      fields.a = projSelect(k === 'record-run'); fields.b = projSelect(k === 'record-run')
-      fields.subjects = h('input', { type: 'text', list: 'ways-list', placeholder: k === 'run' ? 'ways, e.g. did:key, oidc' : 'credential:VRC, basic:did-resolution' })
-      const parts = [h('label', null, 'Side one', fields.a), h('label', null, 'Side two', fields.b), h('label', null, k === 'run' ? 'Ways to try (comma separated)' : 'DTG items (kind:id, comma separated)', fields.subjects)]
-      if (k === 'record-run') {
-        fields.va = h('input', { type: 'text', placeholder: 'version on side one' }); fields.vb = h('input', { type: 'text', placeholder: 'version on side two' })
-        fields.date = h('input', { type: 'date', value: new Date().toISOString().slice(0, 10) })
-        fields.outcome = h('select', null, ['pass', 'partial', 'fail'].map((o) => h('option', { value: o }, o)))
-        fields.note = h('input', { type: 'text', maxlength: 800, placeholder: 'What was exchanged and what was checked' })
-        fields.sources = h('input', { type: 'text', placeholder: 'Only if neither side is your project: public links, comma separated' })
-        parts.push(h('label', null, 'Version, side one', fields.va), h('label', null, 'Version, side two', fields.vb), h('label', null, 'Date', fields.date), h('label', null, 'Outcome', fields.outcome), h('label', null, 'Note', fields.note), h('label', null, 'Sources', fields.sources))
-      }
-      fill(extra, parts)
-    } else if (k === 'workspace-change') {
-      fields.pr = h('input', { type: 'number', min: 1, placeholder: 'pull request number' })
-      fields.sha = h('input', { type: 'text', placeholder: '40-character head commit of that pull request' })
-      fill(extra, h('label', null, `Pull request in ${S.workspaceRepo}`, fields.pr), h('label', null, 'Commit (what people approve is exactly this commit)', fields.sha))
-    } else fill(extra)
+function proposalBubble (e) {
+  const p = S.proposals.find((x) => x.hash === e.hash)
+  if (!p) return null
+  const result = p.results.at(-1)
+  return h('div', { class: 'msg card-msg' + (p.byWeaver ? ' weaver' : '') },
+    h('div', { class: 'who' }, p.byWeaver ? 'The weaver suggests' : `${nameOf(e.author)} proposes`, p.kind === 'goal' ? ' a goal' : '', tech(` · ${p.kind} · ${p.status}`)),
+    h('div', { class: 'text' }, h('strong', null, p.title)),
+    cleanBody(p.body) ? h('div', { class: 'why' }, cleanBody(p.body)) : null,
+    p.run ? tech(h('div', { class: 'meta' }, runLine(p.run))) : null,
+    p.change ? tech(h('div', { class: 'meta' }, `pull request #${p.change.pr} at ${p.change.sha.slice(0, 10)}`)) : null,
+    h('div', { class: 'meta' }, `${p.tally.for} yes · ${p.tally.against} no`, p.vetoes.length ? ` · stopped by ${p.vetoes.map((v) => v.name).join(', ')}` : '', result ? ' · ' : '', result ? h('a', { href: result.url, target: '_blank', rel: 'noopener' }, result.status === 'prepared' ? 'ready for a person to open' : result.status) : null),
+    voteButtons(p))
+}
+function chatItem (e) {
+  const name = NAME_OF[e.type], d = e.document, p = d.payload
+  const time = h('span', { class: 'time' }, ago(e.timestamp))
+  const techLine = tech(h('div', { class: 'tech-line' }, `${name}${p.kind ? ':' + p.kind : ''} · #${e.seq} · ${e.hash.slice(0, 12)} · ${short(e.author)}`))
+  const system = (text) => h('div', { class: 'sys' }, text, ' ', time, techLine)
+  if (name === 'note') {
+    const parent = d.threadId ? feed.find((x) => x.document.id === d.threadId) : null
+    const agent = e.author !== e.onBehalfOf
+    const b = h('div', { class: 'msg' + (e.author === me?.did ? ' mine' : '') + (agent ? ' agent' : ''), tabindex: 0, title: 'Tap to reply' },
+      h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${colorFor(e.author)}` }), nameOf(e.author), agent && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
+        d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, ' ', time),
+      parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${(parent.document.payload.text ?? parent.document.payload.title ?? '').slice(0, 100)}`) : null,
+      h('div', { class: 'text' }, p.text), techLine)
+    b.addEventListener('click', (ev) => { if (ev.target.closest('a,button')) return; setReply(e) })
+    return b
   }
-  kind.addEventListener('change', draw); draw()
-  const subjects = (s) => s.split(',').map((x) => x.trim()).filter(Boolean).map((x) => { const i = x.indexOf(':'); return { kind: x.slice(0, i), id: x.slice(i + 1) } })
-  const submit = async () => {
-    const k = kind.value, payload = { kind: k, title: title.value.trim(), body: body.value.trim() || undefined }
-    if (k === 'run') payload.run = { sides: [fields.a.value, fields.b.value], ways: list(fields.subjects.value) }
-    if (k === 'record-run') {
-      payload.run = { subjects: subjects(fields.subjects.value), date: fields.date.value, sides: [{ project: fields.a.value, version: fields.va.value.trim() }, { project: fields.b.value, version: fields.vb.value.trim() }], outcome: fields.outcome.value, ...(fields.note.value.trim() ? { note: fields.note.value.trim() } : {}) }
-      const src = fields.sources.value.split(',').map((x) => x.trim()).filter(Boolean)
-      if (src.length) payload.sources = src.map((url) => ({ label: url.replace(/^https:\/\//, '').slice(0, 80), url }))
-    }
-    if (k === 'workspace-change') payload.change = { pr: Number(fields.pr.value), sha: fields.sha.value.trim().toLowerCase() }
-    if (await post('propose', payload)) { Object.keys(drafts).filter((x) => x.startsWith('prop.') && x !== 'prop.kind').forEach((x) => forget(x)); title.value = ''; body.value = ''; draw() }
+  if (name === 'propose') return proposalBubble(e)
+  if (name === 'round') {
+    const lines = [
+      ...(p.connections ?? []).slice(0, 2).map((c) => `${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}`),
+      ...(p.tensions ?? []).slice(0, 1).map((t) => `${nameOf(t.between[0])} and ${nameOf(t.between[1])} pull different ways on: ${t.about}`),
+      ...(p.intentions ?? []).slice(0, 1).map((i) => `${nameOf(i.who)} wants to reach ${projectName(i.toward) === i.toward ? nameOf(i.toward) : projectName(i.toward)}: ${i.wants}`),
+    ]
+    const ask = (p.next ?? []).find((n) => n.kind === 'ask')
+    if (!lines.length && !ask) return null
+    return h('div', { class: 'msg weaver' }, h('div', { class: 'who' }, h('span', { class: 'dot', style: 'background:var(--gold)' }), 'The weaver', ' ', time),
+      ask ? h('div', { class: 'text' }, ask.action + '. ', h('span', { class: 'why' }, ask.why)) : null,
+      lines.map((l) => h('div', { class: 'text' }, l)),
+      tech(h('div', { class: 'tech-line' }, `round ${p.round} · ${p.mode} · ${p.model?.ok ? p.model.id : 'built-in tally'} · heard ${p.heard?.length ?? 0}`)))
   }
-  return h('div', { class: 'card' }, h('h2', null, 'Propose'), h('label', null, 'Kind', kind), h('label', null, 'Title', title), h('label', null, 'Details', body), extra,
-    h('div', { class: 'row', style: null }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: submit }, joined() ? 'Sign and propose' : 'Join to propose')))
+  if (name === 'join') return system(`${nameOf(e.author)} joined${p.projects?.length ? ' for ' + p.projects.map(projectName).join(', ') : ''}.`)
+  if (name === 'delegate') return system(`${nameOf(e.author)} brought ${p.label || 'an agent'} into the room.`)
+  if (name === 'revoke') return system(`${nameOf(e.author)} stopped one of their agents.`)
+  if (name === 'project') return system(`${nameOf(e.onBehalfOf)} put ${p.name} on the map.`)
+  if (name === 'run') return system(`${p.sides.map((s) => projectName(s.project)).join(' and ')} tried ${p.ways.map(wayName).join(', ')} together: ${p.outcome}.`)
+  if (name === 'card') return system(`${nameOf(e.onBehalfOf)} updated their card${p.goals?.length ? ': ' + p.goals.join(' · ') : ''}.`)
+  if (name === 'veto') return system(`${nameOf(e.author)} stopped a proposal: ${p.reason}`)
+  if (name === 'mode') return system(`${nameOf(e.author)} set how the weaver decides: ${p.mode}.`)
+  if (name === 'result') return system(`${p.status === 'prepared' ? 'Ready for a person to open' : 'Done'}: ${p.detail ?? ''}`)
+  return ['vote', 'approve', 'score', 'hosted', 'genesis', 'wake', 'way'].includes(name) ? (name === 'way' || name === 'vote' ? tech(system(says(e))) : null) : null
+}
+function renderTalk (scrollDown) {
+  const root = $('#tab-talk')
+  if (!talk.list) {
+    talk.goals = h('div', { class: 'goals-strip' })
+    talk.list = h('div', { class: 'chat', 'aria-live': 'polite' })
+    talk.reply = h('div', { class: 'reply-chip row', hidden: true })
+    talk.toggle = h('div', { class: 'seg small' })
+    talk.input = keep(h('textarea', { rows: 1, maxlength: 2000, placeholder: 'Say something…' }), 'chat.text')
+    talk.input.addEventListener('input', autoGrow)
+    talk.input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && matchMedia('(min-width: 760px)').matches) { ev.preventDefault(); sendChat() } })
+    talk.composer = h('div', { class: 'composer' }, talk.reply, h('div', { class: 'composer-row' }, talk.input, h('button', { class: 'btn primary send', onclick: sendChat, 'aria-label': 'Send' }, '↑')), talk.toggle)
+    fill(root, talk.goals, talk.list, talk.composer)
+  }
+  const held = S.proposals.filter((p) => p.kind === 'goal' && p.status !== 'vetoed' && p.tally.for > p.tally.against)
+  fill(talk.goals, held.length ? [h('strong', null, 'The room is going for: '), held.slice(0, 3).map((g) => g.title).join(' · ')] : h('span', { class: 'meta' }, 'Just talk. The weaver picks up what people want and suggests goals and next steps here.'))
+  const agents = myLiveAgents()
+  talk.toggle.hidden = !agents.length
+  if (!agents.length) talk.to = 'room'
+  fill(talk.toggle, [['room', 'To the room'], ['agent', `To ${agents[0]?.name ?? 'my agent'}, privately`]].map(([k, l]) => h('button', { class: talk.to === k ? 'on' : '', onclick: () => { talk.to = k; talk.input.placeholder = k === 'agent' ? 'Only your agent will read this…' : 'Say something…'; renderTalk() } }, l)))
+  const nearBottom = talk.list.scrollHeight - talk.list.scrollTop - talk.list.clientHeight < 80
+  const items = feed.slice(0, 150).reverse().map(chatItem).filter(Boolean)
+  const echoes = talk.echoes.map((x) => h('div', { class: 'msg mine private' }, h('div', { class: 'who' }, `🔒 to ${x.agent} · ${ago(x.at)}`), h('div', { class: 'text' }, x.text)))
+  fill(talk.list, items.length || echoes.length ? [...items, ...echoes] : h('p', { class: 'empty' }, 'Quiet so far. Say hello.'))
+  if (scrollDown || nearBottom || !talk.scrolled) { talk.list.scrollTop = talk.list.scrollHeight; talk.scrolled = true }
 }
 
-// ---------- Map ----------
-function spark (history, key) {
-  const pts = history.map((x) => x[key] ?? 0)
-  if (pts.length < 2) return null
-  const max = Math.max(...pts, 1), w = 300, hgt = 48
-  const d = pts.map((v, i) => `${i ? 'L' : 'M'}${(i / (pts.length - 1)) * w},${hgt - 4 - (v / max) * (hgt - 8)}`).join(' ')
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-  svg.setAttribute('viewBox', `0 0 ${w} ${hgt}`); svg.setAttribute('class', 'spark'); svg.setAttribute('preserveAspectRatio', 'none')
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', d); svg.append(path)
-  return svg
+// ---------- Map: a real map ----------
+const EDGE = {
+  connection: ['works together', 'a passing run, in the last 30 days'],
+  faded: ['worked, faded', 'a passing run older than 30 days'],
+  broken: ['broken', 'the latest run failed or only partly worked'],
+  potential: ['could connect', 'both speak a way and never tried it'],
+  tether: ['part of', 'a person and their project'],
+  suggested: ['should talk', 'the weaver suggests it'],
+  intention: ['wants to reach', 'someone wants to connect with this'],
+  tension: ['pulling apart', 'votes both ways, or a veto'],
 }
-const wayName = (id) => B?.ways?.find((w) => w.id === id)?.name ?? id
-const list = (v) => v.split(',').map((x) => x.trim()).filter(Boolean)
-const waysList = () => h('datalist', { id: 'ways-list' }, (B?.ways ?? []).map((w) => h('option', { value: w.id }, w.name)))
-const projectOptions = () => [h('option', { value: '' }, 'choose a project'), (B?.projects ?? []).map((p) => h('option', { value: p.slug }, p.name))]
-
+const mapv = { hidden: new Set(['potential']) }
+function showNode (n) {
+  const g = B.graph, here = g.edges.filter((e) => e.a === n.id || e.b === n.id)
+  const other = (e) => { const id = e.a === n.id ? e.b : e.a; return g.nodes.find((x) => x.id === id)?.label ?? id }
+  const group = (kind) => here.filter((e) => e.kind === kind)
+  const lines = Object.keys(EDGE).filter((k) => group(k).length).map((k) => h('li', null, h('strong', null, EDGE[k][0] + ': '), group(k).map((e) => `${other(e)}${e.labels?.length ? ' (' + e.labels.slice(0, 2).join('; ') + ')' : ''}`).join(' · ')))
+  if (n.kind === 'project') {
+    openSheet(h('h2', null, n.label), n.about ? h('p', { class: 'why' }, n.about) : null,
+      n.url ? h('p', null, h('a', { href: n.url, target: '_blank', rel: 'noopener' }, n.url)) : null,
+      h('p', { class: 'meta' }, n.sources.includes('dtg') ? 'On the DTG board' : 'Added in this room', n.members?.length ? ` · people here: ${n.members.join(', ')}` : ''),
+      n.ways?.length ? h('div', { class: 'plain-only' }, h('p', null, h('strong', null, 'Speaks: '), waysSummary(n.ways))) : null,
+      n.ways?.length ? tech(h('p', null, h('strong', null, 'Speaks: '), n.ways.join(' · '))) : null,
+      lines.length ? h('ul', { class: 'plain' }, lines) : h('p', { class: 'empty' }, 'No lines to others yet.'))
+  } else {
+    const c = n.card
+    openSheet(h('h2', null, n.label),
+      c ? h('div', null, c.goals?.length ? h('p', null, h('strong', null, 'Goals: '), c.goals.join(' · ')) : null, c.workingOn ? h('p', null, h('strong', null, 'Working on: '), c.workingOn) : null, c.lookingFor ? h('p', null, h('strong', null, 'Looking for: '), c.lookingFor) : null) : h('p', { class: 'meta' }, 'No card yet.'),
+      n.projects?.length ? h('p', { class: 'meta' }, `Part of ${n.projects.map(projectName).join(', ')}`) : null,
+      n.agents?.length ? h('p', { class: 'meta' }, `Agents: ${n.agents.join(', ')}`) : null,
+      tech(h('p', null, h('code', null, n.id))),
+      lines.length ? h('ul', { class: 'plain' }, lines) : null)
+  }
+}
 function renderMap () {
-  if (!B?.score) return fill($('#tab-map'), h('div', { class: 'card' }, h('p', { class: 'empty' }, 'Loading the map…')))
-  const s = B.score
-  const propose = (payload) => joined() ? post('propose', payload) : (go('you'), toast('Join first.'))
-  const invite = (pair, ways, title) => propose({ kind: 'run', title, run: { sides: pair, ways } })
-
-  // forms: a project, a way, a run
-  const pf = { slug: keep(h('input', { type: 'text', placeholder: 'short-name, e.g. meshnet' }), 'p.slug'), name: keep(h('input', { type: 'text', maxlength: 80 }), 'p.name'), url: keep(h('input', { type: 'text', placeholder: 'https://…' }), 'p.url'), about: keep(h('input', { type: 'text', maxlength: 500, placeholder: 'What it is, in a sentence' }), 'p.about'), ways: keep(h('input', { type: 'text', list: 'ways-list', placeholder: 'did:key, oidc, activitypub, iroh…' }), 'p.ways') }
-  const addProject = fold('add-project', { class: 'card' }, h('summary', null, h('strong', null, 'Put a project on the map')),
-    h('p', { class: 'why' }, 'Anything that could interoperate: an app, a network, a protocol, a library. If you are not part of it, it shows as added by you until its people join.'),
-    h('label', null, 'Short name', pf.slug), h('label', null, 'Name', pf.name), h('label', null, 'Link', pf.url), h('label', null, 'What it is', pf.about), h('label', null, 'Ways it speaks (comma separated)', pf.ways),
-    h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: async () => {
-      const payload = { slug: pf.slug.value.trim().toLowerCase(), name: pf.name.value.trim(), ways: list(pf.ways.value), ...(pf.url.value.trim() ? { url: pf.url.value.trim() } : {}), ...(pf.about.value.trim() ? { about: pf.about.value.trim() } : {}) }
-      if (await post('project', payload)) forget('p.slug', 'p.name', 'p.url', 'p.about', 'p.ways')
-    } }, 'Sign and add')))
-  const wf = { id: keep(h('input', { type: 'text', placeholder: 'e.g. oidc, iroh, did:webvh' }), 'w.id'), name: keep(h('input', { type: 'text', maxlength: 80 }), 'w.name'), kind: keep(h('select', null, WAY_KINDS.map((k) => h('option', { value: k }, k))), 'w.kind'), url: keep(h('input', { type: 'text', placeholder: 'https://… (a spec)' }), 'w.url'), about: keep(h('input', { type: 'text', maxlength: 500 }), 'w.about') }
-  const addWay = fold('add-way', { class: 'card' }, h('summary', null, h('strong', null, 'Describe a way of doing interop')),
-    h('p', { class: 'why' }, 'A standard, protocol or format two projects can meet on. Ways from the DTG board (credential:, task:, ceremony:, basic:) are described there.'),
-    h('label', null, 'Id', wf.id), h('label', null, 'Name', wf.name), h('label', null, 'Kind', wf.kind), h('label', null, 'Link', wf.url), h('label', null, 'What it is', wf.about),
-    h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: async () => {
-      const payload = { id: wf.id.value.trim().toLowerCase(), name: wf.name.value.trim(), kind: wf.kind.value, ...(wf.url.value.trim() ? { url: wf.url.value.trim() } : {}), ...(wf.about.value.trim() ? { about: wf.about.value.trim() } : {}) }
-      if (await post('way', payload)) forget('w.id', 'w.name', 'w.url', 'w.about')
-    } }, 'Sign and add')))
-  const rf = { a: h('select', null, projectOptions()), b: h('select', null, projectOptions()), va: keep(h('input', { type: 'text', placeholder: 'version' }), 'r.va'), vb: keep(h('input', { type: 'text', placeholder: 'version' }), 'r.vb'), ways: keep(h('input', { type: 'text', list: 'ways-list', placeholder: 'the ways it tested' }), 'r.ways'), date: keep(h('input', { type: 'date', value: new Date().toISOString().slice(0, 10) }), 'r.date'), outcome: keep(h('select', null, ['pass', 'partial', 'fail'].map((o) => h('option', { value: o }, o))), 'r.outcome'), note: keep(h('input', { type: 'text', maxlength: 800, placeholder: 'What was exchanged and what was checked' }), 'r.note'), evidence: keep(h('input', { type: 'text', placeholder: 'links to code, a test or a release (comma separated)' }), 'r.ev') }
-  keep(rf.a, 'r.a'); keep(rf.b, 'r.b')
-  const recordRun = fold('record-run', { class: 'card' }, h('summary', null, h('strong', null, 'Record a run')),
-    h('p', { class: 'why' }, 'Two projects tried one or more ways together. One of the two sides enters it. If both are on the DTG board, also propose it there (Proposals → record-run).'),
-    h('label', null, 'Side one', rf.a), h('label', null, 'Its version', rf.va), h('label', null, 'Side two', rf.b), h('label', null, 'Its version', rf.vb), h('label', null, 'Ways tested', rf.ways), h('label', null, 'Date', rf.date), h('label', null, 'Outcome', rf.outcome), h('label', null, 'Note', rf.note), h('label', null, 'Evidence', rf.evidence),
-    h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: async () => {
-      const ev = list(rf.evidence.value)
-      const payload = { sides: [{ project: rf.a.value, version: rf.va.value.trim() }, { project: rf.b.value, version: rf.vb.value.trim() }], ways: list(rf.ways.value), date: rf.date.value, outcome: rf.outcome.value, ...(rf.note.value.trim() ? { note: rf.note.value.trim() } : {}), ...(ev.length ? { evidence: ev.map((url) => ({ label: url.replace(/^https:\/\//, '').slice(0, 80), url })) } : {}) }
-      if (await post('run', payload)) forget('r.va', 'r.vb', 'r.ways', 'r.note', 'r.ev')
-    } }, 'Sign and record')))
-
-  const sourceBadge = (p) => p.sources.includes('dtg') ? h('span', { class: 'badge' }, 'DTG board') : p.members.length ? h('span', { class: 'badge good' }, 'its people are here') : h('span', { class: 'badge warn' }, `added by ${nameOf(p.addedBy)}`)
-  fill($('#tab-map'),
-    waysList(),
-    h('div', { class: 'card' }, h('h2', null, 'The map in numbers'),
-      h('p', { class: 'why' }, 'The map in numbers: shared facts anyone can point a goal at. A pair counts only through a run; a mark fades after 30 days.'),
-      h('ul', { class: 'plain' },
-        h('li', null, `${s.projects} projects on the map, ${s.connected} connected by a passing run`),
-        h('li', null, `${s.passingPairs} pairs with a passing run, ${s.freshPairs} of them fresh`),
-        h('li', null, `${s.runs} runs, ${s.freshRuns} in the last 30 days`),
-        h('li', null, `${s.ways} ways on the map, ${s.waysTried} tried between two projects`),
-        s.missing !== undefined && h('li', null, `${s.missing} missing piece${s.missing === 1 ? '' : 's'} on the DTG board · ${s.dtgPlays} DTG scenario plays`),
-        h('li', null, `${s.fadingSoon} fading within a week · ${s.faded} faded`)),
-      B.history?.length > 1 ? [h('h3', null, 'Passing pairs over time'), spark(B.history, 'passingPairs')] : null,
-      h('p', { class: 'meta' }, 'Sources: this workspace, and ', h('a', { href: 'https://project-weave-tech.github.io/dtg-interop/', target: '_blank', rel: 'noopener' }, 'the DTG board'), ` (read ${B.fetchedAt ? ago(B.fetchedAt) : 'not yet'}${B.error ? '; last read failed' : ''}).`)),
-    B.fadingSoon.length ? h('div', { class: 'card' }, h('h2', null, 'Fading soon'), h('ul', { class: 'plain' }, B.fadingSoon.slice(0, 10).map((f) => h('li', null, h('div', null, `${projectName(f.pair[0])} × ${projectName(f.pair[1])}: ${f.title}`), h('div', { class: 'row' }, h('span', { class: 'meta grow' }, `last pass ${f.lastPass}, fades in ${f.daysLeft} day${f.daysLeft === 1 ? '' : 's'}`), h('button', { class: 'btn small', onclick: () => invite(f.pair, [f.way], `${f.pair[0]} and ${f.pair[1]} run ${f.title} again before it fades`) }, 'Propose a rerun')))))) : null,
-    h('div', { class: 'card' }, h('h2', null, 'Same way, never tried'), h('p', { class: 'why' }, 'Pairs that both speak a way and have never shown it working together. Pairs that cross from one community to another come first.'),
-      B.sharedWays.length ? h('ul', { class: 'plain' }, B.sharedWays.slice(0, 15).map((o) => h('li', null,
-        h('div', null, h('strong', null, `${projectName(o.pair[0])} × ${projectName(o.pair[1])}`), o.crossesSources ? h('span', { class: 'badge', style: null }, 'across communities') : null),
-        h('div', { class: 'row' }, h('span', { class: 'meta grow' }, o.ways.map(wayName).join(', '), o.count > o.ways.length ? ` and ${o.count - o.ways.length} more` : ''),
-          h('button', { class: 'btn small', onclick: () => invite(o.pair, o.ways.slice(0, 3), `${o.pair[0]} and ${o.pair[1]} try ${wayName(o.ways[0])} together`) }, 'Propose this run'))))) : h('p', { class: 'empty' }, 'Add projects and the ways they speak to see who could meet.')),
-    B.dtg?.readyToTry?.length ? h('div', { class: 'card' }, h('h2', null, 'Ready for a DTG scenario'), h('p', { class: 'why' }, 'Pairs where both sides bring every need of a DTG scenario in running code, and have not played it yet.'),
-      h('ul', { class: 'plain' }, B.dtg.readyToTry.slice(0, 10).map((o) => h('li', null, h('div', null, h('strong', null, `${projectName(o.pair[0])} × ${projectName(o.pair[1])}`), ` · ${o.title}`),
-        h('div', { class: 'row' }, h('span', { class: 'meta grow' }, o.subjects.map((x) => x.title).join(', ')), h('button', { class: 'btn small', onclick: () => invite(o.pair, o.subjects.map((x) => `${x.kind}:${x.id}`), `${o.pair[0]} and ${o.pair[1]} try "${o.title}" together`) }, 'Propose this run')))))) : null,
-    addProject, addWay, recordRun,
-    h('div', { class: 'card' }, h('h2', null, `Projects (${B.projects.length})`), h('ul', { class: 'plain' }, B.projects.map((p) => h('li', null,
-      h('div', { class: 'row' }, h('strong', { class: 'grow' }, p.url ? h('a', { href: p.url, target: '_blank', rel: 'noopener' }, p.name) : p.name), sourceBadge(p)),
-      p.about ? h('div', { class: 'why' }, p.about) : null,
-      h('div', { class: 'meta' }, p.ways.length ? p.ways.slice(0, 12).map(wayName).join(' · ') + (p.ways.length > 12 ? ` · +${p.ways.length - 12}` : '') : 'no ways listed yet'))))),
-    h('div', { class: 'card' }, h('h2', null, `Ways (${B.ways.length})`), h('ul', { class: 'plain' }, B.ways.slice(0, 60).map((w) => h('li', null,
-      h('div', { class: 'row' }, h('strong', { class: 'grow' }, w.url ? h('a', { href: w.url, target: '_blank', rel: 'noopener' }, w.name) : w.name), h('span', { class: 'badge' }, w.kind)),
-      h('div', { class: 'meta' }, `${w.projects.length} project${w.projects.length === 1 ? '' : 's'} · ${w.passingPairs} passing pair${w.passingPairs === 1 ? '' : 's'}`, w.about ? ` · ${w.about}` : ''))))),
-    h('div', { class: 'card' }, h('h2', null, 'Pairs with runs'), h('ul', { class: 'plain' }, B.pairs.map((p) => h('li', null, h('strong', null, p.pair.map(projectName).join(' × ')), h('div', { class: 'meta' }, p.ways.map((x) => `${x.name}: ${x.latest.outcome} ${x.latest.date}${x.latestPass && !x.fresh ? ' (faded)' : ''}${x.latest.source === 'dtg' ? ' · DTG' : ''}`).join(' · ')))))),
-    B.dtg?.missing?.length ? h('div', { class: 'card' }, h('h2', null, 'Missing pieces (DTG board)'), h('ul', { class: 'plain' }, B.dtg.missing.map((m) => h('li', null, h('strong', null, m.label), h('div', { class: 'meta' }, `blocks "${m.title}" · thread ${m.thread}`))))) : null,
-  )
+  const root = $('#tab-map')
+  if (!B?.graph) return fill(root, h('p', { class: 'empty' }, 'Loading the map…'))
+  if (!mapv.wrap) {
+    mapv.stats = h('p', { class: 'map-stats' })
+    mapv.wrap = h('div', { class: 'graph-wrap' })
+    mapv.legend = h('div', { class: 'legend' })
+    mapv.tech = h('div', { class: 'tech-only card' })
+    fill(root, mapv.stats, mapv.wrap, mapv.legend, mapv.tech)
+    mapv.graph = createGraph(mapv.wrap, { onSelect: showNode })
+  }
+  const s = B.score, count = (k) => B.graph.edges.filter((e) => e.kind === k).length
+  fill(mapv.stats, `${s.connected} of ${s.projects} projects work with another · ${count('connection')} working pairs · ${count('broken')} broken · ${count('intention')} wanting to connect`)
+  fill(mapv.legend, Object.entries(EDGE).map(([k, [label, why]]) => h('button', { class: `chip key ${k}` + (mapv.hidden.has(k) ? ' off' : ''), title: why, onclick: () => { mapv.hidden.has(k) ? mapv.hidden.delete(k) : mapv.hidden.add(k); renderMap() } }, h('i'), `${label} (${count(k)})`)))
+  mapv.graph.update(B.graph, { hidden: mapv.hidden })
+  fill(mapv.tech, h('h2', null, 'Numbers'), h('pre', null, JSON.stringify(B.score, null, 2)),
+    B.dtg?.missing?.length ? [h('h3', null, 'Missing pieces (DTG board)'), h('ul', { class: 'plain' }, B.dtg.missing.map((m) => h('li', null, `${m.label} · blocks "${m.title}" · thread ${m.thread}`)))] : null,
+    h('p', { class: 'meta' }, 'Everything behind this map: ', h('a', { href: '/api/map', target: '_blank' }, '/api/map')))
 }
 
 // ---------- Log ----------
@@ -405,14 +380,17 @@ function renderLog () {
     const all = []
     for (let after = -1; ;) { const r = await api(`/api/log?after=${after}&limit=500`); all.push(...r.body.entries); if (r.body.entries.length < 500) break; after = all.at(-1).seq }
     const rep = await verifyChain(all)
-    fill(out, h('p', null, h('span', { class: 'badge ' + (rep.ok ? 'good' : 'bad') }, rep.ok ? 'verified' : 'problems'), ` ${rep.entries} entries; every hash link checked; ${rep.entries * 2 - rep.signaturesNotChecked} signatures checked in this browser${rep.signaturesNotChecked ? `, ${rep.signaturesNotChecked} need a did:webvh or did:peer resolver (the server checks those: /api/verify)` : ''}.`),
+    fill(out, h('p', null, h('span', { class: 'badge ' + (rep.ok ? 'good' : 'bad') }, rep.ok ? 'all checks out' : 'problems found'), ` ${rep.entries} entries, every link and ${rep.entries * 2 - rep.signaturesNotChecked} signatures checked in this browser.`,
+      rep.signaturesNotChecked ? tech(` ${rep.signaturesNotChecked} need a did:webvh or did:peer resolver; the server checks those (/api/verify).`) : null),
       rep.problems.length ? h('pre', null, JSON.stringify(rep.problems, null, 2)) : null)
   }
   fill($('#tab-log'),
-    h('div', { class: 'card' }, h('h2', null, 'The log'),
-      h('p', { class: 'why' }, 'Every input is a signed Trust Task document, appended to a hash chain: each entry names its author, who it acts for, the entry before it, and when. Anyone can read it and check it.'),
-      h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: verifyHere }, 'Verify in this browser'), h('a', { class: 'btn', href: '/api/verify', target: '_blank' }, 'Server check'), h('a', { class: 'btn', href: '/api/log', target: '_blank' }, 'Raw JSON')), out),
-    h('div', { class: 'card' }, h('ul', { class: 'plain' }, feed.slice(0, 80).map((e) => h('li', null, h('details', null,
+    h('div', { class: 'card' }, h('h2', null, 'The record'),
+      h('p', { class: 'why' }, 'Everything anyone does here is signed and chained, so nobody can quietly change what was said. Anyone can check the whole record.'),
+      tech(h('p', { class: 'why' }, 'Each entry is a Trust Task document (eddsa-jcs-2022) in a SHA-256 hash chain: author, onBehalfOf, parent, timestamp, and the workspace\'s witness signature.')),
+      h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: verifyHere }, 'Check it in this browser'), tech(h('a', { class: 'btn', href: '/api/verify', target: '_blank' }, 'Server check'), ' ', h('a', { class: 'btn', href: '/api/log', target: '_blank' }, 'Raw JSON'))), out),
+    h('div', { class: 'card plain-only' }, h('ul', { class: 'plain' }, feed.slice(0, 80).map((e) => h('li', { class: 'feed-item' }, h('strong', null, who(e)), h('span', { class: 'meta' }, ago(e.timestamp)), h('span', { class: 'what' }, says(e)))))),
+    h('div', { class: 'card tech-only' }, h('ul', { class: 'plain' }, feed.slice(0, 80).map((e) => h('li', null, h('details', null,
       h('summary', null, `#${e.seq} · ${NAME_OF[e.type]} · ${who(e)} · ${ago(e.timestamp)}`),
       h('p', { class: 'meta' }, h('code', null, `hash ${e.hash}`), h('br'), h('code', null, `parent ${e.parent ?? '(none, the first entry)'}`)),
       h('pre', null, JSON.stringify(e.document, null, 2))))))),
@@ -420,28 +398,59 @@ function renderLog () {
 }
 
 // ---------- You ----------
+function notebookPanel (a) {
+  const box = h('div', { class: 'notebook' }, h('p', { class: 'meta' }, 'Loading…'))
+  const load = async () => {
+    const r = await privateCall('/api/notebook', 'notebook', { agent: a.did, op: 'read' })
+    if (!r.ok) return fill(box, h('p', { class: 'meta' }, r.body?.payload?.message ?? 'could not open it'))
+    const add = keep(h('textarea', { maxlength: 2000, placeholder: 'Tell it something about you or what you want from the room' }), 'nb.' + a.did)
+    fill(box, r.body.notes.length ? h('ul', { class: 'plain' }, r.body.notes.slice(-20).reverse().map((n) => h('li', null, h('span', { class: 'meta' }, `${n.from === 'person' ? 'you' : a.name} · ${ago(n.at)}`), h('div', null, n.text)))) : h('p', { class: 'empty' }, 'Empty so far.'),
+      add, h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'Only you and this agent can read this.'), h('button', { class: 'btn small primary', onclick: async () => {
+        if (!add.value.trim()) return
+        const w = await privateCall('/api/notebook', 'notebook', { agent: a.did, op: 'add', text: add.value.trim() })
+        if (!w.ok) return toast(w.body?.payload?.message ?? 'refused')
+        forget('nb.' + a.did); toast('Added. Your agent reads it on its next visit.'); load()
+      } }, 'Add')))
+  }
+  const d = fold('nb-' + a.did, { class: 'keep' }, h('summary', null, 'What it knows about you'), box)
+  d.addEventListener('toggle', () => { if (d.open) load() })
+  if (d.open) load()
+  return d
+}
+function cardPanel (mine) {
+  const c = mine.card ?? {}
+  const goals = keep(h('textarea', { maxlength: 700, placeholder: 'One goal per line' }), 'card.goals'), working = keep(h('input', { type: 'text', maxlength: 300 }), 'card.working'), looking = keep(h('input', { type: 'text', maxlength: 300 }), 'card.looking')
+  if (drafts['card.goals'] === undefined) goals.value = (c.goals ?? []).join('\n')
+  if (drafts['card.working'] === undefined) working.value = c.workingOn ?? ''
+  if (drafts['card.looking'] === undefined) looking.value = c.lookingFor ?? ''
+  return h('div', { class: 'card' }, h('h2', null, 'Your card'),
+    h('p', { class: 'why' }, 'What everyone in the room sees about you, and what the weaver matches with what others are building. Your agent can keep it current; you can always change it.'),
+    h('label', null, 'Your goals', goals), h('label', null, 'Working on', working), h('label', null, 'Looking for', looking),
+    h('div', { class: 'row' }, c.at ? h('span', { class: 'meta grow' }, `Updated ${ago(c.at)}${c.by && c.by !== me.did ? ' by your agent' : ''}`) : h('span', { class: 'grow' }),
+      h('button', { class: 'btn primary small', onclick: async () => {
+        const g = goals.value.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, 5)
+        if (await post('card', { goals: g, workingOn: working.value.trim(), lookingFor: looking.value.trim() })) forget('card.goals', 'card.working', 'card.looking')
+      } }, 'Save')))
+}
 function renderYou () {
   const el = $('#tab-you')
   const origin = S.publicUrl || location.origin // the address others can reach (PUBLIC_URL), not necessarily this one
-  const invite = h('div', { class: 'card' }, h('h2', null, 'Bring someone in'), h('p', { class: 'why' }, 'Scan to open this workspace. Joining makes a key on that phone; nothing else to install.'),
+  const invite = h('div', { class: 'card' }, h('h2', null, 'Bring someone in'), h('p', { class: 'why' }, 'Scan to open this room. Joining makes a key on that phone; nothing else to install.'),
     h('img', { class: 'qr', src: `/api/qr.svg?text=${encodeURIComponent(origin)}`, alt: `QR code for ${origin}` }), h('p', null, h('code', null, origin)))
   if (!joined()) {
     const name = keep(h('input', { type: 'text', maxlength: 60, placeholder: 'How the room will see you' }), 'join.name')
-    const projects = (B?.projects ?? []).map((p) => h('label', null, h('input', { type: 'checkbox', value: p.slug }), p.name))
-    const otherProject = keep(h('input', { type: 'text', placeholder: 'not listed? its short name, e.g. meshnet' }), 'join.other')
-    const about = keep(h('input', { type: 'text', maxlength: 280, placeholder: 'Optional: one line about you' }), 'join.about')
     const seedIn = h('input', { type: 'text', placeholder: '64 hex characters' })
     const join = async () => {
       if (!name.value.trim()) return toast('A name, please.')
       if (!me) { me = newIdentity(); if (!store.set('wpi.seed', me.seedHex)) toast('This browser will not keep your key (private mode?). Back it up after joining.') }
-      const chosen = projects.map((l) => l.querySelector('input')).filter((i) => i.checked).map((i) => i.value).concat(otherProject.value.trim() ? [otherProject.value.trim().toLowerCase()] : [])
-      await post('join', { name: name.value.trim(), ...(chosen.length ? { projects: chosen } : {}), ...(about.value.trim() ? { about: about.value.trim() } : {}) })
+      await post('join', { name: name.value.trim() })
     }
     return fill(el,
       h('div', { class: 'card' }, h('h2', null, 'Join'),
-        h('p', { class: 'why' }, 'Joining makes a key in this browser: a did:key that is you here. Everything you do is signed with it. No account, no password, no email.'),
-        h('label', null, 'Name', name), h('label', null, 'Your project(s), if any: lets you record runs and keep their entry'), h('div', { class: 'checks' }, projects), h('label', null, 'Another project', otherProject), h('label', null, 'About', about),
-        h('div', { class: 'row', style: null }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: join }, 'Make my key and join')),
+        h('p', { class: 'why' }, 'Pick a name. This browser makes you a key, which is how the room knows it is you. No account, no password, no email.'),
+        tech(h('p', { class: 'why' }, 'The key is an Ed25519 did:key; every action is a signed Trust Task document.')),
+        h('label', null, 'Name', name),
+        h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: join }, 'Join')),
         h('details', null, h('summary', null, 'I already have a key'), h('label', null, 'Your key', seedIn), h('button', { class: 'btn', onclick: () => { try { me = identityFromSeedHex(seedIn.value); store.set('wpi.seed', me.seedHex); toast('Key loaded.'); refresh() } catch (err) { toast(err.message) } } }, 'Use this key'))),
       invite)
   }
@@ -458,28 +467,36 @@ function renderYou () {
     const now = new Date(), expiresAt = new Date(now.getTime() + Number(days.value) * 86400000).toISOString()
     if (await post('delegate', { delegate: agentDid.value.trim(), scope, ...(label.value.trim() ? { label: label.value.trim() } : {}) }, { issuedAt: now.toISOString(), expiresAt })) { forget('agent.did', 'agent.label'); history.replaceState(null, '', location.pathname); renderYou() }
   }
+  const projects = keep(h('input', { type: 'text', placeholder: 'their short names, comma separated' }), 'me.projects')
+  if (drafts['me.projects'] === undefined) projects.value = (mine.projects ?? []).join(', ')
   const reason = keep(h('input', { type: 'text', maxlength: 500, placeholder: 'Why (optional, public)' }), 'mode.reason')
   fill(el,
-    h('div', { class: 'card' }, h('h2', null, mine.name), h('p', { class: 'meta' }, mine.projects?.length ? `for ${mine.projects.map(projectName).join(', ')} · ` : '', `joined ${ago(mine.since)}`), h('p', null, h('code', null, me.did)),
-      h('details', null, h('summary', null, 'Back up your key'), h('p', { class: 'why' }, 'This is the secret that makes you you here. Anyone with it can act as you. Keep it somewhere safe; clearing this browser deletes it.'), h('pre', null, me.seedHex), h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(me.seedHex).then(() => toast('Copied.')) }, 'Copy')),
-      h('details', null, h('summary', null, 'Forget this key in this browser'), h('button', { class: 'btn danger small', onclick: () => { if (confirm('Remove your key from this browser? Without a backup you cannot act as this DID again.')) { store.set('wpi.seed', null); me = null; render() } } }, 'Forget my key'))),
-    h('div', { class: 'card' }, h('h2', null, 'How the weaver decides'),
-      h('p', { class: 'why' }, 'anarchy: try every direction · democracy: the vote decides · weave: the one action that holds the most intentions. Any person can change it; the latest change stands.'),
-      h('div', { class: 'seg' }, MODES.map((m) => h('button', { class: S.mode.mode === m ? 'on' : '', onclick: () => m !== S.mode.mode && post('mode', { mode: m, ...(reason.value.trim() ? { reason: reason.value.trim() } : {}) }) }, m))),
-      h('label', null, 'Reason', reason)),
+    h('div', { class: 'card' }, h('h2', null, mine.name), h('p', { class: 'meta' }, mine.projects?.length ? `part of ${mine.projects.map(projectName).join(', ')} · ` : '', `joined ${ago(mine.since)}`), tech(h('p', null, h('code', null, me.did))),
+      h('label', null, 'Projects you are part of (lets you record their runs)', projects),
+      h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn small', onclick: async () => { const list = projects.value.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean).slice(0, 5); if (await post('join', { name: mine.name, ...(list.length ? { projects: list } : {}) })) forget('me.projects') } }, 'Save')),
+      h('details', null, h('summary', null, 'Back up your key'), h('p', { class: 'why' }, 'This secret is what makes you you here. Anyone with it can act as you. Keep it somewhere safe; clearing this browser deletes it.'), h('pre', null, me.seedHex), h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(me.seedHex).then(() => toast('Copied.')) }, 'Copy')),
+      h('details', null, h('summary', null, 'Forget this key in this browser'), h('button', { class: 'btn danger small', onclick: () => { if (confirm('Remove your key from this browser? Without a backup you cannot act as yourself here again.')) { store.set('wpi.seed', null); me = null; render() } } }, 'Forget my key'))),
+    cardPanel(mine),
     h('div', { class: 'card', id: 'agents' }, h('h2', null, 'Your agents'),
-      h('p', { class: 'why' }, 'An agent has its own key and acts only with a delegation you sign: who it is, what it may do, until when. Approving, vetoing and delegating stay with you.'),
+      h('p', { class: 'why' }, 'Your agent acts only with the permission you signed: what it may do, until when. Approving, vetoing and bringing agents stay with you.'),
       myAgents.length ? myAgents.map((a) => h('div', { class: 'agent-row' },
-        h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), h('br'), h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'own key'), ' ', h('code', null, short(a.did))),
+        h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), h('br'), h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'holds its own key'), tech(' ', h('code', null, short(a.did)))),
           a.hosted && savedLinks()[a.did] ? h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(savedLinks()[a.did]).then(() => toast('Link copied.')) }, 'Copy link') : null,
           a.delegation ? h('button', { class: 'btn small danger', onclick: () => post('revoke', { delegation: a.delegation }) }, 'Stop') : h('span', { class: 'badge warn' }, 'stopped')),
+        a.delegation ? notebookPanel(a) : null,
         a.delegation ? keepAround(a) : null)) : h('p', { class: 'empty' }, 'No agents yet.'),
       h('button', { class: 'btn primary', onclick: openBring }, 'Bring your agent'),
-      h('label', null, 'Agent DID', agentDid), h('label', null, 'Name it', label), h('label', null, 'It may'), h('div', { class: 'checks' }, scopes), h('label', null, 'For', days),
-      h('div', { class: 'row', style: null }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: delegate }, 'Sign the delegation')),
-      h('details', null, h('summary', null, 'Connect an agent (MCP)'), h('p', { class: 'why' }, 'Run the bridge next to your agent; it makes the agent a key, shows a QR code to scan here, and signs for it.'),
+      h('div', { class: 'tech-only' },
+        h('h3', null, 'Let an agent with its own key in'),
+        h('label', null, 'Agent DID', agentDid), h('label', null, 'Name it', label), h('label', null, 'It may'), h('div', { class: 'checks' }, scopes), h('label', null, 'For', days),
+        h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: delegate }, 'Sign the delegation')),
+        h('p', { class: 'why' }, 'The bridge (local MCP, keeps the agent\'s key on your computer):'),
         h('pre', null, JSON.stringify({ mcpServers: { 'we-play-interop': { command: 'npx', args: ['-y', '-p', 'github:Project-Weave-Tech/we-play-interop', 'wpi-agent'], env: { WPI_URL: origin } } } }, null, 2)),
-        h('p', { class: 'why' }, `Read-only, no install: the MCP endpoint ${origin}/mcp. Plain HTTP: ${origin}/api/state.`))),
+        h('p', { class: 'why' }, `Read-only MCP: ${origin}/mcp · HTTP: ${origin}/api/state`))),
+    h('div', { class: 'card' }, h('h2', null, 'How the weaver decides'),
+      h('p', { class: 'why' }, 'anarchy: try every direction · democracy: the vote decides · weave: the one step that holds the most of what people want. Anyone can change it; the latest change stands.'),
+      h('div', { class: 'seg' }, MODES.map((m) => h('button', { class: S.mode.mode === m ? 'on' : '', onclick: () => m !== S.mode.mode && post('mode', { mode: m, ...(reason.value.trim() ? { reason: reason.value.trim() } : {}) }) }, m))),
+      h('label', null, 'Reason', reason)),
     invite)
 }
 
@@ -635,7 +652,7 @@ function renderBring () {
 }
 
 // A tab someone is typing in is not redrawn under their fingers; it catches up when they leave the field.
-const TABS = { watch: () => renderWatch(), talk: () => renderNow(), map: () => renderMap(), log: () => renderLog(), you: () => renderYou() }
+const TABS = { watch: () => renderWatch(), talk: () => renderTalk(), map: () => renderMap(), log: () => renderLog(), you: () => renderYou() }
 const stale = new Set()
 const typing = (el) => el.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)
 function render () {
@@ -643,7 +660,7 @@ function render () {
   renderTop()
   for (const [name, draw] of Object.entries(TABS)) {
     const el = $('#tab-' + name)
-    if (typing(el)) stale.add(name); else { stale.delete(name); draw() }
+    if (!['talk', 'watch'].includes(name) && typing(el)) stale.add(name); else { stale.delete(name); draw() } // the chat and the loom redraw around the typing, not over it
   }
 }
 document.addEventListener('focusout', () => setTimeout(() => {
@@ -660,4 +677,4 @@ const start = fromHash() ?? store.get('wpi.tab')
 go(TABS[start] ? start : 'watch')
 // an agent's link (#delegate=did:…) opened on a page that is already open
 window.addEventListener('hashchange', () => { const tab = fromHash(); if (tab) { renderYou(); go(tab) } })
-setInterval(() => { if (S && !typing($('#tab-talk'))) renderNow() }, 60_000)
+setInterval(() => { if (S) renderTalk() }, 60_000)

@@ -27,18 +27,20 @@ export const TYPES = {
   result: T('action/result'),
   host: T('agent/host'),
   wake: T('agent/wake'),
+  card: T('member/card'),
+  notebook: T('agent/notebook'),
   hosted: T('agent/hosted'),
 }
 export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v, k]))
 
 /** Who may write each kind of document. */
 export const WHO = {
-  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human',
+  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private',
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone',
 }
 /** What a human can let an agent do (delegation scope). Approving, vetoing and delegating stay human. */
-export const AGENT_SCOPES = ['note', 'propose', 'vote', 'project', 'way', 'run']
+export const AGENT_SCOPES = ['note', 'propose', 'vote', 'project', 'way', 'run', 'card']
 /** Kinds of ways to do interop: deliberately broad. */
 export const WAY_KINDS = ['identity', 'credentials', 'messaging', 'data', 'sync', 'network', 'storage', 'compute', 'governance', 'payments', 'other']
 /** Way ids from the DTG board carry its item kind; the workspace does not define those. */
@@ -157,6 +159,15 @@ export function checkPayload (name, doc) {
     }
     case 'revoke': return HASH_RE.test(p.delegation ?? '') ? null : 'delegation: the hash of the delegation entry'
     case 'host': return str(p.label, 1, 60) ? null : 'label: a name for the agent, 1 to 60 characters'
+    case 'card':
+      if (p.goals !== undefined && (!Array.isArray(p.goals) || p.goals.length > 5 || !p.goals.every((g) => str(g, 1, 140)))) return 'goals: up to 5, each 1 to 140 characters'
+      if (!optStr(p.workingOn, 300)) return 'workingOn: at most 300 characters'
+      if (!optStr(p.lookingFor, 300)) return 'lookingFor: at most 300 characters'
+      return null
+    case 'notebook':
+      if (!DID_RE.test(p.agent ?? '')) return 'agent: the agent\'s DID'
+      if (!['read', 'add', 'peek'].includes(p.op)) return 'op: read | add | peek'
+      return p.op === 'add' && !str(p.text, 1, 2000) ? 'text: 1 to 2000 characters' : null
     case 'wake':
       if (!DID_RE.test(p.agent ?? '')) return 'agent: your agent\'s DID'
       if (p.urlHash !== null && !HASH_RE.test(p.urlHash ?? '')) return 'urlHash: SHA-256 (hex) of the wake link, or null to remove it'

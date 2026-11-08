@@ -88,6 +88,7 @@ export class Log extends EventEmitter {
     const shape = checkShape(doc)
     if (shape) throw new TaskError('malformedRequest', shape)
     const name = NAME_OF[doc.type], st = this.state, now = Date.now()
+    if (WHO[name] === 'private') throw new TaskError('malformedRequest', `${name} is private: send it to /api/${name}, it never enters the log`)
     if (WHO[name] === 'workspace' || doc.issuer === st.workspace) throw new TaskError('permissionDenied', `only the workspace writes ${name}`, { status: 403 })
 
     const seen = this.byDocId.get(doc.id)
@@ -191,6 +192,26 @@ export class Log extends EventEmitter {
       if (hits.length >= max) throw new TaskError('unavailable', 'too many entries in a minute; slow down', { status: 429, retryable: true, retryAfter: new Date(hits[0] + windowMs).toISOString() })
       hits.push(now); this.rate.set(k, hits)
     }
+  }
+
+  /** Check a private, signed request (never appended): shape, freshness, replay, signature. */
+  async verifyPrivate (doc, expected) {
+    const shape = checkShape(doc)
+    if (shape) throw new TaskError('malformedRequest', shape)
+    if (NAME_OF[doc.type] !== expected) throw new TaskError('unsupportedType', `expected ${expected}`)
+    const bad = checkPayload(expected, doc)
+    if (bad) throw new TaskError('malformedRequest', bad)
+    const now = Date.now(), at = Date.parse(doc.issuedAt), skew = this.config.maxSkewMinutes * 60_000
+    if (Math.abs(now - at) > skew) throw new TaskError('expired', 'sign it again: issuedAt is not current')
+    this.seenPrivate ??= new Map()
+    for (const [id, t] of this.seenPrivate) if (t < now - 2 * skew) this.seenPrivate.delete(id)
+    if (this.seenPrivate.has(doc.id)) throw new TaskError('idConflict', 'this request was already used', { status: 409 })
+    let key
+    try { key = await this.resolver.keyFor(doc.issuer, doc.proof.verificationMethod, doc.proof.proofPurpose) } catch (err) { throw new TaskError('proofInvalid', `could not get the issuer's key: ${err.message}`) }
+    const sig = verifySignature(doc, key)
+    if (!sig.ok) throw new TaskError('proofInvalid', sig.reason)
+    this.seenPrivate.set(doc.id, now)
+    return doc
   }
 
   /** A signed trust-task-error answering a refused document. */
