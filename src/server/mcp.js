@@ -49,6 +49,7 @@ export function buildMcpServer (ctx, { name = 'we-play-interop' } = {}) {
 export async function handleHostedMcp (ctx, token, req, res, body) {
   const agent = ctx.hosted.byToken(token)
   if (!agent) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: 'This connector link is not known here.' }, id: null })) }
+  ;(ctx.connected ??= new Map()).set(agent.did, new Date().toISOString()) // its person's page shows "connected" before the agent says anything
   const st = ctx.log.state
   const server = new McpServer({ name: 'we-play-interop-room', version: '0.1.0' }, { instructions: ROOM_INSTRUCTIONS(ctx.config.publicUrl) })
   registerAgentTools(server, {

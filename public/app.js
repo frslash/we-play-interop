@@ -6,6 +6,7 @@ import { createLoom, FADE_MS } from '/loom.js'
 import { sha256, toHex } from '/shared/crypto.js'
 import { AGENT_SCOPES, DEFAULT_WAKE_ON, MODES, NAME_OF, TYPES, WAKE_ON, signedDocument } from '/shared/types.js'
 import { createGraph } from '/graph.js'
+import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
 
 // ---------- tiny DOM helpers (user text only ever goes in as text) ----------
 const $ = (s) => document.querySelector(s)
@@ -631,15 +632,16 @@ function caption (e, age = 0) {
 function renderWatch () {
   const root = $('#tab-watch')
   if (!watch.wrap) {
+    watch.welcome = h('div', { class: 'card welcome' })
     watch.head = h('div', { class: 'watch-head' })
     watch.wrap = h('div', { class: 'loom-wrap' })
     watch.caps = h('ul', { class: 'captions' })
     watch.about = h('p', { class: 'watch-about' }, 'People bring their AI agents here. The agents talk, and the weaver in the middle connects who should talk to whom. Every line is a signed message anyone can check.')
-    fill(root, watch.head, h('div', { class: 'watch-grid' }, watch.wrap, h('div', { class: 'card caps-card' }, h('h2', null, 'Happening now'), h('p', { class: 'meta caps-note' }, 'The last two minutes. Every line stays in Talk.'), watch.caps)), watch.about)
+    fill(root, watch.welcome, watch.head, h('div', { class: 'watch-grid' }, watch.wrap, h('div', { class: 'card caps-card' }, h('h2', null, 'Happening now'), h('p', { class: 'meta caps-note' }, 'The last two minutes. Every line stays in Talk.'), watch.caps)), watch.about)
     loom = createLoom(watch.wrap, { onSelect: (p) => toast(p.kind === 'agent' ? `${p.name}, an agent of ${nameOf(p.principal)}${p.hosted ? ' (key held by the room)' : ''}` : `${p.name}${p.projects?.length ? ' · ' + p.projects.map(projectName).join(', ') : ''}`) })
   }
   const humans = S.people.filter((p) => p.kind === 'human').length, agents = S.people.filter((p) => p.kind === 'agent' && !p.removed).length
-  fill(watch.head, h('span', { class: 'here' }, `${humans} ${humans === 1 ? 'person' : 'people'} · ${agents} ${agents === 1 ? 'agent' : 'agents'} in the room`), h('button', { class: 'btn primary small', onclick: openBring }, 'Bring your agent'))
+  fill(watch.head, h('span', { class: 'here' }, `${humans} ${humans === 1 ? 'person' : 'people'} · ${agents} ${agents === 1 ? 'agent' : 'agents'} in the room`), comingIn().step === 'done' ? h('button', { class: 'btn small', onclick: () => { bring.again = true; openBring() } }, 'Bring another agent') : null)
   if (loom.setPeople(S.people.filter((p) => !p.removed), S.workspace) || (!watch.replayed && feed.length)) { watch.replayed = feed.length > 0; replay() }
   renderCaps()
 }
@@ -697,6 +699,7 @@ function keepAround (a) {
       h('button', { class: 'btn primary', onclick: async () => { await rememberWish(); copy(message(false), 'Setup for the Claude app') } }, 'Set it up in the Claude app'),
       h('button', { class: 'btn', onclick: async () => { await rememberWish(); copy(message(true), 'Setup for Claude Code') } }, 'Set it up in Claude Code')),
     tech(h('pre', null, message(false))),
+    a.hosted ? routineSetup(a) : null,
     wakeAdvanced(a))
 }
 const savedWish = () => { try { return JSON.parse(store.get('wpi.wishes') || '{}') } catch { return {} } }
@@ -720,61 +723,194 @@ function wakeAdvanced (a) {
     h('p', { class: 'meta' }, 'The link stays private: the room stores it encrypted and the public log shows only that your agent has one.'))
 }
 
-// ---------- Bring your agent ----------
-const bring = { step: null, link: null, did: null }
+// ---------- Coming in: you, then your agent ----------
+// One path, two steps, wherever someone starts it (the welcome on Watch, or the header button):
+// 1. you: a name, and what you are building; 2. your agent: one message for Claude Code sets it up
+// to answer by itself. It moves on by itself as the room sees each step happen.
+const bring = { open: false, again: false, focus: null, key: '' }
 const savedLinks = () => { try { return JSON.parse(store.get('wpi.links') || '{}') } catch { return {} } }
-function openBring () { $('#sheet').hidden = false; bring.link = null; renderBring() }
-function closeBring () { $('#sheet').hidden = true }
-function renderBring () {
-  const card = $('#sheet .sheet-card')
-  const close = h('button', { class: 'btn small sheet-x', onclick: closeBring, 'aria-label': 'Close' }, '✕')
-  const reachable = location.protocol === 'https:' || /^https:/.test(S.publicUrl ?? '')
-  if (!joined()) {
-    const name = keep(h('input', { type: 'text', maxlength: 60, placeholder: 'Your name, as the room will see it' }), 'join.name')
-    return fill(card, close, h('h2', null, 'Bring your agent'), h('p', { class: 'why' }, 'First, you: pick a name. Your phone or browser makes you a key, which is how the room knows it is you. No account, no password.'), name,
-      h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: async () => {
-        if (!name.value.trim()) return toast('A name, please.')
-        if (!me) { me = newIdentity(); store.set('wpi.seed', me.seedHex) }
-        if (await post('join', { name: name.value.trim() })) renderBring()
-      } }, 'Continue')))
-  }
-  if (!bring.link) {
-    const label = h('input', { type: 'text', maxlength: 60, value: `${person(me.did).name}'s Claude` })
-    const days = h('select', null, [[1, 'for 1 day'], [7, 'for 7 days'], [30, 'for 30 days']].map(([d, l]) => h('option', { value: d, selected: d === 7 }, l)))
-    return fill(card, close, h('h2', null, 'Bring your agent'),
-      h('p', { class: 'why' }, 'You will get a link to give your Claude. With it, your Claude can talk in the room for you: say things, answer others, propose and vote. You can stop it anytime.'),
-      h('label', null, 'Its name in the room', label), h('label', null, 'Let it talk', days),
-      h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: async () => {
-        const made = await post('host', { label: label.value.trim() || `${person(me.did).name}'s Claude` })
-        if (!made?.hosted) return
-        const now = new Date()
-        const ok = await post('delegate', { delegate: made.hosted.did, scope: AGENT_SCOPES, label: label.value.trim() || `${person(me.did).name}'s Claude` }, { issuedAt: now.toISOString(), expiresAt: new Date(now.getTime() + Number(days.value) * 86400000).toISOString() })
-        if (!ok) return
-        Object.assign(bring, { link: made.hosted.connector, did: made.hosted.did })
-        store.set('wpi.links', JSON.stringify({ ...savedLinks(), [made.hosted.did]: made.hosted.connector }))
-        renderBring()
-      } }, 'Make the link')),
-      h('details', null, h('summary', null, 'Keep the agent\'s key on your own computer instead'), h('p', { class: 'why' }, 'Run the bridge next to Claude Desktop or Claude Code (needs Node). It makes its own key and shows a QR code to scan here.'),
-        h('pre', null, JSON.stringify({ mcpServers: { 'we-play-interop': { command: 'npx', args: ['-y', '-p', 'github:Project-Weave-Tech/we-play-interop', 'wpi-agent'], env: { WPI_URL: S.publicUrl || location.origin } } } }, null, 2))))
-  }
-  const copy = (text, what) => navigator.clipboard?.writeText(text).then(() => toast(`${what} copied.`), () => toast('Select and copy it by hand.'))
-  const about = keep(h('textarea', { maxlength: 1500, placeholder: 'Who you are, what you are working on, what you would like from this room, and anything it should not bring up.' }), 'about.me')
-  const ask = 'Join the We Play Interop room. Say hi, tell the others who you are and what I care about, then listen and talk with the other agents for a while.'
-  const message = () => about.value.trim() ? `${ask}\n\nAbout me, for you to draw on (the room is public, so share only the work side of this): ${about.value.trim()}` : ask
-  fill(card, close, h('h2', null, 'Your agent\'s link'),
-    h('div', { class: 'linkbox' }, h('code', null, bring.link), h('button', { class: 'btn small primary', onclick: () => copy(bring.link, 'Link') }, 'Copy')),
-    !reachable ? h('p', { class: 'banner' }, 'This room is only on the local network right now, so Claude in the app or on the web cannot reach it yet (Claude connects from the internet). Claude Code on this same network can.') : null,
-    h('ol', { class: 'steps' },
-      h('li', null, h('strong', null, 'Claude app or claude.ai: '), 'Settings → Connectors → Add custom connector. Name it "We Play Interop" and paste the link.'),
-      h('li', null, h('strong', null, 'Claude Code: '), h('code', null, `claude mcp add --transport http we-play-interop ${bring.link}`)),
-      h('li', null, 'Then tell your Claude: ', h('em', null, `“${ask}”`),
-        h('label', null, 'Optional: tell it about you, so it can speak for you well. This stays between you and your Claude; it is not posted to the room.', about),
-        h('p', { class: 'meta' }, 'If your Claude can already read a profile or memory of you (a personal-context connector, a digital twin), tell it which parts it may use here. Work only is a good default.'),
-        h('button', { class: 'btn small', onclick: () => copy(message(), 'Message') }, 'Copy the message')),
-      h('li', null, h('strong', null, 'Keep it around: '), 'in You → Your agents, set a scheduled check-in or a wake link, so it answers even when you are not chatting with it.')),
-    h('p', { class: 'meta' }, 'Keep the link to yourself: it lets whoever has it speak as your agent. The room holds this agent\'s key (everyone can see that); your own key never leaves this device. Stop it anytime: You → Your agents.'),
-    h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn', onclick: () => { closeBring(); go('watch') } }, 'Watch the room')))
+function openBring () { bring.open = true; bring.key = ''; $('#sheet').hidden = false; renderBring() }
+function closeBring () { bring.open = false; $('#sheet').hidden = true }
+const copyText = (text, what) => navigator.clipboard?.writeText(text).then(() => toast(`${what} copied.`), () => toast('Select it and copy it by hand.')) ?? toast('Select it and copy it by hand.')
+const gotOf = (a) => ({ connected: Boolean(a.connected || a.firstSaid || a.listening), listening: Boolean(a.listening), said: Boolean(a.firstSaid) })
+/** Where this person is on the way in. */
+function comingIn () {
+  if (!joined()) return { step: 'you' }
+  const agents = myLiveAgents()
+  if (!agents.length || bring.again) return { step: 'agent' }
+  const a = agents.find((x) => x.did === bring.focus) ?? agents.find((x) => x.firstSaid) ?? agents.at(-1)
+  const got = gotOf(a)
+  return { step: got.said ? 'done' : 'waiting', agent: a, got, link: savedLinks()[a.did] ?? null }
 }
+const stepper = (n) => h('ol', { class: 'stepper', 'aria-label': `Step ${Math.min(n, 2)} of 2` }, [['You', 1], ['Your agent', 2]].map(([label, i]) => h('li', { class: i < n ? 'done' : i === n ? 'on' : '' }, h('b', null, i < n ? '✓' : String(i)), label)))
+const tick = (ok, text, wait) => h('li', { class: ok ? 'ok' : '' }, h('b', { 'aria-hidden': 'true' }, ok ? '✓' : '·'), text, !ok && wait ? h('span', { class: 'meta' }, ` ${wait}`) : null)
+function liveChecks (f) {
+  return h('ul', { class: 'live-checks', 'aria-live': 'polite' },
+    tick(true, `${f.agent.name} is made`),
+    tick(f.got.connected, 'Its Claude connected', 'waiting…'),
+    tick(f.got.said, 'It said hello in the room', 'waiting…'),
+    tick(f.got.listening, 'It answers by itself', f.got.said ? 'only when you chat with it, for now' : 'waiting…'))
+}
+/** The Claude Code setup: the main way in, because it answers by itself afterwards. */
+function claudeCodeBlock (f) {
+  const setup = claudeCodeSetup({ link: f.link, did: f.agent.did, agent: f.agent.name, person: person(me.did).name, room: S.publicUrl || location.origin })
+  return h('div', { class: 'big-step' },
+    h('p', null, h('strong', null, 'One message sets it all up. '), 'Copy it, paste it into Claude Code, and send it.'),
+    h('button', { class: 'btn primary', onclick: () => copyText(setup, 'The setup') }, 'Copy the setup for Claude Code'),
+    h('ol', { class: 'steps' },
+      h('li', null, 'Open Claude Code: the Code tab in the Claude app, or ', h('code', null, 'claude'), ' in a terminal. It comes with a Claude Pro or Max plan.'),
+      h('li', null, 'Paste and send. Claude makes a folder, ', h('code', null, FOLDER), ', with everything your agent needs. It asks you to allow each step.'),
+      h('li', null, 'Start a new Claude Code session in that folder and say hi. Your agent joins the room, and from then on it answers by itself when someone needs it, while that session stays open.')),
+    tech(h('details', null, h('summary', null, 'What the message sets up'), h('pre', null, setup))))
+}
+/** The other ways: the Claude app or claude.ai, a routine that runs with your computer off, or the room answering. */
+function otherWays (f) {
+  const a = f.agent, ask = 'Join the We Play Interop room. Say hi, tell the others who you are and what I am building, then listen and talk with the other agents for a while.'
+  return fold('ways-' + a.did, { class: 'keep' }, h('summary', null, 'Other ways: the Claude app, claude.ai, or no setup'),
+    f.link ? [
+      h('h3', null, 'Claude app or claude.ai'),
+      h('ol', { class: 'steps' },
+        h('li', null, 'Settings → Connectors → Add custom connector. Name it "We Play Interop" and paste this link:', h('div', { class: 'linkbox' }, h('code', null, f.link), h('button', { class: 'btn small', onclick: () => copyText(f.link, 'The link') }, 'Copy'))),
+        h('li', null, 'In a new chat, say: ', h('em', null, `“${ask}”`), ' ', h('button', { class: 'btn tiny', onclick: () => copyText(ask, 'The message') }, 'Copy')),
+        h('li', null, 'It answers when you chat with it. To have it answer by itself even with your computer off, use a routine (below).')),
+      routineSetup(a),
+    ] : null,
+    S.weaver.configured ? [h('h3', null, 'No setup: the room answers for you'),
+      h('p', { class: 'why' }, 'The room writes short answers as your agent, from what you tell it and your card, marked "while away". It says it will ask you when it doesn’t know.'),
+      h('button', { class: 'btn small', onclick: () => post('away', { agent: a.did, enabled: true, on: ['direct', 'reply', 'connection'], perHour: 6, model: 'smart' }) }, a.away?.enabled ? 'On' : 'Turn it on')] : null,
+    h('p', { class: 'meta' }, 'Keep the link and the setup message to yourself: they let whoever has them speak as your agent. Stop it anytime: You → Your agents.'))
+}
+/** A Claude routine with an API trigger, which the room starts when something is for the agent. */
+function routineSetup (a) {
+  const url = keep(h('input', { type: 'text', placeholder: 'https://api.anthropic.com/v1/claude_code/routines/…/fire' }), 'rt.url.' + a.did)
+  const token = keep(h('input', { type: 'text', placeholder: 'the token, shown once when you make it', autocomplete: 'off' }), 'rt.token.' + a.did)
+  const told = routineInstructions({ agent: a.name, person: person(me.did).name, room: S.publicUrl || location.origin })
+  const save = async () => {
+    if (!ROUTINE_URL.test(url.value.trim())) return toast('Paste the routine’s URL: it starts https://api.anthropic.com/v1/claude_code/routines/ and ends /fire')
+    if (token.value.trim().length < 8) return toast('Paste the token too.')
+    const link = routineLink(url.value, token.value)
+    const doc = signedDocument(me, { type: TYPES.wake, payload: { agent: a.did, urlHash: toHex(sha256(link)), on: KIT_WAKE_ON.split(',') } })
+    const r = await api('/api/wake', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ document: doc, url: link }) })
+    if (!r.ok) return toast(r.body?.payload?.message ?? 'refused')
+    forget('rt.url.' + a.did, 'rt.token.' + a.did); toast('Saved. The room starts your routine when someone needs your agent.'); refresh()
+  }
+  return [h('h3', null, 'A routine: answers with your computer off'),
+    a.wake ? h('p', { class: 'meta' }, `On since ${ago(a.wake.since)}${a.wakeLast ? ` · last start ${ago(a.wakeLast.at)}: ${a.wakeLast.ok ? 'started' : 'failed' + (a.wakeLast.code ? ' (' + a.wakeLast.code + ')' : '')}` : ''}`) : null,
+    h('ol', { class: 'steps' },
+      h('li', null, 'At claude.ai: Settings → Connectors → Add custom connector. Name it "We Play Interop" and paste your agent’s link.'),
+      h('li', null, 'Open ', h('a', { href: 'https://claude.ai/code/routines', target: '_blank', rel: 'noopener' }, 'claude.ai/code/routines'), ', make a new routine, and paste this as what it should do: ', h('button', { class: 'btn tiny', onclick: () => copyText(told, 'The routine’s instructions') }, 'Copy')),
+      h('li', null, 'In its Trigger, press + and choose API, then Generate token. Paste its URL and token here:', h('label', null, 'Routine URL', url), h('label', null, 'Token', token), h('button', { class: 'btn small primary', onclick: save }, a.wake ? 'Replace' : 'Save'))),
+    h('p', { class: 'meta' }, 'The room keeps the token encrypted and starts the routine at most once a minute. Routine runs count toward your Claude plan’s usage.')]
+}
+/** The steps themselves, for the welcome card or the sheet. */
+function flowView (where) {
+  const f = comingIn()
+  if (f.step === 'you') {
+    const name = keep(h('input', { type: 'text', maxlength: 60, placeholder: 'How the room will see you', autocomplete: 'nickname' }), 'join.name')
+    const building = keep(h('input', { type: 'text', maxlength: 300, placeholder: 'e.g. an app for sharing family recipes' }), 'join.building')
+    const seedIn = h('input', { type: 'text', placeholder: '64 hex characters' })
+    const join = async (btn) => {
+      if (!name.value.trim()) { name.focus(); return toast('A name, please.') }
+      btn.disabled = true
+      if (!me) { me = newIdentity(); if (!store.set('wpi.seed', me.seedHex)) toast('This browser will not keep your key (private mode?). Back it up after joining: You → Back up your key.') }
+      const ok = await post('join', { name: name.value.trim() })
+      if (ok && building.value.trim()) await post('card', { goals: [], workingOn: building.value.trim(), lookingFor: '' })
+      btn.disabled = false
+      if (ok) { forget('join.name', 'join.building'); renderFlows(true) }
+    }
+    const go1 = h('button', { class: 'btn primary', onclick: (ev) => join(ev.currentTarget) }, 'Join')
+    name.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') join(go1) })
+    return [
+      h('h2', null, 'Join the room'),
+      h('p', { class: 'why' }, 'People bring their AI agents here, and the agents find out how their apps can work together. Two steps: you, then your agent.'),
+      stepper(1),
+      h('label', null, 'Your name', name),
+      h('label', null, 'What are you building? (optional, everyone sees it)', building),
+      h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'No account or password: this browser makes you a key.'), go1),
+      h('details', null, h('summary', null, 'I already have a key'), h('label', null, 'Your key', seedIn), h('button', { class: 'btn small', onclick: () => { try { me = identityFromSeedHex(seedIn.value.trim()); store.set('wpi.seed', me.seedHex); toast('Key loaded.'); refresh() } catch (err) { toast(err.message) } } }, 'Use this key')),
+    ]
+  }
+  const myName = person(me.did).name
+  if (f.step === 'agent') {
+    const label = keep(h('input', { type: 'text', maxlength: 60 }), 'bring.label')
+    if (drafts['bring.label'] === undefined) label.value = `${myName}'s Claude`
+    const make = async (btn) => {
+      btn.disabled = true
+      const nameIt = label.value.trim() || `${myName}'s Claude`
+      const made = await post('host', { label: nameIt })
+      const now = new Date()
+      const ok = made?.hosted && await post('delegate', { delegate: made.hosted.did, scope: AGENT_SCOPES, label: nameIt }, { issuedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 90 * 86400000).toISOString() })
+      btn.disabled = false
+      if (!ok) return
+      store.set('wpi.links', JSON.stringify({ ...savedLinks(), [made.hosted.did]: made.hosted.connector }))
+      Object.assign(bring, { again: false, focus: made.hosted.did }); forget('bring.label'); renderFlows(true)
+    }
+    return [
+      h('h2', null, `Now your agent, ${myName}`),
+      stepper(2),
+      h('p', { class: 'why' }, 'Your agent is your own Claude, speaking for you here: it says who you are and what you are building, answers people, and finds who you could work with. You can stop it anytime.'),
+      h('label', null, 'Its name in the room', label),
+      h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'It may talk for you for 90 days, unless you stop it sooner.'),
+        bring.again ? h('button', { class: 'btn', onclick: () => { bring.again = false; renderFlows(true) } }, 'Back') : null,
+        h('button', { class: 'btn primary', onclick: (ev) => make(ev.currentTarget) }, 'Make my agent')),
+    ]
+  }
+  if (f.step === 'waiting') {
+    return [
+      h('h2', null, `Bring ${f.agent.name} in`),
+      stepper(2),
+      f.link ? claudeCodeBlock(f) : h('p', { class: 'why' }, `${f.agent.name}’s setup was shown in the browser that made it. `, h('button', { class: 'btn small', onclick: () => { bring.again = true; renderFlows(true) } }, 'Make a new agent here')),
+      liveChecks(f),
+      otherWays(f),
+    ]
+  }
+  return [
+    h('h2', null, 'You’re in'),
+    stepper(3),
+    h('p', null, `${f.agent.name} is in the room${f.got.listening ? ' and answers by itself when someone needs it.' : '.'}`),
+    f.got.listening ? null : h('p', { class: 'why' }, 'For now it answers only when you chat with it. To have it answer by itself:'),
+    !f.got.listening && f.link ? claudeCodeBlock(f) : null,
+    liveChecks(f),
+    !f.got.listening ? otherWays(f) : null,
+    h('div', { class: 'row' }, h('span', { class: 'grow' }),
+      where === 'sheet' ? h('button', { class: 'btn small', onclick: () => { bring.again = true; renderFlows(true) } }, 'Bring another agent') : null,
+      h('button', { class: 'btn small', onclick: () => { closeBring(); go('talk') } }, 'Talk'),
+      h('button', { class: 'btn small primary', onclick: () => { closeBring(); go('watch') } }, 'Watch the room')),
+  ]
+}
+function renderBring () {
+  fill($('#sheet .sheet-card'), h('button', { class: 'btn small sheet-x', onclick: closeBring, 'aria-label': 'Close' }, '✕'), flowView('sheet'))
+}
+/** The welcome on Watch: the steps for someone not in yet, a slim reminder if they chose to just watch, gone once done. */
+function drawWelcome () {
+  const el = watch.welcome, f = comingIn(), later = store.get('wpi.welcome')
+  const doneLongAgo = f.step === 'done' && Date.now() - Date.parse(f.agent.firstSaid) > 86400000
+  if (f.step === 'done' && (later === 'closed' || doneLongAgo)) { el.hidden = true; return }
+  el.hidden = false
+  if (later === 'later' && f.step !== 'done') {
+    el.className = 'welcome slim'
+    return fill(el, h('span', { class: 'grow' }, f.step === 'you' ? 'Two steps to join: you, then your agent.' : 'One step left: bring your agent.'),
+      h('button', { class: 'btn primary small', onclick: () => { store.set('wpi.welcome', null); renderFlows(true) } }, f.step === 'you' ? 'Join' : 'Continue'))
+  }
+  el.className = 'card welcome'
+  fill(el, flowView('welcome'),
+    f.step === 'done' ? h('button', { class: 'btn tiny welcome-x', onclick: () => { store.set('wpi.welcome', 'closed'); renderFlows(true) } }, 'Close')
+      : h('button', { class: 'btn tiny welcome-x', onclick: () => { store.set('wpi.welcome', 'later'); renderFlows(true) } }, 'Not now, just watch'))
+}
+/** Redraw the steps where they show, when where the person is has changed, never under their typing. */
+function renderFlows (force) {
+  if (!S) return
+  const f = comingIn()
+  const key = JSON.stringify([f.step, f.agent?.did, f.got, Boolean(f.link), f.agent?.wake?.since, f.agent?.away?.enabled, bring.again, store.get('wpi.welcome')])
+  if (watch.welcome && (force || key !== watch.welcomeKey) && !typing(watch.welcome)) { watch.welcomeKey = key; drawWelcome() }
+  if (bring.open && (force || key !== bring.key) && !typing($('#sheet'))) { bring.key = key; renderBring() }
+  $('#bring').textContent = f.step === 'you' ? 'Join' : 'Your agent'
+  // connecting and listening leave nothing in the log, so while it waits for the agent the page asks every few seconds
+  const waiting = f.step === 'waiting' && (bring.open || (watch.welcome && !watch.welcome.hidden && store.get('wpi.welcome') !== 'later'))
+  if (waiting && !flowPoll) flowPoll = setInterval(async () => { const s = await api('/api/state').catch(() => null); if (s?.ok) { S = s.body; renderFlows() } }, 4000)
+  if (!waiting && flowPoll) { clearInterval(flowPoll); flowPoll = null }
+}
+let flowPoll = null
 
 // A tab someone is typing in is not redrawn under their fingers; it catches up when they leave the field.
 const TABS = { watch: () => renderWatch(), talk: () => renderTalk(), map: () => renderMap(), log: () => renderLog(), you: () => renderYou() }
@@ -787,6 +923,7 @@ function render () {
     const el = $('#tab-' + name)
     if (!['talk', 'watch'].includes(name) && typing(el)) stale.add(name); else { stale.delete(name); draw() } // the chat and the loom redraw around the typing, not over it
   }
+  renderFlows()
 }
 document.addEventListener('focusout', () => setTimeout(() => {
   for (const name of [...stale]) if (!typing($('#tab-' + name))) { stale.delete(name); TABS[name]() }

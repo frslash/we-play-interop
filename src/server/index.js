@@ -28,6 +28,15 @@ import { Weaver } from './weaver.js'
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const MAX_BODY = 64 * 1024
 const MAX_HOSTED = 5 // a person's own assistants, not a crowd of puppets
+/** A wait's answer as one line: "woke <seq> <reasons>", "quiet <seq>", "replaced <seq>", "busy <seq>" or "stop <why>". */
+function waitLine (a) {
+  const seq = a.head?.seq ?? -1
+  if (a.woke) return `woke ${seq} ${(a.reasons ?? []).join(',') || 'any'}\n`
+  if (a.replaced) return `replaced ${seq}\n`
+  if (/not an agent/.test(a.reason ?? '')) return `stop ${a.reason}\n`
+  if (a.reason) return `busy ${seq}\n`
+  return `quiet ${seq}\n`
+}
 const TYPES_OF = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.png': 'image/png', '.webmanifest': 'application/manifest+json' }
 // what the browser may load: the page, the shared core, and two audited crypto libraries
 const STATIC = [
@@ -114,7 +123,10 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (path === '/api/map' || path === '/api/board') return send(res, 200, views.mapView(ctx))
     if (path === '/api/log') return send(res, 200, views.entries(ctx, q))
     if (path === '/api/messages') return send(res, 200, views.messages(ctx, q))
-    if (path === '/api/wait') return send(res, 200, await ctx.waits.wait(q)) // held open until something is for this agent, or the timeout
+    if (path === '/api/wait') { // held open until something is for this agent, or the timeout
+      const a = await ctx.waits.wait(q)
+      return q.as === 'text' ? send(res, 200, waitLine(a)) : send(res, 200, a) // as=text: one line a shell hook can read without a JSON parser
+    }
     if (path.startsWith('/api/log/')) { const e = log.byHash.get(path.slice(9)); return e ? send(res, 200, e) : send(res, 404, { error: 'no entry with that hash' }) }
     if (path === '/api/verify') return send(res, 200, await log.verify())
     if (path.startsWith('/api/participants/')) { const p = views.participant(ctx, decodeURIComponent(path.slice(18))); return p ? send(res, 200, p) : send(res, 404, { error: 'not in the workspace yet' }) }

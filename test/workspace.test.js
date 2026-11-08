@@ -514,6 +514,15 @@ describe('the workspace, end to end', () => {
     await send(other, 'note', { text: 'Still there?', kind: 'message' }, { recipient: agent })
     const now = await (await fetch(`${base}/api/wait?me=${encodeURIComponent(agent)}&after=${before}&timeout=5`)).json()
     assert.equal(now.woke, true)
+    // as=text: the same answer as one line, for the Claude Code hook (no JSON parser needed)
+    assert.match(await (await fetch(`${base}/api/wait?as=text&me=${encodeURIComponent(agent)}&after=${before}&timeout=5`)).text(), /^woke \d+ direct\n$/)
+    assert.match(await (await fetch(`${base}/api/wait?as=text&me=${encodeURIComponent(agent)}&timeout=1`)).text(), /^quiet \d+\n$/)
+    assert.match(await (await fetch(`${base}/api/wait?as=text&me=did:key:z6Mknobody&timeout=1`)).text(), /^stop not an agent/)
+    // the person's page sees the agent arrive: its connector was used, and it has said something
+    assert.ok((await get('/api/state')).people.find((p) => p.did === agent).connected)
+    await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'say', arguments: { text: 'Here.' } } }) }).then((r) => r.json())
+    const seen = (await get('/api/state')).people.find((p) => p.did === agent)
+    assert.ok(seen.firstSaid && seen.lastSaid >= seen.firstSaid)
     // one waiter per agent: a new wait ends the old one empty
     const first = ctx.waits.wait({ me: agent, timeout: 5 }), second = ctx.waits.wait({ me: agent, timeout: 1 })
     assert.equal((await first).replaced, true); await second
@@ -582,5 +591,25 @@ describe('the workspace, end to end', () => {
     base = `http://localhost:${ctx.server.address().port}`
     assert.deepEqual(ctx.log.entries.map((e) => e.hash), before)
     assert.equal((await ctx.log.verify()).ok, true)
+  })
+})
+
+describe('bringing an agent in with Claude Code', () => {
+  test('the setup message carries the files, and a routine wake sends its token as a header', async () => {
+    const { claudeCodeSetup, routineLink, ROUTINE_URL, HOOK } = await import('../public/setup.js')
+    const { request } = await import('../src/server/wake.js')
+    const msg = claudeCodeSetup({ link: 'https://room.example/mcp/a/secret', did: 'did:key:z6Mkx', agent: "P's Claude", person: 'P', room: 'https://room.example' })
+    const files = Object.fromEntries([...msg.matchAll(/^=== (.+?) ===\n([\s\S]*?)\n=== end of \1 ===$/gm)].map(([, n, b]) => [n, b]))
+    assert.deepEqual(Object.keys(files).sort(), ['.claude/hooks/wait-for-room.sh', '.claude/settings.json', '.mcp.json', 'CLAUDE.md', 'room.env'])
+    assert.equal(JSON.parse(files['.mcp.json']).mcpServers['we-play-interop'].url, 'https://room.example/mcp/a/secret')
+    assert.equal(JSON.parse(files['.claude/settings.json']).hooks.Stop[0].hooks[0].asyncRewake, true)
+    assert.equal(files['.claude/hooks/wait-for-room.sh'] + '\n', HOOK)
+    const fire = 'https://api.anthropic.com/v1/claude_code/routines/trig_01/fire'
+    assert.ok(ROUTINE_URL.test(fire))
+    const [url, init] = request(routineLink(fire, 'tok en'), { reasons: ['direct'], latest: { from: 'S', text: 'Hi' }, hint: 'Open the room.' })
+    assert.equal(url, fire); assert.equal(init.headers.authorization, 'Bearer tok en'); assert.ok(init.headers['anthropic-beta'])
+    assert.match(JSON.parse(init.body).text, /needs you \(direct\).*S: "Hi"/)
+    const [url2, init2] = request('https://hooks.example/start', { reasons: ['reply'], latest: { from: 'S', text: 'Hi' }, hint: 'h' })
+    assert.equal(url2, 'https://hooks.example/start'); assert.equal(init2.headers.authorization, undefined); assert.deepEqual(JSON.parse(init2.body).reasons, ['reply'])
   })
 })

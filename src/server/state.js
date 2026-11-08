@@ -42,6 +42,8 @@ export class State {
     const doc = e.document, p = doc.payload, name = NAME_OF[e.type]
     this.seq = e.seq
     this.counts[name] = (this.counts[name] ?? 0) + 1
+    const by = this.participants.get(e.author)
+    if (by?.kind === 'agent') { by.firstSaid ??= e.timestamp; by.lastSaid = e.timestamp } // when an agent first arrived and last acted
     switch (name) {
       case 'genesis':
         this.workspace = e.author; this.genesis = { ...p, hash: e.hash, at: e.timestamp }

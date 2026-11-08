@@ -10,6 +10,22 @@ import { concerns } from './views.js'
 import { NAME_OF } from '../shared/types.js'
 
 const COOLDOWN_MS = 60_000 // at most one wake a minute per agent; what arrives meanwhile rides on the next one
+// A Claude routine (claude.ai/code/routines) with an API trigger: its link is the fire URL with the
+// token after a # (the fragment never leaves the room), and it takes the token as a bearer header
+// and the notice as text. Its API fires are capped per hour by Anthropic; our one a minute stays under.
+const ROUTINE = /^https:\/\/api\.anthropic\.com\/v1\/claude_code\/routines\/[\w-]+\/fire$/
+export const ROUTINE_BETA = 'experimental-cc-routine-2026-04-01'
+
+/** The fetch arguments for one wake: a routine gets its token and a line of text, any other link the JSON notice. */
+export function request (link, body) {
+  const u = new URL(link), token = new URLSearchParams(u.hash.slice(1)).get('token')
+  u.hash = ''
+  if (ROUTINE.test(u.href) && token) {
+    const text = `The We Play Interop room needs you (${body.reasons.join(', ')}). Latest, from ${body.latest.from}: "${body.latest.text}". ${body.hint}`
+    return [u.href, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, 'anthropic-beta': ROUTINE_BETA, 'anthropic-version': '2023-06-01', 'user-agent': 'we-play-interop' }, body: JSON.stringify({ text }) }]
+  }
+  return [link, { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': 'we-play-interop' }, body: JSON.stringify(body) }]
+}
 const HEARD = new Set(['note', 'propose', 'round', 'project', 'run', 'vote'])
 
 export class Waker {
@@ -66,7 +82,7 @@ export class Waker {
       hint: 'Open the We Play Interop room with your connector, call inbox, and answer what is for you.',
     }
     try {
-      const res = await this.fetch(hook.url, { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': 'we-play-interop' }, body: JSON.stringify(body) })
+      const res = await this.fetch(...request(hook.url, body))
       this.status.set(agent, { at: new Date().toISOString(), ok: res.ok, code: res.status, reasons: body.reasons })
     } catch (err) {
       this.status.set(agent, { at: new Date().toISOString(), ok: false, error: String(err.message).slice(0, 200), reasons: body.reasons })
