@@ -4,6 +4,7 @@ import { Executor } from '../src/server/actions.js'
 import { checkPayload, MAX_REPLACES } from '../src/shared/types.js'
 import { willClose } from '../src/shared/replaces.js'
 import { readFileSync } from 'node:fs'
+import { laneOf } from '../src/shared/rules.js'
 
 const SHA = 'a'.repeat(40)
 const config = { workspaceRepo: 'x/y', githubToken: 't' }
@@ -107,6 +108,20 @@ describe('a change merged without votes closes only pull requests proposed for t
     assert.match(result.replaced.skipped[0].why, /without votes.*someone else.*votes on/)
     assert.ok(!calls.some((c) => c.method === 'PATCH' || /comments$/.test(c.path)), 'no comment and no close on another person’s pull request')
     assert.match(result.detail, /left #77 open/)
+  })
+
+  test('a page-only change with no votes may not close another person’s open pull request it names', async () => {
+    const rules = JSON.parse(readFileSync(new URL('../rules.json', import.meta.url), 'utf8'))
+    assert.equal(laneOf(rules, ['public/index.html']), 'small', 'the change touches the page only')
+    const pulls = { 91: open(91, 'person-a'), 55: open(55, 'person-b') }
+    const { gh, calls } = fakeGitHub(pulls)
+    const me = change('m', 91, 'did:key:ann', { lane: 'small', change: { pr: 91, sha, replaces: [55] } })
+    const result = await room(gh, [me, change('p55', 55, 'did:key:bo')]).mergeChange(me)
+    assert.equal(result.status, 'merged')
+    assert.deepEqual(result.replaced.closed, [], 'another person’s pull request is not closed')
+    assert.equal(pulls[55].state, 'open', 'it stays open')
+    assert.deepEqual(result.replaced.skipped.map((s) => s.pr), [55])
+    assert.ok(!calls.some((c) => c.method === 'PATCH' || /comments$/.test(c.path)), 'no close and no "Replaced by" comment')
   })
 
   test('the same person’s pull request closes, even when proposed through their agent', async () => {
