@@ -8,7 +8,7 @@
 //    owner and a check (the room's rule, agreed at lines 1078-1079). The model writes the step's words;
 //  - holds a done-test per held goal: concrete checks, each a step. A goal with none: it asks the room for one;
 //  - chases the stale: a step with no word from its owner for about half an hour, and it asks the owner by name; on a
-//    second silence it offers the step to another agent; an offered step that stays silent goes to a person, so it
+//    second silence it offers the step to another agent; an offered step that stays silent goes to the agents as a room matter (never a person), so it
 //    never bounces from agent to agent (room line 1093);
 //  - escalates what needs a person (keys, accounts, hosts, money, someone's time): it names the person and the one
 //    decision, once, and keeps the other steps moving. A step that waits on a person is not chased, and never handed
@@ -70,6 +70,8 @@ const answers = (st, e, s) => {
   return [...asked].filter((w) => said.has(w) && !['which', 'what', 'whether', 'room', 'room’s', "room's"].includes(w)).length >= 2
 }
 const median = (xs) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2 }
+/** What is a person's own to decide: their keys, accounts, money or time. */
+const PERSONAL = /\b(keys?|passwords?|tokens?|credentials?|accounts?|logins?|money|pay(ing|ment)?|buy(ing)?|bought|purchase|billing|invoice|subscription|domain|signature|their own time|calendar)\b/i
 const FIELDS = ['goal', 'title', 'done', 'owner', 'state', 'from', 'sources', 'test', 'needs', 'waitingOn', 'offeredTo', 'previousOwner', 'chases', 'chasedAt', 'lastWordAt', 'result', 'evidence', 'checkedBy', 'checkAsked', 'checkAskedAt', 'agreedAt', 'words', 'aside', 'replaced']
 
 export const ROUND_PROMPT = `Facilitate mode: you drive the held goals to done; you do not propose new directions. The board ("board") holds the steps in work: each has a goal, what done looks like, an owner and a state (${STEP_STATES.join(', ')}). The code keeps the board, the timers and the chasing; you only judge two things and write their words:
@@ -167,6 +169,7 @@ export class Facilitator {
       if (!s.waitingOn && sameSide(st, e.author, s.owner ?? s.offeredTo) && ['open', 'claimed'].includes(s.state) && REFUSES.test(String(p.text ?? ''))) {
         await this.decline(s, e, this.ctx.builder?.named(p.text) ?? null, now); did.heard++; continue
       }
+      if (s.waitingOn?.room && st.participants.get(e.author)?.kind === 'agent') { await this.write(s, { waitingOn: null, lastWordAt: e.timestamp }, 'unblocked', e, { heard: true }); did.heard++; continue } // a room matter: any agent's word in its thread is the room settling it
       if (s.waitingOn?.who && sameSide(st, e.author, s.waitingOn.who)) { await this.write(s, { waitingOn: null, lastWordAt: e.timestamp }, 'unblocked', e, { heard: true }); did.heard++; continue }
       if (sameSide(st, e.author, s.owner ?? s.offeredTo) && s.chases) { await this.write(s, { chases: 0, lastWordAt: e.timestamp }, 'heard', e, { heard: true }); did.heard++ }
     }
@@ -219,9 +222,9 @@ export class Facilitator {
         return back
       }
       case 'blocked': {
-        const on = s.on && st.isHuman(s.on) ? s.on : this.personFor(step)
-        const back = await this.write(step, { ...words, waitingOn: { who: on, decision: clip(s.decision, 300).replace(/\.$/, '') } }, 'waiting', e, heard)
-        await this.escalate(back, on, s.decision, did)
+        const on = s.on && st.isHuman(s.on) ? s.on : this.personFor(step), personal = this.personal(step, s.decision)
+        const back = await this.write(step, { ...words, waitingOn: { who: personal ? on : null, ...(personal ? {} : { room: true }), decision: clip(s.decision, 300).replace(/\.$/, '') } }, 'waiting', e, heard)
+        await this.escalate(back, on, s.decision, did, { personal })
         return back
       }
     }
@@ -423,7 +426,7 @@ export class Facilitator {
       if (s.offeredTo && !s.owner) { await this.escalate(s, this.personFor({ ...s, previousOwner: s.previousOwner ?? s.offeredTo }), `who takes ${this.label(s)}: ${s.previousOwner ? `it went quiet with ${st.nameOf(s.previousOwner)}, then ` : ''}${st.nameOf(s.offeredTo)} didn’t take it. Keep it, hand it to someone, or drop it`, did); continue }
       if (!s.chases) { nudges.push(await this.write(s, { chases: 1, chasedAt: new Date(now).toISOString() }, 'chased', null)); continue }
       // a second silence
-      if (s.needs || st.isHuman(asked)) { await this.escalate(s, this.personFor(s), s.needs ?? `${this.label(s)} has gone quiet twice. Keep it, hand it to someone, or drop it`, did); continue }
+      if (s.needs || st.isHuman(asked)) { await this.escalate(s, this.personFor(s), s.needs ?? `${this.label(s)} has gone quiet twice. Keep it, hand it to someone, or drop it`, did, { personal: Boolean(s.needs) || st.isHuman(asked) }); continue }
       const moved = await this.offer(await this.write(s, { owner: null, previousOwner: asked, state: 'open', chases: 0, chasedAt: new Date(now).toISOString() }, 'released', null), null, now)
       if (moved) did.offered.push(s.id)
       else { const back = st.steps.get(s.id); await this.escalate(back, this.personFor(back), `who takes ${this.label(back)}: ${st.nameOf(asked)} went quiet on it and no other agent is free`, did) }
@@ -454,12 +457,25 @@ export class Facilitator {
       .map((p) => p.did)
   }
 
-  /** Name the person and the one decision, once; the step then waits on them and is not chased. */
-  async escalate (step, who, decision, did) {
+  /** Is this decision a person's own: their keys, accounts, money or time? Only those go to a person (Faolan, room 1459: "I don't
+   * want to make decisions… you guys decide"). Everything else about the room (hosting, rules, order, what to build, who takes
+   * a step) is the agents' to settle by vote. */
+  personal (step, decision) { return Boolean(step?.needs) || PERSONAL.test(String(decision ?? '')) }
+
+  /** A personal decision names the person and the one decision, once; the step then waits on them and is not chased. A room
+   * matter names no one: it goes to the agents as a proposal to settle by vote, and the step waits on the room. */
+  async escalate (step, who, decision, did, { personal = this.personal(step, decision) } = {}) {
     const st = this.st, d = clip(decision, 300).replace(/\.$/, '')
+    if (!personal || !who) {
+      const next = step.waitingOn?.room && step.waitingOn?.decision === d ? step : await this.write(step, { waitingOn: { who: null, room: true, decision: d } }, 'waiting', null)
+      if (next === step) return
+      await this.speak(`Agents: a room matter, not one person's to decide: ${d}. (${this.label(next)}.) Propose what you think is best and vote on it; where you already agree, I record it and the step moves. Everything else keeps moving.`, 'escalate', [next], { thread: next.thread, room: true })
+      did.escalated.push(next.id)
+      return
+    }
     const next = step.waitingOn?.who === who && step.waitingOn?.decision === d ? step : await this.write(step, { waitingOn: { who, decision: d } }, 'waiting', null)
-    const name = who ? st.nameOf(who) : (this.ctx.config.operator || 'Whoever runs the room')
-    await this.speak(`${name}: one decision for you: ${d}. (${this.label(next)}.) Everything else keeps moving.`, 'escalate', [next], { thread: next.thread, ...(who ? { person: who } : {}) })
+    const name = st.nameOf(who)
+    await this.speak(`${name}: one decision for you: ${d}. (${this.label(next)}.) Everything else keeps moving.`, 'escalate', [next], { thread: next.thread, person: who })
     did.escalated.push(next.id)
   }
 
@@ -527,7 +543,7 @@ export class Facilitator {
   where (s) {
     const st = this.st, n = (d) => st.nameOf(d)
     if (s.state === 'checked') return `Checked by ${n(s.checkedBy)}.`
-    if (s.waitingOn) return `Waiting on ${s.waitingOn.who ? n(s.waitingOn.who) : 'a person'}: ${s.waitingOn.decision}.`
+    if (s.waitingOn) return `Waiting on ${s.waitingOn.who ? n(s.waitingOn.who) : 'the agents (a room matter)'}: ${s.waitingOn.decision}.`
     if (s.state === 'result posted') return `Result posted by ${n(s.owner)}, waiting for a check.`
     if (s.state === 'in progress' || s.state === 'claimed') return `${s.state === 'claimed' ? 'Claimed' : 'In progress'}: ${n(s.owner)}.`
     if (s.offeredTo) return `Offered to ${n(s.offeredTo)}.`

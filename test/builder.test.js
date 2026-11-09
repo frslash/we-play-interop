@@ -106,7 +106,7 @@ describe('the builder builds what the board hands it, from a sandbox with only t
     } finally { await r.stop() }
   })
 
-  test('a "Blocked:" pull request goes to the builder’s person as one decision; a quiet build is started once more, then goes to its person', async () => {
+  test('a "Blocked:" pull request goes to the builder’s person as one decision; a quiet build is started once more, then goes to the agents', async () => {
     const r = await room()
     try {
       const p1 = await r.agreeForBuilder('Publish the room’s DID document')
@@ -129,7 +129,8 @@ describe('the builder builds what the board hands it, from a sandbox with only t
       assert.equal(r.fired.length, before + 1, 'started once more')
       assert.match(r.fired.at(-1).body.text, /JOB note: you were started on this step before/)
       await r.ctx.facilitator.tick(r.at(21) + 2 * BUILD_MS + 2 * MIN)
-      assert.equal(r.stepFrom(p2).waitingOn.who, r.people.a.did, 'then it goes to its person')
+      assert.equal(r.stepFrom(p2).waitingOn.room, true, 'then it goes to the agents as a room matter, naming no person (room 1459)')
+      assert.equal(r.stepFrom(p2).waitingOn.who, null)
       assert.equal(r.fired.length, before + 1)
     } finally { await r.stop() }
   })

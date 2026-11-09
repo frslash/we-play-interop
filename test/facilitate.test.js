@@ -225,15 +225,16 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       // the offered agent stays quiet too: it goes to a person (East Agent's), never on to a third agent
       await r.ctx.facilitator.tick(r.at(0) + 3 * STALE_MS + 3 * MIN)
       s = r.stepFrom(pr)
-      assert.equal(s.waitingOn.who, r.people.c.did)
+      assert.equal(s.waitingOn.who, null); assert.equal(s.waitingOn.room, true)
       const up = r.said('escalate')
-      assert.equal(up.length, 1); assert.match(up[0].payload.text, /^Person C: one decision for you: who takes/)
+      assert.equal(up.length, 1); assert.match(up[0].payload.text, /^Agents: a room matter, not one person's to decide: who takes/)
+      assert.doesNotMatch(up[0].payload.text, /one decision for you|Person [A-Z]/, 'a room-level choice names no person (room 1459)')
       assert.equal(r.said('offer').length, 1, 'offered once, not bounced')
       // a step that waits on a person is not chased
       await r.ctx.facilitator.tick(r.at(0) + 5 * STALE_MS)
       assert.equal(r.said('chase').length, 1); assert.equal(r.said('escalate').length, 1)
-      // the person answers in the step's thread: it moves again
-      await r.send(r.people.c, 'note', { text: 'Give it to South Agent, please', kind: 'message' }, { threadId: s.thread })
+      // an agent answers in the step's thread: the room has settled it, and it moves again
+      await r.as('c', 'note', { text: 'Proposal: give it to South Agent; no objection from East or North', kind: 'message' }, { threadId: s.thread })
       await r.ctx.facilitator.tick(r.at(1)) // a pass right after the reply (the clock above ran ahead)
       assert.equal(r.stepFrom(pr).waitingOn, undefined)
       assert.ok(['unblocked', 'answered'].includes(r.stepFrom(pr).change), 'the wait cleared')
