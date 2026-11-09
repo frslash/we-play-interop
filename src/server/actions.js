@@ -62,7 +62,7 @@ export class Executor {
     this.busy = true
     try {
       for (const pr of [...this.log.state.proposals.values()]) {
-        if (pr.kind === 'workspace-change' && this.config.githubToken && ['open', 'approved'].includes(this.log.state.statusOf(pr))) { const why = await this.changeReady(pr).catch((e) => `could not check it: ${e.message}`); pr.notYet = why; if (why && !/^failed:/.test(why)) continue; if (why) { await this.log.appendAsWorkspace('result', { proposal: pr.hash, kind: pr.kind, status: 'failed', detail: why.slice(8, 500) }, { threadId: this.log.byHash.get(pr.hash).document.id }); continue } }
+        if (pr.kind === 'workspace-change' && this.config.githubToken && ['open', 'approved'].includes(this.log.state.statusOf(pr))) { const why = await this.changeReady(pr).catch((e) => `could not check it: ${e.message}`); pr.notYet = why; if (why && !/^(failed|merged):/.test(why)) continue; if (/^merged:/.test(why)) { await this.log.appendAsWorkspace('result', { proposal: pr.hash, kind: pr.kind, status: 'merged', detail: why.slice(8, 500) }, { threadId: this.log.byHash.get(pr.hash).document.id }); continue } if (why) { await this.log.appendAsWorkspace('result', { proposal: pr.hash, kind: pr.kind, status: 'failed', detail: why.slice(8, 500) }, { threadId: this.log.byHash.get(pr.hash).document.id }); continue } }
         if (this.waitingFor(pr)) continue
         let result
         try { result = await this.act(pr) } catch (err) { result = { status: 'failed', detail: err.message.slice(0, 500) } }
@@ -153,6 +153,7 @@ export class Executor {
   async changeReady (pr) {
     const repo = this.config.workspaceRepo, { pr: number } = pr.change, st = this.log.state
     const pull = await this.gh('GET', `/repos/${repo}/pulls/${number}`)
+    if (pull.merged_at || pull.merged) return `merged: pull request #${number} was already merged (${pull.merge_commit_sha ? `as ${pull.merge_commit_sha}` : 'outside this loop'})` // a merged pull request is GitHub-state "closed": that is done, never a failure
     if (pull.state !== 'open') return `failed: pull request #${number} is ${pull.state}`
     st.setHead(pr, pull.head.sha)
     const sha = pr.head

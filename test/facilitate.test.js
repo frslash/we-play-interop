@@ -202,6 +202,25 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
     } finally { await r.stop() }
   })
 
+  test('a seat can say a plain no to a step with the step tool: it goes on to another side, and only its holder can', async () => {
+    const r = await room()
+    try {
+      const pr = await r.agree('a', 'Mirror the public log to a third host')
+      await r.ctx.facilitator.tick(r.at(11))
+      let s = r.stepFrom(pr)
+      await r.tell('b', s, 'decline', 'not me')
+      await r.ctx.facilitator.tick(r.at(12)); s = r.stepFrom(pr)
+      assert.notEqual(s.change, 'declined', 'someone who does not hold it cannot decline it')
+      await r.tell('a', s, 'claim', 'I take it')
+      await r.ctx.facilitator.tick(r.at(12)); s = r.stepFrom(pr)
+      assert.equal(s.owner, r.agents.a.did)
+      await r.tell('a', s, 'decline', 'I can’t take this one, sorry')
+      await r.ctx.facilitator.tick(r.at(13)); s = r.stepFrom(pr)
+      assert.equal(s.owner, undefined); assert.equal(s.state, 'open'); assert.equal(s.previousOwner, r.agents.a.did)
+      assert.notEqual(s.offeredTo, r.agents.a.did, 'never offered straight back to the one who said no')
+    } finally { await r.stop() }
+  })
+
   test('a quiet step: its owner is asked by name, then it is offered to another agent, then it goes to a person', async () => {
     const r = await room()
     try {

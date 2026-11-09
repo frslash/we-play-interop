@@ -388,6 +388,7 @@ export class Facilitator {
         if (await this.offer(back, null, Date.parse(e.timestamp))) did.offered.push(back.id)
         return back
       }
+      case 'decline': return this.decline(step, e, null, Date.parse(e.timestamp)) // the plain no: it goes on to someone else, never back to this seat
       case 'blocked': {
         const ask = clip(s.decision, 300).replace(/\.$/, ''), stuck = s.sig ? { stuck: { sig: clip(s.sig, 64), at: e.timestamp, stateKey: stateKey(step) } } : {}
         // already decided for this state of the step (or parked): the same question is not asked again
