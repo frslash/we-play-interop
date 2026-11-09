@@ -47,8 +47,15 @@ export class ClaudeLlm {
   /** One call. opts: { model, effort, why } from route(). Returns { content, model, usage, finishReason, latencyMs, jsonMode, picked }. */
   async chat (messages, opts = {}) {
     const model = opts.model || this.model
-    const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
-    const turns = messages.filter((m) => m.role !== 'system')
+    const text = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
+    // opts.cache '1h': a request that repeats itself every few minutes (the weaver's round) caches its unchanging start
+    // for an hour: the system prompt, and the user message up to its cacheSplit. Written at 2x, read at a twentieth of
+    // the price on Opus 5.5, so every round after the first pays full price only for what is new
+    const mark = opts.cache === '1h' ? { type: 'ephemeral', ttl: '1h' } : null
+    const system = mark ? [{ type: 'text', text, cache_control: mark }] : text
+    const turns = messages.filter((m) => m.role !== 'system').map((m) => (mark && m.cacheSplit > 0 && m.cacheSplit < m.content.length
+      ? { role: m.role, content: [{ type: 'text', text: m.content.slice(0, m.cacheSplit), cache_control: mark }, { type: 'text', text: m.content.slice(m.cacheSplit) }] }
+      : { role: m.role, content: m.content }))
     const started = Date.now()
     let response
     try {

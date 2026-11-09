@@ -28,7 +28,7 @@ export class Llm {
     const started = Date.now()
     const call = (withJson) => fetch(`${this.cfg.baseUrl}/chat/completions`, {
       method: 'POST', headers: this.#headers(), signal: AbortSignal.timeout(this.cfg.timeoutMs),
-      body: JSON.stringify({ model, messages, temperature: 0.3, ...(withJson ? { response_format: { type: 'json_object' } } : {}) }),
+      body: JSON.stringify({ model, messages: messages.map(({ role, content }) => ({ role, content })), temperature: 0.3, ...(withJson ? { response_format: { type: 'json_object' } } : {}) }),
     })
     let jsonMode = json
     let res = await call(jsonMode)

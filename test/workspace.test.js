@@ -915,3 +915,42 @@ describe('bringing an agent in with Claude Code', () => {
     assert.equal(url2, 'https://hooks.example/start'); assert.equal(init2.headers.authorization, undefined); assert.deepEqual(JSON.parse(init2.body).reasons, ['reply'])
   })
 })
+
+describe('the weaver caches what its rounds repeat', () => {
+  const answer = { content: [{ type: 'text', text: '{}' }], model: 'claude-opus-5-5', stop_reason: 'end_turn', usage: { input_tokens: 900, output_tokens: 50, cache_read_input_tokens: 20000, cache_creation_input_tokens: 0 } }
+  test('with cache 1h: the system prompt and the user message up to its split carry a one-hour cache mark; the rest is sent as is', async () => {
+    const sent = []
+    const client = { beta: { messages: { create: async (p) => { sent.push(p); return answer } } } }
+    const llm = new ClaudeLlm({ anthropicKey: '', effort: 'medium', timeoutMs: 1000 }, { client })
+    const content = '{"mode":"facilitate","map":{"projects":[]},"newInputs":[]}', split = content.indexOf('"newInputs"')
+    await llm.chat([{ role: 'system', content: 'You are the weaver.' }, { role: 'user', content, cacheSplit: split }], { cache: '1h' })
+    const p = sent[0]
+    assert.deepEqual(p.system, [{ type: 'text', text: 'You are the weaver.', cache_control: { type: 'ephemeral', ttl: '1h' } }])
+    assert.deepEqual(p.messages[0].content, [{ type: 'text', text: content.slice(0, split), cache_control: { type: 'ephemeral', ttl: '1h' } }, { type: 'text', text: content.slice(split) }])
+    assert.equal(p.messages[0].content.map((b) => b.text).join(''), content, 'the model reads exactly the same text')
+    assert.ok(!('cacheSplit' in p.messages[0]), 'nothing but what the API takes')
+  })
+  test('without it (an agent’s one-off reply): no cache mark, the request as before', async () => {
+    const sent = []
+    const client = { beta: { messages: { create: async (p) => { sent.push(p); return answer } } } }
+    const llm = new ClaudeLlm({ anthropicKey: '', effort: 'medium', timeoutMs: 1000 }, { client })
+    await llm.chat([{ role: 'system', content: 'Answer for your person.' }, { role: 'user', content: 'hi', cacheSplit: 1 }], {})
+    assert.equal(sent[0].system, 'Answer for your person.')
+    assert.deepEqual(sent[0].messages, [{ role: 'user', content: 'hi' }])
+  })
+  test('the round puts the slow-changing context first, and the split falls exactly where what is new begins', async () => {
+    const { SLOW_KEYS } = await import('../src/server/weaver.js')
+    const dir = mkdtempSync(join(tmpdir(), 'wpi-cache-'))
+    const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }, { hostWelcomeMs: null })
+    try {
+      await ctx.board.refresh()
+      const [, user] = ctx.weaver.prompt(ctx.weaver.context([]))
+      const parsed = JSON.parse(user.content)
+      const keys = Object.keys(parsed)
+      assert.deepEqual(keys.slice(0, SLOW_KEYS.filter((k) => k in parsed).length), SLOW_KEYS.filter((k) => k in parsed), 'slow keys first')
+      assert.ok(user.cacheSplit > 0)
+      assert.match(user.content.slice(user.cacheSplit), /^"alreadySaid"|^"newInputs"|^"openProposals"/, 'what is new begins right after the split')
+      assert.ok(!user.content.slice(0, user.cacheSplit).includes('"newInputs"'))
+    } finally { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) }
+  })
+})
