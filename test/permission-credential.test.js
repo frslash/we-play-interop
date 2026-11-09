@@ -9,6 +9,7 @@ import { canonicalize, ed25519, fromMultibase, sha256, toHex } from '../src/shar
 import { didKeyOnly } from '../src/shared/chain.js'
 import { credentialRefuses, grantMismatch, PERMISSION_TYPE, permissionCredential, signPermissionCredential, VC_V2, verifyPermissionCredential } from '../src/shared/credential.js'
 import { newIdentity } from '../src/shared/did.js'
+import { DTG_CONTEXT } from '../src/shared/dtg-context.js'
 import { sign, verifySignature } from '../src/shared/proof.js'
 import { TYPES, signedDocument } from '../src/shared/types.js'
 import { config as baseConfig } from '../src/server/config.js'
@@ -43,7 +44,7 @@ describe('the permission as a credential', () => {
     const person = newIdentity(), agent = newIdentity()
     const from = new Date().toISOString(), until = new Date(Date.now() + 86400000).toISOString()
     const c = signPermissionCredential(person, { agent: agent.did, room: ROOM, scope: ['note', 'vote'], ask: ['vote'], validFrom: from, validUntil: until })
-    assert.deepEqual(c['@context'], [VC_V2]); assert.deepEqual(c.type, ['VerifiableCredential', PERMISSION_TYPE])
+    assert.deepEqual(c['@context'], [VC_V2, DTG_CONTEXT]); assert.deepEqual(c.type, ['VerifiableCredential', PERMISSION_TYPE])
     assert.equal(c.issuer, person.did); assert.equal(c.validFrom, from); assert.equal(c.validUntil, until)
     assert.deepEqual(c.credentialSubject, { id: agent.did, room: ROOM, scope: ['note', 'vote'], askFirst: ['vote'] })
     assert.equal(c.proof.cryptosuite, 'eddsa-jcs-2022'); assert.equal(c.proof.proofPurpose, 'assertionMethod'); assert.match(c.proof.proofValue, /^z[1-9A-HJ-NP-Za-km-z]+$/)

@@ -2,6 +2,7 @@
 // Every door fails closed. Logs are content-blind: counts, sizes and refusal reasons only.
 // TEST MEMBERS ONLY (see src/shared/sealed.js). In memory for now; a live host is still needed.
 import { randomBytes, sha256, toHex, utf8 } from '../shared/crypto.js'
+import { dtgContextProblem } from '../shared/dtg-context.js'
 import { AGENT_MAX_TTL_MS, AGENT_SCOPES, MAX_NOTE_BYTES, MEMBER_MAX_TTL_MS, argsHash, verifyWith } from '../shared/sealed.js'
 
 const HOST_NOTE_CAP = 64 * 1024
@@ -70,6 +71,7 @@ export class SealedHost {
     if (c?.issuer !== p.room || c?.credentialSubject?.room !== p.room) fail('credential is for another room')
     let ok = false; try { ok = verifyWith(c, p.room, 'assertionMethod') } catch {} // the room's did:key signs credentials
     if (!ok) fail('credential not signed by the room')
+    if (dtgContextProblem(c['@context'])) fail('credential carries a DTG context address the room does not read') // any of the three, or none
     let holderOk = false; try { holderOk = verifyWith(p, p.holder, 'authentication') } catch {}
     if (!holderOk || p.holder !== c.credentialSubject.id) fail('holder does not own the credential')
     let bound = false; try { bound = p.args === argsHash(args) } catch {}
