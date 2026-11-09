@@ -14,10 +14,15 @@ cat > "$W/bin/stub" <<S
 echo "\$0 \$* uid=\$(id -u) envhit=\$(tr '\0' '\n' < /proc/\$\$/environ | grep -c PASSPHRASE || true)" >> "$W/seen"
 f=\$(ls /dev/shm/t-v*-creds/* 2>/dev/null | head -1); stat -c '%a %u' "\$f" >> "$W/seen"; true
 S
-chmod +x "$W/bin/stub"; ln -s stub "$W/bin/vta"; ln -s stub "$W/bin/vtc"
-touch "$W/seen"; chmod 666 "$W/seen"; printf 'x' > "$W/vtc/setup.toml"; chmod 755 "$W" "$W/bin" "$W/vta" "$W/vtc"
+cat > "$W/bin/wget" <<S
+#!/bin/sh
+# stand-in for wget -qO <file> <url>: a DID log with one id, so the entrypoints find "the other service"
+[ "\$1" = "-qO" ] && printf '{"state":{"id":"did:webvh:QmTest:example.test"}}\n' > "\$2"; true
+S
+chmod +x "$W/bin/stub" "$W/bin/wget"; ln -s stub "$W/bin/vta"; ln -s stub "$W/bin/vtc"; ln -s stub "$W/bin/node"
+touch "$W/seen"; chmod 666 "$W/seen"; printf '{"did":"did:key:zTEST"}' > "$W/vtc/setup-key.json"; printf 'allowed_origins = []\n' > "$W/vtc/config.toml"; chmod 755 "$W" "$W/bin" "$W/vta" "$W/vtc"
 run() { # name var datadir credsdir
-  ( env -i PATH="$W/bin:/usr/bin:/bin" "$2=$FAKE" VTA_ADMIN_DID=did:key:zTEST \
+  ( env -i PATH="$W/bin:/usr/bin:/bin" "$2=$FAKE" VTA_ADMIN_DID=did:key:zTEST MEDIATOR_INTERNAL_URL= VTC_HANDOFF_URL= VTA_INTERNAL_URL=http://vta.test \
       VTA_DATA_DIR="$W/vta" VTA_CREDS_DIR=/dev/shm/t-vta-creds VTC_DATA_DIR="$W/vtc" VTC_CREDS_DIR=/dev/shm/t-vtc-creds \
       sh "$HERE/$1/entrypoint.sh" ) > "$W/out-$1" 2>&1 || { echo "FAIL: $1 exited non-zero"; cat "$W/out-$1" | sed "s/$FAKE/<fake>/g"; exit 1; }
 }

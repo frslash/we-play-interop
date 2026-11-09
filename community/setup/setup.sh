@@ -88,6 +88,8 @@ ensure_service Redis "$REDIS_IMAGE"
 echo "step 3: volumes (at the paths the entrypoints use)"
 ensure_volume vta /var/lib/vta
 ensure_volume vtc /var/lib/vtc
+# the mediator keeps its own identity (its DID, keys and config): without a volume it is a new mediator on every restart
+ensure_volume mediator /var/lib/mediator
 
 echo "step 4: variables"
 # Redis is private-network only: no public domain, no TCP proxy is ever created here.
