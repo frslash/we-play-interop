@@ -7,6 +7,7 @@
 // the log carries only its hash and what the agent wakes for.
 import { publicFetch } from './resolver.js'
 import { concerns } from './views.js'
+import { silentRound } from '../shared/round.js'
 import { NAME_OF } from '../shared/types.js'
 
 const COOLDOWN_MS = 60_000 // at most one wake a minute per agent; what arrives meanwhile rides on the next one
@@ -53,6 +54,7 @@ export class Waker {
   onEntry (e) {
     const name = NAME_OF[e.type]
     if (!HEARD.has(name)) return
+    if (name === 'round' && silentRound(e.document.payload)) return // a round with nothing for anyone wakes no one
     for (const [agent, hook] of this.hooks) {
       if (e.author === agent || !this.ctx.log.state.activeDelegation(agent) || this.ctx.check?.dids().includes(e.author)) continue // the room check never wakes anyone's agent
       if (this.ctx.builder?.is(agent)) continue // a builder has no way into the room: the board starts it, with its job (builder.js)

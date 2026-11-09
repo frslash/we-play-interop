@@ -216,7 +216,9 @@ describe('the board settles steps from GitHub, so it never chases finished work'
       assert.equal(s.state, 'checked'); assert.equal(s.settled, 'pull request #41 merged')
       assert.ok(!r.ctx.facilitator.steps().some((x) => x.id === s.id), 'off the board')
       assert.equal(r.said('check').length, 0)
-      assert.match(r.ctx.facilitator.reportText(r.ctx.log.entries.filter((e) => e.document.payload.change === 'settled')), /1 settled by GitHub \(merged or closed\)/)
+      const report = r.ctx.facilitator.reportText(new Set([s.id])) // the report names what moved, and a settled step moved
+      assert.match(report, /Done: pull request #41 merged\./, 'a settled step is reported as one that moved')
+      assert.match(report, /On the board: \d+ steps?/)
       assert.match(r.ctx.facilitator.where(s), /^Done: pull request #41 merged\.$/)
     } finally { await r.stop() }
   })

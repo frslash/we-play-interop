@@ -8,7 +8,8 @@ import { describe, test } from 'node:test'
 import { newIdentity } from '../src/shared/did.js'
 import { NAME_OF, TYPES, signedDocument } from '../src/shared/types.js'
 import { config as baseConfig } from '../src/server/config.js'
-import { REPORT_MS, STALE_MS } from '../src/server/facilitator.js'
+import { STALE_MS } from '../src/server/facilitator.js'
+const REPORT_MS = 60 * 60_000
 import { createApp } from '../src/server/index.js'
 import { createResolver } from '../src/server/resolver.js'
 import { State } from '../src/server/state.js'
@@ -321,29 +322,33 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
     } finally { await r.stop() }
   })
 
-  test('it reports about once an hour, sooner when a check moved, never when nothing did, and the report wakes no one', async () => {
+  test('it reports only what moved, gathered for a little while, never when nothing did, and the report wakes no one', async () => {
     const r = await room()
     try {
       const goal = (await r.send(r.people.a, 'propose', { kind: 'goal', title: 'Goal 2: the room moves onto encrypted spaces its people hold' })).body.hash
       await r.send(r.people.a, 'vote', { proposal: goal, choice: 'for' })
       await r.ctx.facilitator.tick(r.at(0))
       assert.equal(r.said('report').length, 0, 'not on top of the seed')
+      // the seed's own line named every check it opened: the report does not say them again
+      await r.ctx.facilitator.tick(r.at(11))
+      assert.equal(r.said('report').length, 0)
+      // nothing moved: silent, even an hour later
+      await r.ctx.facilitator.tick(r.at(11) + REPORT_MS + MIN)
+      assert.equal(r.said('report').length, 0)
+      // a check is claimed: reported once, after the changes are gathered (ten minutes), not at once
+      const check3 = r.ctx.facilitator.testOf(goal).find((s) => s.test.n === 3)
+      await r.tell('b', check3, 'claim', 'I take the MLS check')
+      await r.ctx.facilitator.tick(r.at(5))
+      assert.equal(r.said('report').length, 0, 'not five minutes after the claim')
       await r.ctx.facilitator.tick(r.at(11))
       const first = r.said('report')
       assert.equal(first.length, 1)
       assert.match(first[0].payload.text, /0 of 6 checked/)
-      assert.match(first[0].payload.text, /Waiting on Person A: which permanent domain[^\n]*Held for Person A: it touches their money/)
-      // nothing moved: silent, even an hour later
-      await r.ctx.facilitator.tick(r.at(11) + REPORT_MS + MIN)
+      assert.match(first[0].payload.text, /\(3\) .*Claimed: South Agent/)
+      assert.doesNotMatch(first[0].payload.text, /\(1\) |\(2\) |\(4\) /, 'only the check that moved')
+      // once: the same claim is not reported again
+      await r.ctx.facilitator.tick(r.at(30))
       assert.equal(r.said('report').length, 1)
-      // a check is claimed: reported sooner (ten minutes after the last report), not at once
-      const check3 = r.ctx.facilitator.testOf(goal).find((s) => s.test.n === 3)
-      await r.tell('b', check3, 'claim', 'I take the MLS check')
-      await r.ctx.facilitator.tick(r.at(5)) // the last report was written just now
-      assert.equal(r.said('report').length, 1, 'not five minutes after the last one')
-      await r.ctx.facilitator.tick(r.at(11))
-      const second = r.said('report')
-      assert.equal(second.length, 2); assert.match(second[1].payload.text, /\(3\) .*Claimed: South Agent/)
       // the report names South Agent but does not wake it
       const line = r.ctx.log.entries.filter((e) => e.document.payload.facilitator?.report).at(-1)
       assert.equal(concerns(r.ctx, line, r.agents.b.did), null)
