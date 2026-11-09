@@ -5,7 +5,8 @@ name: deploy-community
 on:
   push:
     branches: [main]
-    paths: ['community/**']
+    paths: ['community/**', '.github/workflows/deploy-community.yml']
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -23,7 +24,7 @@ jobs:
         env:
           HAS_TOKEN: ${{ secrets.RAILWAY_TOKEN != '' }}
         run: |
-          if [ "$GITHUB_REF" != "refs/heads/main" ] || [ "$GITHUB_EVENT_NAME" != "push" ]; then echo "::error::deploys run only on a push to main"; exit 1; fi
+          if [ "$GITHUB_REF" != "refs/heads/main" ] || { [ "$GITHUB_EVENT_NAME" != "push" ] && [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; }; then echo "::error::deploys run only on a push to main, or a manual run of main"; exit 1; fi
           if [ "$HAS_TOKEN" != "true" ]; then echo "::error::RAILWAY_TOKEN is missing: it must be an environment secret on 'production' (not a repo-wide secret)"; exit 1; fi
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
