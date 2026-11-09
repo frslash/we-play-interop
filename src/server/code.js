@@ -7,6 +7,10 @@ const ROOTS = ['src', 'public', 'agent', 'sandbox', 'test', '.github']
 const FILES = ['README.md', 'package.json', 'LICENSE']
 const MAX = 120_000
 const PR_PAGES = 30 // GitHub lists at most 3000 files of a pull request
+// Pull requests looked up on GitHub per minute, across everyone. The diff page is public and its lookups spend the same
+// GitHub allowance the room merges with (5,000 calls an hour), so a stream of made-up numbers must not use it up: twenty
+// a minute is far more than a room reviewing a handful of changes needs, and far less than the allowance. Kept ones are free.
+export const PULL_LOOKUPS_PER_MINUTE = 20
 
 export function codeFiles (base = process.cwd()) {
   const out = []
@@ -48,7 +52,7 @@ export function localCommit (base = process.cwd()) {
  * agent can pass it as `base`. Needs only the repo (public); a token raises the rate limit. `gh(method, path)` is the
  * room's GitHub caller. The branch head is looked up at most every `ttlMs`; trees and files are cached by commit.
  */
-export function githubCode ({ repo, branch = 'main', gh, ttlMs = 15_000 }) {
+export function githubCode ({ repo, branch = 'main', gh, ttlMs = 15_000, pullsPerMinute = PULL_LOOKUPS_PER_MINUTE }) {
   let head = null, headAt = 0
   const trees = new Map(), blobs = new Map()
   const commit = async () => {
@@ -67,12 +71,20 @@ export function githubCode ({ repo, branch = 'main', gh, ttlMs = 15_000 }) {
     return trees.get(sha)
   }
   const pulls = new Map() // pull request number -> { head, at, top, files } (the files are kept by head commit)
+  let lookups = [] // when the room last asked GitHub about a pull request (the last minute's)
   /** One pull request of this repo (the room's own, never another), as plain text: what it is and its head commit first. */
   const pullDiff = async (number, { from, to } = {}) => {
     const n = Number(number)
     if (!Number.isInteger(n) || n < 1 || n > 1e7) throw new Error('pr is the pull request\'s number in the room\'s own repository, for example 40')
     let kept = pulls.get(n)
     if (!kept || Date.now() - kept.at >= ttlMs) {
+      const now = Date.now()
+      lookups = lookups.filter((t) => now - t < 60_000)
+      if (lookups.length >= pullsPerMinute) {
+        if (kept) return { pr: n, head: kept.head, ...slice(kept, from, to) } // a kept one is still served, a little older
+        throw Object.assign(new Error(`the room looks up at most ${pullsPerMinute} pull requests a minute on GitHub, to keep its allowance for merging: try again in a minute`), { status: 429 })
+      }
+      lookups.push(now)
       const pr = await gh('GET', `/repos/${repo}/pulls/${n}`)
       const head = pr.head?.sha
       if (kept?.head !== head) {
@@ -96,6 +108,10 @@ export function githubCode ({ repo, branch = 'main', gh, ttlMs = 15_000 }) {
       if (pulls.size > 20) pulls.delete(pulls.keys().next().value)
       pulls.set(n, kept)
     }
+    return { pr: n, head: kept.head, ...slice(kept, from, to) }
+  }
+  /** The text of a kept pull request, lines from..to (cut at MAX characters). */
+  const slice = (kept, from, to) => {
     const body = kept.files.flatMap((f) => [
       `diff --git a/${f.previous_filename ?? f.filename} b/${f.filename}`,
       `${f.status}${f.previous_filename ? ` from ${f.previous_filename}` : ''}, +${f.additions ?? 0} −${f.deletions ?? 0}`,
@@ -106,7 +122,7 @@ export function githubCode ({ repo, branch = 'main', gh, ttlMs = 15_000 }) {
     const a = Math.max(1, Number(from) || 1), e = Math.min(body.length, Number(to) || body.length)
     let part = body.slice(a - 1, e).join('\n')
     if (part.length > MAX) part = part.slice(0, MAX) + `\n… (cut at ${MAX} characters: ask for fewer lines with from and to)`
-    return { pr: n, head: kept.head, lines: body.length, from: a, to: e, text: [...kept.top, `Lines ${a}-${e} of ${body.length} below.`, '', part].join('\n') }
+    return { lines: body.length, from: a, to: e, text: [...kept.top, `Lines ${a}-${e} of ${body.length} below.`, '', part].join('\n') }
   }
   return {
     pullDiff,
