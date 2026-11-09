@@ -223,10 +223,14 @@ export class Community {
     const t = this.now()
     this.recent = this.recent.filter((x) => t - x < 60_000)
     if (this.recent.length >= MAX_CHECKS_PER_MINUTE) return refuse(doc, who, 'unavailable', 'too many passes are being checked right now; try again in a minute', undefined, { 'retry-after': '60' })
-    this.recent.push(t)
     // a request, so signed for authentication, by the one presenting; addressed to this room by name; fresh
     const v = await verifyTask(doc, { keyFor: this.keyFor, me: who.did, now: t, bytes: Buffer.byteLength(text), purposes: ['authentication'] })
     if (!v.ok) return refuse(doc, who, v.code, v.message, v.details)
+    // A place in the minute's budget is taken only now, once the signature holds: the budget is for the community's
+    // list that a real check reads, so posts nobody signed must not fill it and shut real holders out.
+    this.recent = this.recent.filter((x) => t - x < 60_000)
+    if (this.recent.length >= MAX_CHECKS_PER_MINUTE) return refuse(doc, who, 'unavailable', 'too many passes are being checked right now; try again in a minute', undefined, { 'retry-after': '60' })
+    this.recent.push(t)
     const answer = await this.#judge(doc.payload?.membership, v.signer)
     if (answer.member) this.counts.current++; else this.#count(this.counts.notCurrent, answer.problem)
     return { status: 200, body: signTask(responseTo(doc, answer, who.did), who) }

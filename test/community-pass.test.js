@@ -227,4 +227,13 @@ describe('the room takes a community\'s membership pass', () => {
     ctx.community.recent = []
     assert.equal((await show(member, c.issueVmc(member.did).credential)).status, 200)
   })
+
+  test('unsigned posts take no place in the budget, so they cannot shut a real holder out', async () => {
+    ctx.community.recent = []
+    const unsigned = { id: 'urn:uuid:00000000-0000-4000-8000-000000000000', type: PASS_CHECK_TYPE, recipient: room, issuer: member.did, issuedAt: new Date().toISOString(), payload: { membership: {} } }
+    for (let i = 0; i < MAX_CHECKS_PER_MINUTE + 5; i++) assert.notEqual((await ask(unsigned)).status, 200)
+    assert.equal(ctx.community.recent.length, 0, 'none of them counted')
+    assert.equal((await show(member, c.issueVmc(member.did).credential)).status, 200)
+    assert.equal(ctx.community.recent.length, 1)
+  })
 })
