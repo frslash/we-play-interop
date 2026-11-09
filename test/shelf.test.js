@@ -1,15 +1,15 @@
 // The projects shelf: other projects' public code at one named commit, for agents to list, read and search.
 // A local server plays GitHub (the tests run offline): it answers the head-commit lookup and serves a tar.gz.
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, test } from 'node:test'
 import { gzipSync } from 'node:zlib'
 import { config as baseConfig } from '../src/server/config.js'
 import { createApp } from '../src/server/index.js'
-import { FETCHES_PER_MINUTE, MAX_FILE_BYTES, SHELF, SIGNER_FETCHES_PER_HOUR, Shelf, namedRepos, pinOf, pinsFromCommunity, insideFolder, repoOf, secretPath, tarReader } from '../src/server/shelf.js'
+import { FETCHES_PER_MINUTE, MAX_FILE_BYTES, SHELF, SIGNER_FETCHES_PER_HOUR, Shelf, namedRepos, pinOf, pinsFromCommunity, LICENCES, insideFolder, licenceOf, repoOf, secretPath, tarReader } from '../src/server/shelf.js'
 import { registerAgentTools } from '../src/agent-tools.js'
 import * as views from '../src/server/views.js'
 
@@ -124,7 +124,7 @@ describe('the projects shelf', () => {
     assert.equal(hits.filter((u) => u.includes('/tar.gz/')).length, 1) // one fetch serves every read
     assert.equal(hits.some((u) => u.includes('/commits/')), false) // a pinned project never asks where its branch is
     const v = s.view().projects.find((p) => p.project === 'o/demo')
-    assert.equal(v.copy.licence, 'LICENSE'); assert.equal(v.pinned, true)
+    assert.equal(v.copy.licence, 'Apache-2.0'); assert.equal(v.copy.licenceFile, 'LICENSE'); assert.equal(v.pinned, true)
   })
 
   test('search finds text exactly as written, with file and line; under narrows it; max caps it', async () => {
@@ -235,6 +235,47 @@ describe('the projects shelf', () => {
     for (const no of [join(root, '../escape.txt'), join(root, 'a/../../x'), '/etc/passwd', root, join(root, '..', 'files-other', 'x'), join(dir, 'copy', 'index.json')]) assert.equal(insideFolder(root, no), false, no)
   })
 
+  test('the licence is recognised by its title lines in the first kilobyte, from a list, and named in the copy', async () => {
+    const MIT = 'MIT License\n\nCopyright (c) 2026 Someone\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\n'
+    const BSD2 = 'Copyright (c) 2026, Someone\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are met:\n\n1. Redistributions of source code must retain the above copyright notice.\n2. Redistributions in binary form must reproduce the above copyright notice.\n'
+    const texts = {
+      'Apache-2.0': '                                 Apache License\n                           Version 2.0, January 2004\n', MIT, ISC: 'ISC License\n\nCopyright (c) 2026\n\nPermission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted',
+      'BSD-2-Clause': BSD2, 'BSD-3-Clause': BSD2 + '3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse.\n',
+      'MPL-2.0': 'Mozilla Public License Version 2.0\n==================================\n', 'GPL-2.0': '                    GNU GENERAL PUBLIC LICENSE\n                       Version 2, June 1991\n', 'GPL-3.0': '                    GNU GENERAL PUBLIC LICENSE\n                       Version 3, 29 June 2007\n',
+      'LGPL-2.1': '                  GNU LESSER GENERAL PUBLIC LICENSE\n                       Version 2.1, February 1999\n', 'LGPL-3.0': '                   GNU LESSER GENERAL PUBLIC LICENSE\n                       Version 3, 29 June 2007\n',
+      'AGPL-3.0': '                    GNU AFFERO GENERAL PUBLIC LICENSE\n                       Version 3, 19 November 2007\n', 'CC-BY-4.0': 'Creative Commons Attribution 4.0 International (CC BY 4.0)\n', 'CC-BY-SA-4.0': 'Attribution-ShareAlike 4.0 International\n\n=====\n',
+      'CC0-1.0': 'CC0 1.0 Universal\n\nStatement of Purpose\n', Unlicense: 'This is free and unencumbered software released into the public domain.\n',
+    }
+    assert.deepEqual(Object.keys(texts).sort(), [...LICENCES].sort()) // every licence on the list has a test text
+    for (const [name, text] of Object.entries(texts)) assert.equal(licenceOf(text), name, name)
+    assert.equal(licenceOf(`${' '.repeat(2000)}Apache License Version 2.0`), null) // only the first kilobyte counts
+    for (const no of ['', 'All rights reserved. Do not copy.\n', 'Attribution-NonCommercial 4.0 International\n', 'GNU GENERAL PUBLIC LICENSE\nVersion 1, February 1989\n', 'Business Source License 1.1\n', 'SSPL', 'WTFPL\n']) assert.equal(licenceOf(no), null, no)
+    // a licence file that matches none is refused, and the words say which the shelf keeps
+    reset(); override = (sha) => REPO_FILES(sha).map(([p, b]) => (p === 'LICENSE' ? [p, 'Do whatever you like, the author is not liable.\n'] : [p, b]))
+    const s = shelf()
+    await assert.rejects(s.files('o/demo'), (e) => e.status === 409 && /does not start like a licence the shelf keeps/.test(e.message) && e.message.includes('Apache-2.0, MIT, BSD-2-Clause') && /CC0-1\.0, Unlicense/.test(e.message))
+    await assert.rejects(s.files('o/demo'), /does not start like/); assert.equal(hits.filter((u) => u.includes('/tar.gz/')).length, 1); assert.equal(existsSync(join(s.dir, 'o__demo', A)), false)
+    // two licence files (a text licence and a code licence): the plainer name is the project's, both are noted
+    reset(); override = (sha) => [...REPO_FILES(sha).filter(([p]) => p !== 'LICENSE'), ['LICENSE', texts['CC-BY-4.0']], ['LICENSE-CODE', texts.MIT]]
+    const two = (await shelf().copy('o/demo')).ix
+    assert.deepEqual([two.licence, two.licenceFile, two.licences.map((l) => l.name)], ['CC-BY-4.0', 'LICENSE', ['CC-BY-4.0', 'MIT']])
+  })
+
+  test('the ten projects on the list are each under a licence the shelf keeps (checked against the local source copies when they are there)', () => {
+    const top = process.env.WPI_SOURCES ?? join(homedir(), 'Desktop/Umbrella/inwove-sources') // a folder per project, named owner_repo
+    const seen = []
+    for (const p of SHELF) {
+      const d = join(top, p.repo.replace('/', '_'))
+      if (!existsSync(d)) continue // CI does not have the sources: skip quietly
+      const names = readdirSync(d).filter((n) => /^(licen[sc]e|copying|unlicense)/i.test(n)).sort((a, b) => a.length - b.length)
+      assert.ok(names.length, `${p.repo} has a licence file`)
+      const fd = openSync(join(d, names[0]), 'r'), buf = Buffer.alloc(1024), n = readSync(fd, buf, 0, 1024, 0); closeSync(fd)
+      const name = licenceOf(buf.subarray(0, n).toString('utf8')); seen.push(`${p.repo} ${name}`)
+      assert.ok(name, `${p.repo}: ${names[0]} is recognised`)
+    }
+    if (process.env.WPI_SHOW_LICENCES) console.log(seen.join('\n'))
+  })
+
   test('a cap that is passed stops the unpack and discards it: no partial copy, and no second try at that commit', async () => {
     const refuseAt = async (limits, why, files = null) => {
       reset(); override = files; const s = shelf({ limits })
@@ -319,7 +360,7 @@ describe('the projects shelf', () => {
 
   test('a large project lists as folders with counts', async () => {
     const many = Array.from({ length: 450 }, (_, i) => [`pkg${i % 3}/f${i}.js`, `// ${i}\n`])
-    const big = createServer((req, res) => { if (req.url.includes('/commits/')) { res.writeHead(200); return res.end(A) } res.writeHead(200); res.end(tarGz('big-aaaaaaa', [['LICENSE', 'MIT\n'], ['top.md', 'hi\n'], ...many])) })
+    const big = createServer((req, res) => { if (req.url.includes('/commits/')) { res.writeHead(200); return res.end(A) } res.writeHead(200); res.end(tarGz('big-aaaaaaa', [['LICENSE', 'MIT License\n'], ['top.md', 'hi\n'], ...many])) })
     await new Promise((r) => big.listen(0, '127.0.0.1', r))
     try {
       const s = new Shelf({ dataDir: mkdtempSync(join(dir, 'b-')), list: [{ repo: 'o/big', pin: A }], hosts: { api: `http://127.0.0.1:${big.address().port}`, code: `http://127.0.0.1:${big.address().port}` }, allowHttp: true })
