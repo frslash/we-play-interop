@@ -23,10 +23,12 @@
 // good faith from one placed on purpose. So nothing that matters (who was first, who wins a
 // tie, a vote's outcome) should rest on this order alone.
 //
-// A copy holds at most `maxWaiting` lines that wait for earlier lines it does not have, so a
-// member cannot fill another's memory with lines that name lines never sent. Past the cap,
-// such lines are refused; send the earlier ones first. Lines whose earlier lines are all here
-// are always taken.
+// A copy holds at most `maxWaiting` lines from each member that wait for earlier lines it does
+// not have, so a member cannot fill another's memory with lines that name lines never sent. The
+// cap is per member (by the line's signed issuer): one member who fills their own share does not
+// stop anyone else's waiting lines, and the whole copy holds at most members × maxWaiting. Past a
+// member's cap, their such lines are refused; send the earlier ones first. Lines whose earlier
+// lines are all here are always taken.
 import { canonicalize, sha256, toHex } from './crypto.js'
 import { multikeyToEd25519 } from './did.js'
 import { sign, verifySignature } from './proof.js'
@@ -34,7 +36,7 @@ import { sign, verifySignature } from './proof.js'
 export const LINE_TYPE = 'wpi/hostless-line/v1'
 export const MAX_LINE_CHARS = 4000
 export const MAX_AFTER = 64
-export const MAX_WAITING = 1000
+export const MAX_WAITING = 1000 // per member
 
 export const lineId = (line) => toHex(sha256(canonicalize(line)))
 
@@ -70,6 +72,7 @@ export class Copy {
     this.now = now
     this.lines = new Map() // id -> line, every line taken
     this.waiting = new Map() // id -> line, signed and from a member, but naming lines not here yet
+    this.waitingBy = new Map() // issuer -> how many of their lines are waiting
     this.depth = new Map() // id -> depth
   }
 
@@ -105,13 +108,17 @@ export class Copy {
     if (this.lines.has(id)) return { ok: true, id, already: true }
     if (this.waiting.has(id)) return { ok: true, id, already: true, waiting: true }
     const ready = line.after.every((h) => this.lines.has(h))
-    if (!ready && this.waiting.size >= this.maxWaiting) {
-      return { ok: false, reason: `too many lines waiting for earlier lines (${this.maxWaiting}); send the earlier lines first` }
+    if (!ready && this.waitingOf(line.issuer) >= this.maxWaiting) {
+      return { ok: false, reason: `too many lines waiting for earlier lines from this member (${this.maxWaiting}); send the earlier lines first` }
     }
     this.waiting.set(id, line)
+    this.waitingBy.set(line.issuer, this.waitingOf(line.issuer) + 1)
     this.#settle()
     return { ok: true, id, waiting: this.waiting.has(id) }
   }
+
+  /** How many of one member's lines are waiting for earlier lines. */
+  waitingOf (issuer) { return this.waitingBy.get(issuer) ?? 0 }
 
   #settle () {
     let moved = true
@@ -120,6 +127,8 @@ export class Copy {
       for (const [id, line] of this.waiting) {
         if (!line.after.every((h) => this.lines.has(h))) continue
         this.waiting.delete(id)
+        const n = this.waitingOf(line.issuer) - 1
+        if (n > 0) this.waitingBy.set(line.issuer, n); else this.waitingBy.delete(line.issuer)
         this.lines.set(id, line)
         this.depth.set(id, 1 + Math.max(0, ...line.after.map((h) => this.depth.get(h))))
         moved = true
