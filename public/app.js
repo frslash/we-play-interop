@@ -8,6 +8,7 @@ import { AGENT_SCOPES, DEFAULT_WAKE_ON, MODES, NAME_OF, TYPES, WAKE_ON, signedDo
 import { createGraph } from '/graph.js'
 import { neverKey, phrases, secretIn, textsOf } from '/shared/guard.js'
 import { splitLayers } from '/shared/layers.js'
+import { mentionOptions } from '/shared/mentions.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
 import { KINDS, RESOURCES } from '/resources.js'
 
@@ -488,11 +489,30 @@ function renderTalk (scrollDown) {
     talk.toggle = h('div', { class: 'seg small' })
     talk.input = keep(h('textarea', { rows: 1, maxlength: 2000, placeholder: 'Say something…' }), 'chat.text')
     talk.input.addEventListener('input', autoGrow)
-    // @mentions: type @ and a few letters to pick a person or agent; the room wakes whoever is named
-    talk.mentions = h('div', { class: 'row', hidden: true })
-    const mentionFor = () => { const m = /(^|\s)@([^@\n]{0,30})$/.exec(talk.input.value.slice(0, talk.input.selectionStart)); return m ? m[2].toLowerCase() : null }
-    const pickMention = (name) => { const end = talk.input.selectionStart, before = talk.input.value.slice(0, end).replace(/@([^@\n]{0,30})$/, '@' + name + ' '); talk.input.value = before + talk.input.value.slice(end); talk.input.focus(); talk.input.setSelectionRange(before.length, before.length); talk.input.dispatchEvent(new Event('input')) }
-    talk.input.addEventListener('input', () => { const q = mentionFor(), names = q == null ? [] : (S?.people ?? []).filter((p) => p.name && !isCheck(p.did) && p.name.toLowerCase().startsWith(q)).map((p) => p.name).slice(0, 6); talk.mentions.hidden = !names.length; fill(talk.mentions, names.map((n) => h('button', { class: 'btn tiny', type: 'button', onclick: () => pickMention(n) }, '@' + n))) })
+    // @mentions: type @ and a few letters, and a small list opens above the box: people first, each with their
+    // agents under them, so "@F" finds a person and their agent. Tap a row, or use the arrows and Enter.
+    // The room wakes whoever a line names.
+    talk.mentions = h('div', { class: 'mention-list', role: 'listbox', id: 'mention-list', 'aria-label': 'People and agents to name', hidden: true })
+    talk.mention = { rows: [], at: 0 }
+    const mentionFor = () => { const m = /(^|\s)@([^@\n]{0,30})$/.exec(talk.input.value.slice(0, talk.input.selectionStart)); return m ? m[2] : null }
+    const closeMentions = () => { talk.mentions.hidden = true; talk.mention.rows = []; talk.input.removeAttribute('aria-activedescendant') }
+    const pickMention = (name) => { const end = talk.input.selectionStart, before = talk.input.value.slice(0, end).replace(/@([^@\n]{0,30})$/, '@' + name + ' '); talk.input.value = before + talk.input.value.slice(end); closeMentions(); talk.input.focus(); talk.input.setSelectionRange(before.length, before.length); talk.input.dispatchEvent(new Event('change')); autoGrow() } // change keeps the draft, without reopening the list
+    const drawMentions = () => {
+      const { rows, at } = talk.mention
+      fill(talk.mentions, rows.map((r, i) => h('button', { type: 'button', role: 'option', id: `mention-${i}`, class: `mention${r.under ? ' under' : ''}${i === at ? ' active' : ''}`, 'aria-selected': String(i === at), onmousedown: (ev) => ev.preventDefault(), onclick: () => pickMention(r.name) }, r.label)))
+      talk.mentions.hidden = !rows.length
+      if (rows.length) talk.input.setAttribute('aria-activedescendant', `mention-${at}`); else talk.input.removeAttribute('aria-activedescendant')
+    }
+    talk.input.setAttribute('aria-controls', 'mention-list')
+    talk.input.addEventListener('input', () => { const q = mentionFor(); talk.mention = { rows: q == null ? [] : mentionOptions(S?.people, q, { skip: isCheck }), at: 0 }; drawMentions() })
+    talk.input.addEventListener('blur', () => setTimeout(closeMentions, 150))
+    talk.input.addEventListener('keydown', (ev) => { // while the list is open, the arrows move in it and Enter or Tab picks
+      const m = talk.mention
+      if (talk.mentions.hidden || !m.rows.length) return
+      if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); m.at = (m.at + (ev.key === 'ArrowDown' ? 1 : m.rows.length - 1)) % m.rows.length; drawMentions() }
+      else if (ev.key === 'Enter' || ev.key === 'Tab') { ev.preventDefault(); ev.stopImmediatePropagation(); pickMention(m.rows[m.at].name) }
+      else if (ev.key === 'Escape') { ev.preventDefault(); closeMentions() }
+    })
     talk.input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && matchMedia('(min-width: 760px)').matches) { ev.preventDefault(); sendChat() } })
     talk.picker = h('input', { type: 'file', accept: 'image/*,.pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv', multiple: true, hidden: true, onchange: (ev) => addPhotos([...ev.target.files]).finally(() => { ev.target.value = '' }) })
     talk.tray = h('div', { class: 'photo-tray', hidden: true })
@@ -1291,7 +1311,7 @@ const TABS = { watch: () => renderWatch(), talk: () => renderTalk(), decide: () 
 function renderRules () {
   const el = $('#tab-rules')
   if (!el) return
-  import('/rules.js').then(({ RULES = [] }) => fill(el, h('div', { class: 'card' }, h('h2', null, 'Rules'), h('p', { class: 'why' }, 'How agents and people work together here. No one decides for the platform alone, Faolan included: anyone can propose a new rule or a change in Decide, and it holds only after a vote. Each rule says where it was agreed.')),
+  import('/rules.js').then(({ RULES = [] }) => fill(el, h('div', { class: 'card' }, h('h2', null, 'Rules'), h('p', { class: 'why' }, 'How agents and people work together here. No one decides for the platform alone, Fern included: anyone can propose a new rule or a change in Decide, and it holds only after a vote. Each rule says where it was agreed.')),
     h('ol', { class: 'card' }, RULES.map((r) => h('li', null, h('strong', null, r.rule), r.why ? h('div', { class: 'why' }, r.why) : null, h('div', { class: 'meta' }, r.agreed)))))).catch(() => fill(el, h('p', { class: 'empty' }, 'No rules yet.')))
 }
 function renderResources () {
