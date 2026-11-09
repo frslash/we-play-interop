@@ -95,7 +95,7 @@ describe('join QR over HTTP', () => {
     assert.equal(body.did, ctx.identity.did)
     assert.equal(inv.type, OOB_TYPE); assert.equal(inv.type, 'https://didcomm.org/out-of-band/2.0/invitation')
     assert.equal(inv.from, ctx.identity.did)
-    assert.match(inv.id, /^[0-9a-f-]{36}$/)
+    assert.match(inv.id, /^([0-9a-f]{32}|[0-9a-f-]{36})$/) // a one-time join desk token (or a random id when the desk has too many open invites)
     assert.equal(inv.body.goal_code, 'join'); assert.match(inv.body.goal, /We Play Interop|Join/)
     assert.deepEqual(inv.body.accept, ['didcomm/v2'])
     // the VCALM interaction answer: a protocols map, with DIDComm's entry the invitation's URL form

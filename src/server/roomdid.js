@@ -67,7 +67,12 @@ export async function ensureRoomDid ({ dataDir, file = '', publicUrl, log = cons
   }
 }
 
-/** The document the room's DID should have: the room's signing key and a service pointing at the room's site. */
+/** Where the room takes DIDComm messages (the join desk's route), for PUBLIC_URL. '' when there is none. */
+export function didcommEndpoint (publicUrl) {
+  try { return publicUrl ? new URL(publicUrl).origin + '/didcomm' : '' } catch { return '' }
+}
+
+/** The document the room's DID should have: the room's signing key, a service pointing at the room's site, and its DIDComm inbox. */
 export function roomDidDocument ({ did, roomPublicKey, publicUrl }) {
   const vm = `${did}#room`
   return {
@@ -76,8 +81,26 @@ export function roomDidDocument ({ did, roomPublicKey, publicUrl }) {
     verificationMethod: [{ id: vm, type: 'Multikey', controller: did, publicKeyMultibase: ed25519Multikey(roomPublicKey) }],
     authentication: [vm],
     assertionMethod: [vm],
-    service: [{ id: `${did}#room-site`, type: 'LinkedDomains', serviceEndpoint: new URL(publicUrl).origin + '/' }],
+    service: [
+      { id: `${did}#room-site`, type: 'LinkedDomains', serviceEndpoint: new URL(publicUrl).origin + '/' },
+      { id: `${did}#didcomm`, type: 'DIDCommMessaging', serviceEndpoint: { uri: didcommEndpoint(publicUrl), accept: ['didcomm/v2'] } },
+    ],
   }
+}
+
+/**
+ * What the room's DID says right now, read from the same log /.well-known/did.jsonl serves (so it is what a wallet
+ * resolves): its id and its DIDComm endpoint, or nulls when there is no log or it does not verify. Never throws.
+ */
+export async function roomDidStatus ({ dataDir, file = '' }) {
+  try {
+    const text = readRoomDidLog({ dataDir, file })
+    if (text === null) return { did: null, didcomm: null }
+    const r = await resolveDIDFromLog(text.trim().split('\n').map((l) => JSON.parse(l)))
+    const s = (r.didDocument.service ?? []).find((x) => x.type === 'DIDCommMessaging')
+    const uri = typeof s?.serviceEndpoint === 'string' ? s.serviceEndpoint : s?.serviceEndpoint?.uri ?? (Array.isArray(s?.serviceEndpoint) ? s.serviceEndpoint[0]?.uri : null)
+    return { did: r.didDocument.id ?? null, didcomm: uri ?? null }
+  } catch { return { did: null, didcomm: null } }
 }
 
 /** did:webvh times are whole seconds and must rise: now, or one second after the last entry if that is later. */
