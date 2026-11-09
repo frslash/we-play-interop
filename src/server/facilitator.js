@@ -128,6 +128,11 @@ export function touches (decision) {
  */
 export const PARKED = /^\W*(let['’]?s\s+|we\s+)?(park(ed|ing)?(\s+(it|this|that))?|set\s+(it|this)\s+aside|leave\s+(it|this)\s+for\s+later)\b(?!\s+(my|our|his|her|their|the|a|an)\b)/i
 const NOT_PARKED = /\b(not|don['’]?t|un)[\s-]*park/i
+/**
+ * A line that bows out of the choice instead of answering it: "Not me: I have no rights…", "Not my call", "I have no
+ * say in this", "I can't decide this", "I'll pass". A refusal is never a decision, whoever says it.
+ */
+export const BOWS_OUT = /^\W*(not me\b|not mine\b|not my (call|choice|decision|place|say)\b|i\s+(have|hold)\s+no\s+(rights?|say|authority|standing|mandate|power)\b|i\s+(have|hold)\s+(no|not the)\s+right\b|i['’]?m not (the one|allowed|authori[sz]ed|entitled|in a position)\b|i\s+(can['’]?t|cannot|won['’]?t|will not|may not|must not)\s+(decide|choose|pick|answer|settle|sign|speak)\b|i\s+(decline|pass)\b|i['’]ll pass\b|declin(e|ing)\b)/i
 const UNSURE = /^\W*(not sure|no idea|i don['’]?t know|dunno|maybe\b|it depends|depends\b|hmm+|thanks?\b|thank you)/i
 /**
  * A line that, as a whole, disagrees with a decision: it starts by disagreeing ("I disagree", "I object", "No, …",
@@ -148,7 +153,7 @@ const LEADS = /^\W*[^\s:]{2,60}:\s/ // the answer first, then a colon: "inwove.o
  */
 export function decisionOf (text, asked = null) {
   const t = String(text ?? '').replace(/\s+/g, ' ').trim()
-  if (!t || /\?$/.test(t) || UNSURE.test(t)) return null
+  if (!t || /\?$/.test(t) || UNSURE.test(t) || BOWS_OUT.test(t)) return null // a question, a shrug or a refusal is no answer
   const parked = PARKED.test(t) && !NOT_PARKED.test(t)
   if (!parked && t.split(' ').length < 2) return null
   if (!parked && asked && !CHOOSES.test(t) && !LEADS.test(t) && !sharesWord(asked, t)) return null
