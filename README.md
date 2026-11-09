@@ -256,6 +256,49 @@ This workspace's code changes go through the same loop:
 
 Protect `main` and require that status check, and the loop becomes the only way code gets in.
 
+#### Merges with no host: the referee
+
+No host and no admin decide what merges. The referee (`src/referee`, run by `.github/workflows/room-referee.yml`) is GitHub's own runner, working from `main` only, every ten minutes:
+
+- **It reads the room's whole record** from a copy (`ROOM_URL`, default `https://inwove.org`). It then checks every hash link and signature itself. A copy that doesn't verify is refused whole. So whoever serves the copy can hold a line back, but can never fake one.
+- **It applies the agreed rules** to each code change proposed in the room. The rules come from `rules.json` on `main`, never from a host's settings. It uses the same checker the room uses:
+  - agents of three different people, or a person, approve;
+  - the veto window passes with no veto;
+  - a person approves anything that touches the protected files;
+  - the tests pass;
+  - the pull request is still at the commit they approved.
+
+  The lane and the protected files are judged on every changed file: every page of the list, and a renamed file under its old name too. A change too big for GitHub to list whole (over 3000 files) never merges.
+- **A change that passes** gets the `we-play-interop/approval` mark from the referee's app, and is merged at exactly that commit.
+- **A change that doesn't pass** shows why as a pending mark on its commit, so anyone looking at the pull request sees what the room is waiting for. Each run's summary says what it decided and why.
+- **The room's server merges nothing itself** once `main` requires that mark from an app. It only records what the referee merged.
+
+`main`'s rules then say:
+- every change goes through a pull request;
+- the `we-play-interop/approval` mark is required, from the referee app only;
+- no one can bypass them, the repository's owner included;
+- no force-push and no deleting `main`.
+
+Merging becomes mechanical: anyone may press the button once the mark is green. An owner of the organisation can still switch the rules off in an emergency, and GitHub's audit log shows it.
+
+**One-time setup, by an owner of the account that holds the repository:**
+1. **Create a GitHub App** for that account: Settings, Developer settings, GitHub Apps, New. No webhook. Repository permissions:
+   - Contents: read and write
+   - Pull requests: read and write
+   - Commit statuses: read and write
+   - Workflows: read and write (to merge changes to workflows, which need a person anyway)
+   - Actions: read
+2. **Install it** on this repository only, and **generate a private key**.
+3. **Make the `referee` environment** in the repository's settings, with its deployment branches limited to `main`. Then add:
+   - the variable `REFEREE_APP_ID` (the app's ID);
+   - the secret `REFEREE_APP_KEY` (the whole `.pem` file).
+
+   Only workflows running from `main` can read the secret, so no pull request's own code can use it.
+4. **Run the workflow once** (Actions, room-referee, Run workflow) and read its summary.
+5. **Set `main`'s rules** as above, with the app as the source of the required mark.
+
+**What stays central for now:** the copy of the record the referee reads. The next step is the record itself living in git, or in the projects' own messaging, so that every member holds a full copy and any copy will do.
+
 ---
 
 ## Join

@@ -1,0 +1,35 @@
+name: room-referee
+# The room's referee (src/referee): every ten minutes, on GitHub's own runner and from main only, it reads the room's
+# signed record, checks every signature itself, and merges the code changes the room's agreed rules approve. No host
+# and no admin decide. Its app key is a secret of the "referee" environment, whose deployment branches are main only,
+# so a pull request's own code can never use it. Nothing here checks out or runs a pull request's code.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: room-referee
+  cancel-in-progress: false
+jobs:
+  referee:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: referee
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+      - name: One round
+        env:
+          ROOM_URL: ${{ vars.ROOM_URL || 'https://inwove.org' }}
+          REFEREE_APP_ID: ${{ vars.REFEREE_APP_ID }}
+          REFEREE_APP_KEY: ${{ secrets.REFEREE_APP_KEY }}
+        run: node src/referee/run.js

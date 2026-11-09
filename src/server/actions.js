@@ -8,11 +8,20 @@
 //                     (an approval names the commit it read; a later push voids it until someone approves the new one)
 // It never edits another project's files. Without GITHUB_TOKEN it prepares the
 // step (a link a person can open) and says so in the log.
+// Once main's rules require the room's approval mark from an app (src/referee: GitHub's own runner checks the signed
+// record and merges, so no host and no admin decide), this room no longer merges code itself: it only records what
+// the referee merged.
 import { EXTERNAL_KINDS, checkBoardRun } from '../shared/types.js'
 import { inEffect, laneOf, needAPerson, onlyOwnYes, waitingFor } from '../shared/rules.js'
 import { AGREED } from './rules.js'
 
 const API = 'https://api.github.com'
+export const APPROVAL_CONTEXT = 'we-play-interop/approval' // the mark a code change needs on its commit before main takes it
+// GitHub lists at most 3000 changed files for a pull request: that is the need here, not a choice. A change bigger than
+// that can't be checked whole, so it never merges (room note, 11-09: the first 100 files alone let a big change hide a
+// protected file after page one and pass as a small one)
+export const FILES_MAX = 3000
+const RULES_EVERY_MS = 10 * 60_000 // how often the room re-reads main's rules on GitHub (the referee itself runs every ten minutes)
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64')
 const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8')
 
@@ -64,12 +73,26 @@ export class Executor {
       for (const pr of [...this.log.state.proposals.values()]) {
         if (pr.kind === 'workspace-change' && this.config.githubToken && ['open', 'approved'].includes(this.log.state.statusOf(pr))) { const why = await this.changeReady(pr).catch((e) => `could not check it: ${e.message}`); pr.notYet = why; if (why && !/^(failed|merged):/.test(why)) continue; if (/^merged:/.test(why)) { await this.log.appendAsWorkspace('result', { proposal: pr.hash, kind: pr.kind, status: 'merged', detail: why.slice(8, 500) }, { threadId: this.log.byHash.get(pr.hash).document.id }); continue } if (why) { await this.log.appendAsWorkspace('result', { proposal: pr.hash, kind: pr.kind, status: 'failed', detail: why.slice(8, 500) }, { threadId: this.log.byHash.get(pr.hash).document.id }); continue } }
         if (this.waitingFor(pr)) continue
+        if (pr.kind === 'workspace-change' && await this.refereeMerges()) { pr.notYet = 'approved: GitHub’s referee merges it on its next round (every ten minutes), from the signed record'; continue }
         let result
         try { result = await this.act(pr) } catch (err) { result = { status: 'failed', detail: err.message.slice(0, 500) } }
         if (result.status !== 'failed' && onlyOwnYes(this.rules(), this.facts(pr))) result = { ...result, ownYesOnly: true, detail: `${result.detail ?? ''} (on its own person's yes alone, which the rules allow for now: an open question)`.trim() } // said openly, room lines 309-315
         await this.log.appendAsWorkspace('result', { proposal: pr.hash, kind: pr.kind, ...result }, { threadId: this.log.byHash.get(pr.hash).document.id })
       }
     } finally { this.busy = false }
+  }
+
+  /** Whether main's rules require the approval mark from an app: then GitHub's referee merges code, not this room. */
+  async refereeMerges (now = Date.now()) {
+    if (this.config.mergeHere) return false // the referee itself
+    if (this.ruleCheck && now - this.ruleCheck.at < RULES_EVERY_MS) return this.ruleCheck.on
+    let on = this.ruleCheck?.on ?? false // a failed read keeps the last answer
+    try {
+      const rules = await this.gh('GET', `/repos/${this.config.workspaceRepo}/rules/branches/${encodeURIComponent(this.config.workspaceBranch || 'main')}`)
+      on = (rules ?? []).some((r) => r.type === 'required_status_checks' && (r.parameters?.required_status_checks ?? []).some((c) => c.context === APPROVAL_CONTEXT && c.integration_id))
+    } catch {}
+    this.ruleCheck = { at: now, on }
+    return on
   }
 
   provenance (pr) {
@@ -158,8 +181,8 @@ export class Executor {
     st.setHead(pr, pull.head.sha)
     const sha = pr.head
     if (sha !== pr.change.sha && !st.holding(pr).dids.length) return `pull request #${number} has a new commit (${sha.slice(0, 10)}): approvals of earlier commits are void until someone reads it and approves it again`
-    const files = await this.gh('GET', `/repos/${repo}/pulls/${number}/files?per_page=100`)
-    const names = files.map((f) => f.filename)
+    const names = await this.changedFiles(repo, number, pull.changed_files)
+    if (typeof names === 'string') return names
     const rules = this.rules()
     pr.lane = laneOf(rules, names) // the small lane, by rules.json: the page and the docs only (public/setup.js is never small)
     const touched = needAPerson(rules, names)
@@ -172,6 +195,24 @@ export class Executor {
     return null
   }
 
+  /**
+   * Every file a pull request touches, page by page, with a renamed file's old name too (moving a protected file is
+   * touching it). A reason string instead when the list can't be had whole: the lane and the protected files are
+   * judged on every file or not at all.
+   */
+  async changedFiles (repo, number, count) {
+    if (Number.isFinite(count) && count > FILES_MAX) return `failed: pull request #${number} changes ${count} files, more than the ${FILES_MAX} GitHub can list, so the room can't check them all: split it`
+    const names = new Set()
+    let seen = 0
+    for (let page = 1; page <= FILES_MAX / 100; page++) {
+      const got = (await this.gh('GET', `/repos/${repo}/pulls/${number}/files?per_page=100&page=${page}`)) ?? []
+      for (const f of got) { seen++; names.add(f.filename); if (f.previous_filename) names.add(f.previous_filename) }
+      if (got.length < 100) break
+    }
+    if (Number.isFinite(count) && seen < count) return `GitHub listed ${seen} of the ${count} files pull request #${number} changes; it waits until every one can be checked`
+    return [...names]
+  }
+
   async mergeChange (pr) {
     const repo = this.config.workspaceRepo, { pr: number } = pr.change, sha = pr.head ?? pr.change.sha // the commit the holding approvals read
     const url = `https://github.com/${repo}/pull/${number}`
@@ -180,8 +221,10 @@ export class Executor {
     if (pull.state !== 'open') throw new Error(`pull request #${number} is ${pull.state}`)
     if (pull.base?.ref && pull.base.ref !== (this.config.workspaceBranch || 'main')) throw new Error(`pull request #${number} is into ${pull.base.ref}; this room merges into ${this.config.workspaceBranch || 'main'}`)
     if (pull.head.sha !== sha) throw new Error(`pull request #${number} changed after it was approved (now ${pull.head.sha}); the approvals of ${sha.slice(0, 10)} are void, so approve the new commit or propose it`)
-    // the commit status branch protection can require, so code merges only through this loop
-    try { await this.gh('POST', `/repos/${repo}/statuses/${sha}`, { state: 'success', context: 'we-play-interop/approval', description: 'Approved in the workspace log', target_url: this.config.publicUrl ? `${this.config.publicUrl}/api/log/${pr.hash}` : undefined }) } catch (err) { console.warn('approval mark not set:', err.message) } // a token without commit-status rights still merges, unless the branch rules require the mark
+    // the commit status main's rules can require, so code merges only through the room's rules. The referee must set it
+    // (main refuses the merge without it); a room merging by itself warns and goes on
+    const n = this.log.state.holding(pr).dids.length
+    try { await this.gh('POST', `/repos/${repo}/statuses/${sha}`, { state: 'success', context: APPROVAL_CONTEXT, description: `Approved in the room: ${n} approval${n === 1 ? '' : 's'} of ${sha.slice(0, 7)}, no veto`, target_url: this.config.publicUrl ? `${this.config.publicUrl}/api/log/${pr.hash}` : undefined }) } catch (err) { if (this.config.mergeHere) throw new Error(`the approval mark could not be set, so main would refuse it: ${err.message}`); console.warn('approval mark not set:', err.message) }
     const merged = await this.gh('PUT', `/repos/${repo}/pulls/${number}/merge`, { sha, merge_method: 'squash', commit_title: `${pull.title} (#${number})`, commit_message: this.provenance(pr) })
     return { status: 'merged', url, detail: `merged as ${merged.sha}`, sha: merged.sha }
   }

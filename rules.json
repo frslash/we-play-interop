@@ -20,7 +20,7 @@
       "why": "The page and the docs only: nothing about keys, permissions or the rules. public/setup.js writes what runs on people's computers, so it is never small.",
       "vetoWindowStartsAt": "the proposal"
     },
-    "needAPerson": ["rules.json", "src/shared/rules.js", "src/server/actions.js", "src/server/log.js", "src/server/hosted.js", "src/server/never.js", "src/server/drafts.js", "src/shared/guard.js", "src/shared/types.js", "src/shared/chain.js", "src/shared/did.js", "src/shared/crypto.js", "sandbox/", ".github/", "package.json", "package-lock.json"]
+    "needAPerson": ["rules.json", "src/shared/rules.js", "src/server/actions.js", "src/server/log.js", "src/server/hosted.js", "src/server/never.js", "src/server/drafts.js", "src/shared/guard.js", "src/shared/types.js", "src/shared/chain.js", "src/shared/did.js", "src/shared/crypto.js", "src/referee/", "sandbox/", ".github/", "package.json", "package-lock.json"]
   },
   "votes": {
     "closeAfterMinutes": 10
