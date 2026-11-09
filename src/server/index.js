@@ -540,7 +540,21 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     send(res, 404, 'not found')
   }
 
-  const server = createServer((req, res) => route(req, res).catch((err) => { console.error(err); if (!res.headersSent) send(res, 500, { error: 'internal error' }) }))
+  /**
+   * A body that is not all in within `bodyTimeoutMs` of the request's start is answered 408 and the connection closed, before
+   * any route (the door included) is waiting on it. It protects the room's connections and memory from one slow sender that
+   * trickles a body to hold a socket and its buffered bytes open. Only requests that carry a body; a long-lived GET is not one.
+   */
+  const bodyMs = config.bodyTimeoutMs ?? 30_000
+  const guardBody = (req, res) => {
+    if (!['POST', 'PUT', 'PATCH'].includes(req.method) || !(bodyMs > 0)) return
+    const timer = setTimeout(() => {
+      if (!res.headersSent) { res.writeHead(408, { 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': '*', connection: 'close' }); res.end(JSON.stringify({ error: 'the request body did not arrive in time' })) }
+      res.once('finish', () => req.destroy()); setTimeout(() => req.destroy(), 1000).unref() // let the 408 out first; the room never waits on a sender longer than that
+    }, bodyMs)
+    timer.unref(); req.once('end', () => clearTimeout(timer)); req.once('close', () => clearTimeout(timer))
+  }
+  const server = createServer((req, res) => { guardBody(req, res); route(req, res).catch((err) => { console.error(err); if (!res.headersSent) send(res, 500, { error: 'internal error' }) }) })
 
   const timers = []
   ctx.start = async () => {

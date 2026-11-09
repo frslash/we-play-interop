@@ -64,3 +64,22 @@ describe('the door through createApp', () => {
     } finally { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) }
   })
 })
+
+describe('a body that does not arrive', () => {
+  test('half a body is answered 408 after the bound, and the connection closes', async () => {
+    const { connect } = await import('node:net')
+    const dir = mkdtempSync(join(tmpdir(), 'wpi-slow-'))
+    const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', bodyTimeoutMs: 300, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } }
+    const ctx = await createApp(config, { awayGatherMs: 0, hostWelcomeMs: null })
+    try {
+      await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+      const text = await new Promise((resolve, reject) => {
+        const s = connect(ctx.server.address().port, '127.0.0.1'); let got = ''
+        s.on('data', (d) => { got += d }); s.on('close', () => resolve(got)); s.on('error', reject)
+        s.write('POST /trust-tasks HTTP/1.1\r\nhost: 127.0.0.1\r\ncontent-type: application/json\r\ncontent-length: 1000\r\n\r\n{"half":')
+        setTimeout(() => reject(new Error('the room kept waiting')), 5000).unref()
+      })
+      assert.match(text, /^HTTP\/1\.1 408 /)
+    } finally { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) }
+  })
+})
