@@ -2,7 +2,7 @@
 // Every door fails closed. Logs are content-blind: counts, sizes and refusal reasons only.
 // TEST MEMBERS ONLY (see src/shared/sealed.js). In memory for now; a live host is still needed.
 import { randomBytes, sha256, toHex, utf8 } from '../shared/crypto.js'
-import { AGENT_MAX_TTL_MS, AGENT_SCOPES, MAX_NOTE_BYTES, MEMBER_MAX_TTL_MS, verifyWith } from '../shared/sealed.js'
+import { AGENT_MAX_TTL_MS, AGENT_SCOPES, MAX_NOTE_BYTES, MEMBER_MAX_TTL_MS, argsHash, verifyWith } from '../shared/sealed.js'
 
 const HOST_NOTE_CAP = 64 * 1024
 export const LOG_MAX_AGE_MS = 3600e3 // stale log: deny
@@ -21,10 +21,12 @@ export class SealedHost {
     this.hits = new Map()
   }
 
-  createRoom (roomDid) { if (!this.rooms.has(roomDid)) this.rooms.set(roomDid, { epoch: 0, records: new Map(), revoked: new Set() }); return roomDid }
+  createRoom (roomDid) { if (!this.rooms.has(roomDid)) this.rooms.set(roomDid, { epoch: 0, records: new Map(), revoked: new Set(), removed: new Set() }); return roomDid }
   refreshStatus () { this.statusAt = this.now(); this.logAt = this.now() }
   /** The member's own tap, or the room's: the next call with this credential fails. */
   revoke (roomDid, credentialId) { this.rooms.get(roomDid)?.revoked.add(this.#h(credentialId)) }
+  /** Removing a member ends their credential AND every agent delegation they gave, in the same step, and moves the room to a new epoch (Security should-fix 5). */
+  removeMember (roomDid, memberDid) { const room = this.rooms.get(roomDid); room.removed.add(this.#h(memberDid)); return this.nextEpoch(roomDid) }
   /** After a removal the room moves to a new epoch; clients seal new notes with the new key. */
   nextEpoch (roomDid) { return ++this.rooms.get(roomDid).epoch }
 
@@ -38,12 +40,15 @@ export class SealedHost {
   call (presentation, args = {}) {
     const op = presentation?.op
     try {
-      const { room, who, credential } = this.#authorize(presentation)
+      const { room, who, credential } = this.#authorize(presentation, args)
       if (op === 'write') return this.#write(room, who, credential, args)
       if (op === 'list') return this.#list(room, who)
       if (op === 'read') return this.#read(room, who, args)
       // members and rules are the person's, never an agent's; the host has no member list, so these only bump the epoch
-      if (op === 'remove_member') { this.#log(op, 'ok'); return { epoch: this.nextEpoch(presentation.room) } }
+      if (op === 'remove_member') {
+        this.#log(op, 'ok')
+        return { epoch: typeof args.member === 'string' ? this.removeMember(presentation.room, args.member) : this.nextEpoch(presentation.room) }
+      }
       throw new Refused('unknown operation')
     } catch (e) {
       if (e instanceof Refused) { this.#log(op ?? 'unknown', 'refused', e.message); throw e }
@@ -51,7 +56,7 @@ export class SealedHost {
     }
   }
 
-  #authorize (p) {
+  #authorize (p, args = {}) {
     const fail = (m) => { throw new Refused(m) }
     if (!p || typeof p !== 'object' || JSON.stringify(p).length > 8192) fail('malformed or oversize')
     if (p.host !== this.host) fail('wrong host')
@@ -63,20 +68,24 @@ export class SealedHost {
     if (!exp || exp < this.now()) fail('nonce unknown, used or expired')
     const c = p.credential
     if (c?.issuer !== p.room || c?.credentialSubject?.room !== p.room) fail('credential is for another room')
-    let ok = false; try { ok = verifyWith(c, p.room) } catch {} // the room's did:key signs credentials
+    let ok = false; try { ok = verifyWith(c, p.room, 'assertionMethod') } catch {} // the room's did:key signs credentials
     if (!ok) fail('credential not signed by the room')
-    let holderOk = false; try { holderOk = verifyWith(p, p.holder) } catch {}
+    let holderOk = false; try { holderOk = verifyWith(p, p.holder, 'authentication') } catch {}
     if (!holderOk || p.holder !== c.credentialSubject.id) fail('holder does not own the credential')
+    let bound = false; try { bound = p.args === argsHash(args) } catch {}
+    if (!bound) fail('arguments are not the ones signed')
     const t = this.now(), from = Date.parse(c.validFrom), until = Date.parse(c.validUntil)
     if (!(from <= t) || !(t < until)) fail('credential expired or not yet valid')
     const role = c.credentialSubject.role, max = role === 'agent' ? AGENT_MAX_TTL_MS : MEMBER_MAX_TTL_MS
     if (role !== 'agent' && role !== 'member') fail('unknown role')
     if (until - from > max) fail('credential lives too long')
     if (room.revoked.has(this.#h(c.id))) fail('credential revoked')
+    const owner = role === 'agent' ? c.credentialSubject.delegatedBy : p.holder
+    if (typeof owner !== 'string' || room.removed.has(this.#h(owner))) fail('credential revoked') // a removed member's agent stops too; same answer as a revoked one
     const scopes = c.credentialSubject.scopes ?? []
     if (role === 'agent' && scopes.some((s) => !AGENT_SCOPES.includes(s))) fail('agent scope too wide')
     if (!OPS[p.op] || !scopes.includes(OPS[p.op])) fail('not permitted')
-    return { room, who: this.#h(p.room + '|' + (role === 'agent' ? c.credentialSubject.delegatedBy : p.holder)), credential: c }
+    return { room, who: this.#h(p.room + '|' + owner), credential: c }
   }
 
   // an agent's notes live in its person's own room records (one notebook per person)

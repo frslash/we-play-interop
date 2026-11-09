@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { describe, test } from 'node:test'
 import { newIdentity } from '../src/shared/did.js'
-import { present, issueCredential, newRoomKey, newRoomPersona, openNote, sealNote, MAX_NOTE_BYTES } from '../src/shared/sealed.js'
+import { present, argsHash, issueCredential, newRoomKey, newRoomPersona, openNote, sealNote, MAX_NOTE_BYTES } from '../src/shared/sealed.js'
 import { SealedHost } from '../src/server/sealed-host.js'
 import { toHex } from '../src/shared/crypto.js'
 
@@ -18,7 +18,7 @@ function setup (opts = {}) {
   const memberCred = issueCredential(room, { subject: person.did, role: 'member', scopes: ['notes:read', 'notes:write', 'members:admin'], notBefore: new Date(t), ttlMs: 24 * HOUR })
   const agentCred = issueCredential(room, { subject: agent.did, role: 'agent', scopes: ['notes:read', 'notes:write'], notBefore: new Date(t), ttlMs: 24 * HOUR, delegatedBy: person.did })
   const key = newRoomKey()
-  const call = (who, cred, op, args = {}, over = {}) => host.call(present(who, cred, { room: room.did, nonce: host.challenge(), op, host: host.host, ...over }), args)
+  const call = (who, cred, op, args = {}, over = {}) => host.call(present(who, cred, { room: room.did, nonce: host.challenge(), op, host: host.host, args, ...over }), args)
   const write = async (who, cred, id, text, epoch = 0) => call(who, cred, 'write', { recordId: id, epoch, sealed: await sealNote(key, { room: room.did, recordId: id, epoch }, text) })
   return { host, room, person, agent, memberCred, agentCred, key, call, write, clock }
 }
@@ -131,3 +131,48 @@ describe('P2 security must-fix (Security read of c9ab031)', () => {
     assert.ok(s.host.nonces.size <= 10000)
   })
 })
+
+describe('P2 security should-fix 5, 6, 7 (Security read of c9ab031)', () => {
+  test('5. removing a member stops their credential and their agent\'s delegation', async () => {
+    const s = setup()
+    await s.write(s.agent, s.agentCred, 'a1', 'before')
+    const { epoch } = await s.call(s.person, s.memberCred, 'remove_member', { member: s.person.did })
+    assert.equal(epoch, 1)
+    await refused(() => s.call(s.agent, s.agentCred, 'list'), /revoked/)
+    await refused(() => s.call(s.person, s.memberCred, 'list'), /revoked/)
+  })
+
+  test('5b. removing one member leaves another member and their agent working', async () => {
+    const s = setup()
+    const b = newRoomPersona(), bAgent = newRoomPersona()
+    const bCred = issueCredential(s.room, { subject: b.did, role: 'member', scopes: ['notes:read', 'notes:write'], notBefore: new Date(s.clock.now()), ttlMs: HOUR })
+    const bAgentCred = issueCredential(s.room, { subject: bAgent.did, role: 'agent', scopes: ['notes:read'], notBefore: new Date(s.clock.now()), ttlMs: HOUR, delegatedBy: b.did })
+    s.host.removeMember(s.room.did, s.person.did)
+    assert.deepEqual(await s.call(b, bCred, 'list'), []); assert.deepEqual(await s.call(bAgent, bAgentCred, 'list'), [])
+  })
+
+  test('6. a presentation binds its arguments: swapping the payload in flight is refused', async () => {
+    const s = setup()
+    const args = { recordId: 'n1', epoch: 0, sealed: await sealNote(s.key, { room: s.room.did, recordId: 'n1', epoch: 0 }, 'real') }
+    const p = present(s.person, s.memberCred, { room: s.room.did, nonce: s.host.challenge(), op: 'write', host: s.host.host, args })
+    await refused(() => s.host.call(p, { ...args, recordId: 'n2' }), /arguments are not the ones signed/)
+    const p2 = present(s.person, s.memberCred, { room: s.room.did, nonce: s.host.challenge(), op: 'write', host: s.host.host, args })
+    assert.deepEqual(s.host.call(p2, args), { ok: true })
+    assert.equal(argsHash({ a: 1, b: 2 }), argsHash({ b: 2, a: 1 }), 'key order does not matter')
+  })
+
+  test('7. purpose is checked: a credential must be assertionMethod, a presentation authentication', async () => {
+    const s = setup()
+    // a presentation re-signed with the wrong purpose
+    const { sign } = await import('../src/shared/proof.js')
+    const p = present(s.person, s.memberCred, { room: s.room.did, nonce: s.host.challenge(), op: 'list', host: s.host.host })
+    const { proof, ...doc } = p
+    const wrong = sign(doc, { seed: s.person.seed, verificationMethod: s.person.verificationMethod, proofPurpose: 'assertionMethod' })
+    await refused(() => s.host.call(wrong, {}), /holder does not own/)
+    // a credential signed by the room with the wrong purpose
+    const { proof: _cp, ...cdoc } = s.memberCred
+    const badCred = sign(cdoc, { seed: s.room.seed, verificationMethod: s.room.verificationMethod, proofPurpose: 'authentication' })
+    await refused(() => s.call(s.person, badCred, 'list'), /not signed by the room/)
+  })
+})
+

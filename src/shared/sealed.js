@@ -54,11 +54,15 @@ export function issueCredential (room, { subject, role, scopes, notBefore = new 
   return sign(doc, { seed: room.seed, verificationMethod: room.verificationMethod, proofPurpose: 'assertionMethod' })
 }
 
-/** The holder proves it owns the credential's subject DID, with a fresh nonce from the host. */
-export function present (holder, credential, { room, nonce, op, host }) {
-  const doc = { '@context': ['https://www.w3.org/ns/credentials/v2'], type: 'WpiPresentation', holder: holder.did, room, host, nonce, op, credential }
+/** Hash of a call's arguments, signed into the presentation so a request cannot be altered in flight (Security should-fix 6). */
+export const argsHash = (args = {}) => toHex(sha256(canonicalize(args)))
+
+/** The holder proves it owns the credential's subject DID, with a fresh nonce from the host, for exactly these args. */
+export function present (holder, credential, { room, nonce, op, host, args = {} }) {
+  const doc = { '@context': ['https://www.w3.org/ns/credentials/v2'], type: 'WpiPresentation', holder: holder.did, room, host, nonce, op, args: argsHash(args), credential }
   return sign(doc, { seed: holder.seed, verificationMethod: holder.verificationMethod, proofPurpose: 'authentication' })
 }
 
-export const verifyWith = (doc, did) => verifySignature(doc, multikeyToEd25519(resolveDidKey(did).verificationMethod[0].publicKeyMultibase)).ok
+/** Signature by `did`'s key AND the proof's purpose is the one expected: credentials are 'assertionMethod', presentations 'authentication' (Security should-fix 7). */
+export const verifyWith = (doc, did, purpose) => doc?.proof?.proofPurpose === purpose && verifySignature(doc, multikeyToEd25519(resolveDidKey(did).verificationMethod[0].publicKeyMultibase)).ok
 export { canonicalize, sha256, toHex, ed25519 }
