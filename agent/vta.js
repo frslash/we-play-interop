@@ -55,6 +55,14 @@ function signerOfDocument (doc) {
   const named = doc.issuer !== undefined ? (isObj(doc.issuer) ? doc.issuer.id : doc.issuer) : Array.isArray(doc.controller) && doc.controller.length === 1 ? doc.controller[0] : doc.controller
   return typeof named === 'string' && /^did:[a-z0-9]+:[^\s#?]+$/.test(named) ? named : null
 }
+// What this protects: the session token this bridge gets from the trust agent lets whoever holds it act as the person.
+// Plain http:// carries it in the clear, so it is taken only for this machine (a trust agent run locally); anything
+// else must be https://.
+const LOCAL_HOSTS = /^(localhost|[a-z0-9-]+\.localhost|127(\.\d{1,3}){3}|\[::1\])$/i
+export function safeAddress (url) {
+  let u; try { u = new URL(String(url ?? '')) } catch { return false }
+  return u.protocol === 'https:' || (u.protocol === 'http:' && LOCAL_HOSTS.test(u.hostname))
+}
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
@@ -108,6 +116,7 @@ export class Vta {
   constructor ({ credential, url = credential?.vtaUrl, fetch: f = globalThis.fetch, sleep = pause, resolver = createResolver() } = {}) {
     if (!credential) throw new Error('no trust agent credential')
     if (!/^https?:\/\//.test(String(url ?? ''))) throw new Error('the trust agent\'s address is missing: set VTA_URL, or use a credential that carries vtaUrl')
+    if (!safeAddress(url)) throw new Error('the trust agent\'s address is plain http:// on another machine: the sign-in token would cross the network in the clear. Use its https:// address (plain http:// is taken only for this machine, localhost)')
     this.me = credential; this.did = credential.did; this.vtaDid = credential.vtaDid; this.url = String(url).replace(/\/+$/, '')
     this.fetch = f; this.sleep = sleep; this.token = null; this.refreshToken = null
     this.resolver = resolver; this.keyIds = new Map() // `${did}|${purpose}` -> the trust agent's keyId for the key that DID's document lists under that purpose

@@ -9,7 +9,7 @@ import { keyFromDidDocument } from '../src/shared/chain.js'
 import { newIdentity, resolveDidKey } from '../src/shared/did.js'
 import { sign, verifySignature } from '../src/shared/proof.js'
 import { instant, typeUri } from '../src/shared/trusttask.js'
-import { Vta, VtiError, decodeCredential } from '../agent/vta.js'
+import { Vta, VtiError, decodeCredential, safeAddress } from '../agent/vta.js'
 import { startFakeVti } from './helpers/fake-vti.js'
 
 const noWait = async () => {}
@@ -192,4 +192,13 @@ describe('community requests completed as the member', () => {
     const { proof: _p, ...rest } = await vta.actAsMember(sent, persona)
     assert.equal(canonicalize(rest), canonicalize({ ...sent, issuer: persona }))
   })
+})
+
+test('a plain http:// trust agent address is taken only for this machine: the sign-in token must not cross a network in the clear', () => {
+  for (const u of ['https://vta.example', 'http://127.0.0.1:8100', 'http://localhost:8100', 'http://agent.localhost', 'http://[::1]:8100']) assert.equal(safeAddress(u), true, u)
+  for (const u of ['http://vta.example', 'http://10.0.0.5:8100', 'http://localhost.example.com', 'ftp://vta.example', 'not a url', '']) assert.equal(safeAddress(u), false, u)
+  const credential = { did: 'did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH', vtaDid: 'did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH' }
+  assert.throws(() => new Vta({ credential, url: 'http://vta.example' }), /in the clear/)
+  assert.ok(new Vta({ credential, url: 'http://127.0.0.1:9' }))
+  assert.ok(new Vta({ credential, url: 'https://vta.example' }))
 })
