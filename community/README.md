@@ -11,6 +11,23 @@ Four services; only `proxy` is public. Anything here deploys on the next push to
 
 Secrets never go in the repo or the logs. Each service makes its keys on its own volume at first start. The two passphrases are **sealed Railway variables** (`VTA_SEED_PASSPHRASE`, `VTC_SECRETS_PASSPHRASE`), never on the volume beside the file they lock.
 
+## What a host needs (one screen, for someone outside)
+
+Plain Dockerfiles, env-var config, volumes by path; nothing here needs Railway except `.github/workflows/deploy-community.yml`. **Test keys only** until Security's real-people gate opens.
+
+| Container | Port | Public | Volume | Secret / config |
+|---|---|---|---|---|
+| `vta` | 8100 | no | `/var/lib/vta` | `VTA_SEED_PASSPHRASE` (sealed), `VTA_ADMIN_DID` |
+| `vtc` | 8200 (a guess; check on first build) | no | `/var/lib/vtc` | `VTC_SECRETS_PASSPHRASE` (sealed) |
+| `mediator` | 7037 | no | none | `DATABASE_URL` pointing at the Redis |
+| `redis` | 6379 | no | none | `redis:7.4.6-alpine@sha256:3b73847e72874be07e6657b129a94761662b79bc0f679273757d4218573b2a98` |
+| `proxy` | 8080 | **yes, the only one** | none | `VTC_UPSTREAM`, `VTA_UPSTREAM`, `MEDIATOR_UPSTREAM` (`host:port` of the three above, private network) |
+
+- The two passphrases are different, machine-made (128 bits or more), runtime-only secrets: never a build argument or image `ENV`, never in a log. The host holds them, so whoever runs the host can open the test keys: fine for test keys, not for a real person's.
+- Each service needs a private network between them; only `proxy` gets a public address (`vtc.`, `vta.`, `mediator.inwove.org` point at it).
+- Each volume must survive restarts; losing one loses that service's keys.
+- Right looks like: the proxy answers on its public name, the services answer only through it, and every other path is a 404.
+
 ## How the passphrases are held (Security 12376; test keys only)
 
 Each of `vta` and `vtc` starts as root for two jobs only: `chown` its volume to uid 10001 (never `RAILWAY_RUN_UID=0`), and write its passphrase to a **tmpfs** file (`/dev/shm/{vta,vtc}-creds/`, dir 0700, file 0400, uid 10001; exit 78 if the directory is not a tmpfs). It then drops to uid 10001 with `setpriv` and `env -u`, so neither the service nor `/proc/<pid>/environ` carries the variable. The VTA's secrets backend is `encrypted_file` with `kek = { source = "passphrase", file = ... }` (VTI `docs/02-vta/secret-backends.md`); the VTC's `setup.toml` must point at `/dev/shm/vtc-creds/secrets-passphrase` the same way. Two different machine-made passphrases (128 bits or more, minimum length checked), each a sealed Railway variable, runtime only: never a build `ARG` or Dockerfile `ENV` (checked by `community/test-entrypoints.sh`, which also plants a fake passphrase and greps every output line and the volume for it).
