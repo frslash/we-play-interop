@@ -246,6 +246,7 @@ export class Facilitator {
         if (await this.offer(back, null, Date.parse(e.timestamp))) did.offered.push(back.id)
         return back
       }
+      case 'decline': return this.decline(step, e, null, Date.parse(e.timestamp)) // the plain no: it goes on to someone else, never back to this seat
       case 'blocked': {
         const on = s.on && st.isHuman(s.on) ? s.on : this.personFor(step)
         // loop guard: a seat re-posting "I'm stuck" must not make the room ask again. Not twice within ten minutes, and
