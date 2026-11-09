@@ -21,6 +21,8 @@ const ROUTINE = /^https:\/\/api\.anthropic\.com\/v1\/claude_code\/routines\/[\w-
 export const BUILD_MS = 3 * 3600_000 // a build can take a while: a builder's step is asked about after three quiet hours, not half an hour
 const LOOK_EVERY_MS = 2 * 60_000 // GitHub is asked about the builders' pull requests at most every two minutes, and only while one is building
 const BRIEF_MAX = 12_000 // what a routine's start can carry: the step, its lines and its reading
+/** Where the room shows a pull request's changes as plain text (src/server/index.js), or null with no public address. */
+export const diffLink = (publicUrl, number) => publicUrl ? `${String(publicUrl).replace(/\/+$/, '')}/api/pulls/${number}/diff` : null
 export const branchOf = (step) => `claude/builder-${step.id.slice(0, 12)}`
 const same = (s) => String(s ?? '').toLowerCase().replace(/[’`]/g, "'")
 
@@ -133,8 +135,9 @@ export class Builder {
         continue
       }
       // proposed like any change to the room's code, pinned to the commit it was built at: the room's rules decide
-      const proposal = await this.say(builder, { kind: 'workspace-change', title: clip(pr.title, 140), body: clip(`Built for the step “${s.title}” (board step ${s.id.slice(0, 8)}). Done when: ${s.done}\n\n${pr.body ?? ''}`, 4000), change: { pr: pr.number, sha: pr.head.sha } }, { type: 'propose' })
-      await this.say(builder, { text: `Built: ${clip(pr.title, 200)}. Pull request #${pr.number}, now in Decide for the room's approval.`, kind: 'message', step: { of: s.id, say: 'result', evidence: [{ label: `pull request #${pr.number}`, url: link }] } }, { threadId: s.thread })
+      const diff = diffLink(this.ctx.config.publicUrl, pr.number), read = `Read its changes from the room: ${diff ?? `read_pull_request with pr ${pr.number}`} (head commit ${pr.head.sha}).`
+      const proposal = await this.say(builder, { kind: 'workspace-change', title: clip(pr.title, 140), body: clip(`Built for the step “${s.title}” (board step ${s.id.slice(0, 8)}). Done when: ${s.done}\n${read}\n\n${pr.body ?? ''}`, 4000), change: { pr: pr.number, sha: pr.head.sha } }, { type: 'propose' })
+      await this.say(builder, { text: `Built: ${clip(pr.title, 200)}. Pull request #${pr.number}, now in Decide for the room's approval. ${read}`, kind: 'message', step: { of: s.id, say: 'result', evidence: [{ label: `pull request #${pr.number}`, url: link }, ...(diff ? [{ label: `its changes, as text (head ${pr.head.sha.slice(0, 7)})`, url: diff }] : [])] } }, { threadId: s.thread })
       done.push({ step: s.id, pr: pr.number, proposal: proposal?.hash ?? null })
     }
     return done
