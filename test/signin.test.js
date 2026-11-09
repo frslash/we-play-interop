@@ -749,3 +749,21 @@ describe('who sign-in signs as', () => {
     assert.equal(b.me.did, webvh, 'no door: the log\'s DID, as before')
   })
 })
+
+describe('the origin in step 1', () => {
+  const ask = (h, kb, origin) => h.send(h.op(kb, 'request', { purpose: 'login', mode: 'scan' }), { origin })
+  test('a production room never answers an http origin; a room that is not in production answers one on this machine only', async () => {
+    const kb = newIdentity()
+    for (const [publicUrl, origin, host] of [['http://inwove.example', 'http://inwove.example', 'inwove.example'], ['', 'http://localhost:3000', 'localhost:3000'], ['http://localhost:3000', 'http://localhost:3000', 'localhost:3000']]) {
+      const h = await room({ production: true, publicUrl, did: publicUrl ? 'did:webvh:scidroom:' + host.replace(/:\d+$/, '') : null })
+      h.host = host
+      const r = await ask(h, kb, origin)
+      assert.equal(r.status === 200, false, `production, ${publicUrl || 'no PUBLIC_URL'}, origin ${origin}: ${JSON.stringify(r.body?.payload ?? r.body)}`)
+      assert.notEqual(r.body?.payload?.origin, origin)
+    }
+    const dev = await room({ production: false, publicUrl: 'http://localhost:3000', did: null }); dev.host = 'localhost:3000'
+    assert.equal(dev.signIn.portalOrigin(null), 'http://localhost:3000', 'local trial keeps working outside production')
+    const far = await room({ production: false, publicUrl: 'http://inwove.example', did: null })
+    assert.equal(far.signIn.portalOrigin(null), null, 'and only on this machine: an http origin elsewhere is never answered')
+  })
+})

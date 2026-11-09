@@ -183,10 +183,26 @@ export class SignIn {
    * counts only when it names the very host the request was sent to (a page calling its own server).
    */
   portalOrigin (http) {
-    if (this.config.publicUrl) { try { return new URL(this.config.publicUrl).origin } catch { return null } }
-    if (!http?.origin || !http?.host) return null
-    let o; try { o = new URL(http.origin) } catch { return null }
-    return o.host.toLowerCase() === String(http.host).toLowerCase() ? o.origin : null
+    let o = null
+    if (this.config.publicUrl) { try { o = new URL(this.config.publicUrl).origin } catch { return null } }
+    else {
+      if (!http?.origin || !http?.host) return null
+      let u; try { u = new URL(http.origin) } catch { return null }
+      o = u.host.toLowerCase() === String(http.host).toLowerCase() ? u.origin : null
+    }
+    return this.#originAllowed(o) ? o : null
+  }
+
+  /**
+   * The schema (the origin in step 1) allows https only, and a real wallet refuses anything else. The room departs from
+   * that in one place, on purpose and for local trial only: outside production it also takes http://localhost or
+   * http://127.0.0.1 (an address on this machine), so the page can be tried without a certificate. In production an
+   * origin that is not https is never answered, whatever PUBLIC_URL or the Origin header says.
+   */
+  #originAllowed (o) {
+    if (!o) return false
+    let u; try { u = new URL(o) } catch { return false }
+    return u.protocol === 'https:' || (!this.config.production && u.protocol === 'http:' && LOOPBACK(hostnameOf(u.host)))
   }
 
   /**

@@ -25,7 +25,7 @@ Three keys take part. `K_b` is made by the browser for this one sign-in. `K_a` i
 The rules, each kept as OpenVTC has it:
 
 - Both `K_b` and `K_a` must be Ed25519 `did:key`s. Anything else is refused before a signature is read or a DID looked up.
-- `request` is taken only over https and only from the room's own page (the `Origin` header must be the origin of `PUBLIC_URL`). `redeem` only over https. The room's own addition: a room that is not in production also answers on `localhost`, so the page can be tried locally. A real wallet will not finish there, because its key holder signs a grant only for an `https://` origin.
+- `request` is taken only over https and only from the room's own page (the `Origin` header must be the origin of `PUBLIC_URL`). `redeem` only over https. The room's own addition, a deliberate departure from the schema (which allows an `https://` origin only) for local trial: a room that is not in production also answers on `localhost` or `127.0.0.1`, and then step 1's `origin` is `http://…`. A real wallet refuses that origin (its key holder signs a grant only for an `https://` origin), so nobody finishes a real sign-in there. In production the room never answers an `http://` origin, whatever `PUBLIC_URL` or the `Origin` header says.
 - The first wallet to scan holds the request. A second one hears "already used" and nothing else.
 - One attempt at the number. A wrong number, a statement that does not verify, or a person the room does not let in ends the request. The wallet is told only "not authorised", except for the wrong number.
 - The person's statement must be signed for `authentication`, the grant for `assertionMethod`. Each must be addressed to the room's DID, fresh, and is used once.
