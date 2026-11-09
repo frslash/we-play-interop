@@ -1,5 +1,6 @@
 // We Play Interop: one small server. Reads are public; every write is a signed
 // Trust Task document, verified and appended to the hash-chained log.
+import { handleRoomDid } from './roomdid.js'
 import { createHash } from 'node:crypto'
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -186,6 +187,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       let body; try { body = JSON.parse(raw) } catch { return send(res, 400, { jsonrpc: '2.0', error: { code: -32700, message: 'parse error' }, id: null }) }
       return handleMcp(ctx, req, res, body)
     }
+    if (handleRoomDid(req, res, path, { dataDir: config.dataDir, file: config.didLogFile })) return
     if (path === '/.well-known/webfinger' || path.startsWith('/ap/')) return ctx.activitypub.handle(req, res, url)
     if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
     if (path === '/api/info') return send(res, 200, views.info(ctx))
