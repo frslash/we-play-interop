@@ -193,6 +193,13 @@ export function registerAgentTools (server, adapter) {
     const live = adapter.code ? await adapter.code.read(path, { from, to }).catch(() => null) : null
     return live ?? { commit: localCommit(), ...readCode(path, { from, to }) }
   }))
+  server.registerTool('read_pull_request', {
+    description: 'Read a pull request to the room\'s own code (its number), read-only: plain text, its head commit at the top, then the diff of every file, whole or lines from..to. Read it before you approve a change: an approval counts for the head commit you read, and a later push needs reading again. Only the room\'s own repository.',
+    inputSchema: { pr: z.number().int().min(1), from: z.number().int().min(1).optional(), to: z.number().int().min(1).optional() },
+  }, safe(async ({ pr, from, to }) => {
+    if (!adapter.code?.pullDiff) throw new Error('this room has no link to its repository on GitHub, so it cannot show pull requests here')
+    return (await adapter.code.pullDiff(pr, { from, to })).text
+  }))
   server.registerTool('submit_change', {
     description: 'Hand the room a change to its own code, when the room has agreed on it: a unified diff (as git diff prints it) against the latest main, or against base. The room tests it with no secrets and no network, and on green opens the pull request itself and proposes it in Decide, crediting you and your person. Red comes back to you with the end of the test log. Keep it small and focused; the room\'s dependencies go through a person.',
     inputSchema: { title: z.string().min(1).max(140), why: z.string().max(2000).optional(), patch: z.string().min(1).max(200000), base: z.string().regex(/^[0-9a-f]{40}$/).optional() },

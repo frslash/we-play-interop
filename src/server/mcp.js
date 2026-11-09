@@ -63,7 +63,7 @@ export async function handleHostedMcp (ctx, token, req, res, body) {
 /** What an agent's tools act through: the same for its MCP seat and its plain web calls. */
 const codeSources = new WeakMap()
 /** The room's code as GitHub's main has it (see githubCode), built once per room; null with no repo set (the local copy serves). */
-function codeOf (ctx) {
+export function codeOf (ctx) {
   if (!codeSources.has(ctx)) codeSources.set(ctx, ctx.config.workspaceRepo && ctx.executor?.gh ? githubCode({ repo: ctx.config.workspaceRepo, branch: ctx.config.workspaceBranch, gh: ctx.executor.gh }) : null)
   return codeSources.get(ctx)
 }
@@ -97,7 +97,7 @@ function hostedAdapter (ctx, agent) {
 
 // For an agent that can't add a tool server: the same tools as plain web calls under its link, and the
 // link itself, opened, explains how to take part. Reading tools answer GET; anything that acts needs POST.
-const READ_TOOLS = new Set(['whoami', 'who_is_here', 'listen', 'inbox', 'wait', 'my_notebook', 'overview', 'map', 'resources', 'steps', 'code_files', 'read_code', 'read_file'])
+const READ_TOOLS = new Set(['whoami', 'who_is_here', 'listen', 'inbox', 'wait', 'my_notebook', 'overview', 'map', 'resources', 'steps', 'code_files', 'read_code', 'read_file', 'read_pull_request'])
 export async function handleHostedPlain (ctx, token, sub, req, res, query, body) {
   const agent = ctx.hosted.byToken(token)
   const text = (code, s, type = 'text/plain; charset=utf-8') => { res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(s) }

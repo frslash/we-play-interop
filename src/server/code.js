@@ -6,6 +6,7 @@ import { join, normalize } from 'node:path'
 const ROOTS = ['src', 'public', 'agent', 'sandbox', 'test', '.github']
 const FILES = ['README.md', 'package.json', 'LICENSE']
 const MAX = 120_000
+const PR_PAGES = 30 // GitHub lists at most 3000 files of a pull request
 
 export function codeFiles (base = process.cwd()) {
   const out = []
@@ -65,7 +66,50 @@ export function githubCode ({ repo, branch = 'main', gh, ttlMs = 15_000 }) {
     }
     return trees.get(sha)
   }
+  const pulls = new Map() // pull request number -> { head, at, top, files } (the files are kept by head commit)
+  /** One pull request of this repo (the room's own, never another), as plain text: what it is and its head commit first. */
+  const pullDiff = async (number, { from, to } = {}) => {
+    const n = Number(number)
+    if (!Number.isInteger(n) || n < 1 || n > 1e7) throw new Error('pr is the pull request\'s number in the room\'s own repository, for example 40')
+    let kept = pulls.get(n)
+    if (!kept || Date.now() - kept.at >= ttlMs) {
+      const pr = await gh('GET', `/repos/${repo}/pulls/${n}`)
+      const head = pr.head?.sha
+      if (kept?.head !== head) {
+        const files = []
+        for (let page = 1; page <= PR_PAGES; page++) {
+          const got = await gh('GET', `/repos/${repo}/pulls/${n}/files?per_page=100&page=${page}`)
+          files.push(...(got ?? []))
+          if (!got || got.length < 100) break
+        }
+        kept = { head, files }
+      }
+      kept.at = Date.now()
+      kept.top = [
+        `Pull request #${n} in ${repo}: ${pr.title ?? ''}`,
+        `Head commit: ${head}`,
+        `Into: ${pr.base?.ref ?? '?'}${pr.base?.sha ? ` at ${pr.base.sha}` : ''}`,
+        `State: ${pr.merged_at ? 'merged' : pr.state ?? '?'}${pr.draft ? ' (draft)' : ''} · ${kept.files.length} file${kept.files.length === 1 ? '' : 's'} changed, +${pr.additions ?? '?'} −${pr.deletions ?? '?'}`,
+        `Link: ${pr.html_url ?? `https://github.com/${repo}/pull/${n}`}`,
+        'An approval counts for this head commit only: a later push changes it, and the change needs reading again.',
+      ]
+      if (pulls.size > 20) pulls.delete(pulls.keys().next().value)
+      pulls.set(n, kept)
+    }
+    const body = kept.files.flatMap((f) => [
+      `diff --git a/${f.previous_filename ?? f.filename} b/${f.filename}`,
+      `${f.status}${f.previous_filename ? ` from ${f.previous_filename}` : ''}, +${f.additions ?? 0} −${f.deletions ?? 0}`,
+      `--- ${f.status === 'added' ? '/dev/null' : `a/${f.previous_filename ?? f.filename}`}`,
+      `+++ ${f.status === 'removed' ? '/dev/null' : `b/${f.filename}`}`,
+      ...(f.patch != null ? f.patch.split('\n') : ['(no text diff here: a binary file, or too large for GitHub to show)']),
+    ])
+    const a = Math.max(1, Number(from) || 1), e = Math.min(body.length, Number(to) || body.length)
+    let part = body.slice(a - 1, e).join('\n')
+    if (part.length > MAX) part = part.slice(0, MAX) + `\n… (cut at ${MAX} characters: ask for fewer lines with from and to)`
+    return { pr: n, head: kept.head, lines: body.length, from: a, to: e, text: [...kept.top, `Lines ${a}-${e} of ${body.length} below.`, '', part].join('\n') }
+  }
   return {
+    pullDiff,
     async files () { const c = await commit(); return { commit: c, files: (await tree(c)).map(({ path, bytes }) => ({ path, bytes })) } },
     async read (path, { from, to } = {}) {
       const c = await commit(), p = normalize(String(path)).replace(/^(\.\/)+/, '')
