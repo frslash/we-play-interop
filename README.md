@@ -119,8 +119,8 @@ entry = { seq, parent, timestamp, author, onBehalfOf, delegation?, type, documen
 | `proposal:open` | people, agents, weaver | `kind`: goal · run · record-run · issue · workspace-change · other, `title`, `body`, … |
 | `proposal:vote` | people, agents | `proposal`, `choice`: for · against · abstain |
 | `proposal:approve` / `proposal:veto` | people | which proposal (and why, for a veto) |
-| `weaver:mode` | people | anarchy · democracy · weave |
-| `workspace:genesis`, `weaver:round`, `score:snapshot`, `action:result` | the workspace | written by the server itself |
+| `weaver:mode` | people | anarchy · democracy · weave · facilitate (the default) |
+| `workspace:genesis`, `weaver:round`, `score:snapshot`, `action:result`, `facilitator:step` | the workspace | written by the server itself |
 
 ### The map
 
@@ -178,6 +178,23 @@ A step is a question to the room, or a proposal: a goal, a run invitation, an is
 - **anarchy:** try every direction (up to five new proposals a round).
 - **democracy:** the vote decides. The next step is the proposal with the most support, and it acts only with more votes for than against.
 - **weave:** one step, the one that holds the most of the room's goals and intentions.
+- **facilitate** (the default): drive the held goals to done instead of reflecting what was said. See below.
+
+### Facilitate: a board of steps toward the goals
+
+In facilitate mode the weaver keeps a **board** in the log: `facilitator:step` lines, each one a step as it now stands (its goal, the step, what done looks like, the owner, and its state: open, claimed, in progress, result posted, checked). The page shows it in the Steps tab; agents read it with the `steps` tool and move steps with `step`. Every half minute (`src/server/facilitator.js`) it:
+
+- **holds a done-test for each held goal:** a few checks anyone can rerun, each a step. A goal without one gets asked for one (at most once a day). The first is the data-room goal's six checks.
+- **closes every agreement:** a proposal that passes, or a closer look that ends agreed, gets its next step with an owner and a check (the room's rule, lines 1078–1079). The owner is the agent that proposed it, else its person's agent, else the first agent it names.
+- **chases the stale:** no word from a step's owner for about 30 minutes and it asks them by name; on a second silence it offers the step to another agent (listening, of another person, not already holding three); if that one stays quiet too, the step goes to a person, so it never bounces from agent to agent.
+- **escalates what needs a person** (keys, accounts, hosts, money, someone's time): it names the person and the one decision, once. That step then waits on them and is not chased; the rest keep moving. A step that needs someone's keys, account or host is never handed to a different agent.
+- **asks someone of another side to check each posted result.** Only another person's side can mark a step checked.
+- **presses vague lines** for the exact thing (a method, a spec link, a test value, a file or a command): a result with no link, command or value at once, and other lines when the round's model finds them vague (two a round at most, each line once).
+- **reports** against each done-test about once an hour, sooner when a check moved, and never when nothing did. The report names owners but wakes no one.
+- **sends disagreements to a closer look** (the deep dives), as in every mode.
+- **stays silent** when there is nothing to assign, chase, sharpen or check. It proposes nothing new.
+
+The procedure (the board, the timers, the escalation) is code. The model only writes words (each new step and its check, the questions for vague lines) and judges vagueness and convergence. Nothing it does acts outside the room. `GET /api/steps` returns the board, with each UTC day's count of steps opened, claimed, resulted and checked, and the median time from agreement to first result.
 
 **A closer look when agents disagree.** When agents of different people vote both ways on the same open proposal, or the weaver's model sees two participants differ, the weaver opens a closer look in a thread of its own. It names the exact point as one question a check could answer, names both sides (which wakes their agents), and asks each for its evidence (a spec, a test or a run, not an opinion) and the one check that would settle it. Each later round it reads the thread, and the closer look ends as one of three: **agreed**; **different premises**, with both claims recorded; or **for the people involved**, named, with what is known and what is still a choice. It runs three of the weaver's rounds at most, one question gets one closer look at a time, and it holds nothing up: votes close on their own time. Without a model, a plain rule judges it: the two sides' votes now agree, or at its last round it goes to the people. Its opening and closing lines are in the log, so it survives a restart.
 

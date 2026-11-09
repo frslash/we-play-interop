@@ -37,6 +37,7 @@ export const TYPES = {
   upload: T('media/upload'),
   change: T('room/change'),
   hosted: T('agent/hosted'),
+  step: T('facilitator/step'),
   link: T('member/link'),
   vouch: T('member/vouch'),
   replace: T('member/replace'),
@@ -46,7 +47,7 @@ export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => 
 
 /** Who may write each kind of document. */
 export const WHO = {
-  genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
+  genesis: 'workspace', round: 'workspace', step: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
   link: 'human', vouch: 'human', replace: 'human', // a lost key: people only, never agents (room lines 772-821)
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone', resource: 'anyone',
@@ -71,7 +72,17 @@ export const WAY_KINDS = ['identity', 'credentials', 'messaging', 'data', 'sync'
 export const BOARD_WAY_PREFIXES = ['credential:', 'task:', 'ceremony:', 'basic:']
 export const WAY_RE = /^[A-Za-z0-9][A-Za-z0-9._:/+#-]{0,199}$/
 
-export const MODES = ['anarchy', 'democracy', 'weave']
+export const MODES = ['anarchy', 'democracy', 'weave', 'facilitate']
+/** facilitate (the default): the weaver keeps a board of steps toward the held goals and drives them to done (facilitator.js). */
+export const DEFAULT_MODE = 'facilitate'
+/** Where a step on the facilitator's board stands. */
+export const STEP_STATES = ['open', 'claimed', 'in progress', 'result posted', 'checked']
+/**
+ * What a line can say about a step, in its note's "step" field (the step tool and the page write it):
+ *  claim · update · result (with its evidence) · check (passed or not; only someone of another person's side) ·
+ *  release (give it back) · blocked (waiting on a person's one decision) · test (the done-test of a held goal: its checks)
+ */
+export const STEP_SAYS = ['claim', 'update', 'result', 'check', 'release', 'blocked', 'test']
 /** What can wake an agent: someone talks to it, replies to it, the weaver connects it, a new vote, every round, a roundup of the conversation, or anything new. */
 export const WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'proposal', 'connection', 'ask', 'round', 'roundup', 'any']
 // what wakes an agent unless it says otherwise: anything aimed at it, its own person speaking to the room, a question to everyone, a new vote
@@ -172,6 +183,21 @@ export function checkBoardRun (run) {
   return null
 }
 
+/** A note's "step" field: what it says about a step on the board (or, for test, about a goal). */
+function checkStepSay (s) {
+  if (!isObj(s)) return 'step: { of, say } (or { goal, say: "test", checks })'
+  if (!STEP_SAYS.includes(s.say)) return `step.say: ${STEP_SAYS.join(' | ')}`
+  if (s.say === 'test') {
+    if (!HASH_RE.test(s.goal ?? '')) return 'step.goal: the hash of the goal proposal'
+    return Array.isArray(s.checks) && s.checks.length >= 1 && s.checks.length <= 12 && s.checks.every((c) => str(c, 3, 300)) ? null : 'step.checks: 1 to 12 checks, each 3 to 300 characters (one thing anyone can rerun, with its command or value)'
+  }
+  if (!HASH_RE.test(s.of ?? '')) return 'step.of: the id of the step (the hash of its first line)'
+  if (s.say === 'check' && typeof s.passed !== 'boolean') return 'step.passed: true when the check passed, false when it did not'
+  if (s.say === 'blocked' && !str(s.decision, 3, 300)) return 'step.decision: the one decision it waits for, 3 to 300 characters'
+  if (s.on !== undefined && !DID_RE.test(s.on)) return 'step.on: the DID of the person it waits on'
+  return checkLinks(s.evidence, 'step.evidence')
+}
+
 export function checkPayload (name, doc) {
   const p = doc.payload
   if (!isObj(p)) return 'payload must be an object'
@@ -247,7 +273,7 @@ export function checkPayload (name, doc) {
       if (!NOTE_KINDS.includes(p.kind)) return `kind: ${NOTE_KINDS.join(' | ')}`
       if (p.pair !== undefined && (!Array.isArray(p.pair) || p.pair.length !== 2 || !p.pair.every((s) => SLUG_RE.test(s)))) return 'pair: two project slugs'
       if (p.scenario !== undefined && !SLUG_RE.test(p.scenario)) return 'scenario: a scenario id'
-      return null
+      return p.step === undefined ? null : checkStepSay(p.step)
     case 'propose':
       if (!PROPOSAL_KINDS.includes(p.kind)) return `kind: ${PROPOSAL_KINDS.join(' | ')}`
       if (!str(p.title, 1, 140)) return 'title: 1 to 140 characters'

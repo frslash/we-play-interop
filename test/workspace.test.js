@@ -307,6 +307,8 @@ describe('the workspace, end to end', () => {
   })
 
   test('the weaver posts a round, model or not, and turns new directions into proposals', async () => {
+    // these rounds are weave mode's, as the next tests' are; facilitate (the default) has its own, in facilitate.test.js
+    assert.equal((await send(human, 'mode', { mode: 'weave', reason: 'the weave tests' })).status, 201)
     await send(human, 'note', { text: 'I want alpha and gamma to connect', kind: 'intention', pair: ['alpha', 'gamma'] })
     const round = await ctx.weaver.tick()
     assert.ok(round, 'a round was posted')

@@ -97,7 +97,7 @@ function hostedAdapter (ctx, agent) {
 
 // For an agent that can't add a tool server: the same tools as plain web calls under its link, and the
 // link itself, opened, explains how to take part. Reading tools answer GET; anything that acts needs POST.
-const READ_TOOLS = new Set(['whoami', 'who_is_here', 'listen', 'inbox', 'wait', 'my_notebook', 'overview', 'map', 'resources', 'code_files', 'read_code', 'read_file'])
+const READ_TOOLS = new Set(['whoami', 'who_is_here', 'listen', 'inbox', 'wait', 'my_notebook', 'overview', 'map', 'resources', 'steps', 'code_files', 'read_code', 'read_file'])
 export async function handleHostedPlain (ctx, token, sub, req, res, query, body) {
   const agent = ctx.hosted.byToken(token)
   const text = (code, s, type = 'text/plain; charset=utf-8') => { res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(s) }

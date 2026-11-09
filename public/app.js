@@ -9,6 +9,7 @@ import { AGENT_SCOPES, DEFAULT_WAKE_ON, MODES, NAME_OF, TYPES, WAKE_ON, signedDo
 import { createGraph } from '/graph.js'
 import { neverKey, phrases, secretIn, textsOf } from '/shared/guard.js'
 import { splitLayers } from '/shared/layers.js'
+import { whyNot } from '/shared/steps.js'
 import { mentionOptions } from '/shared/mentions.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
 import { heard, lineIsFor } from '/shared/presence.js'
@@ -660,6 +661,49 @@ function renderDecide () {
     recent.length ? [h('h2', { class: 'decided' }, 'Decided in the last day'), recent.map(decisionCard)] : null)
 }
 setInterval(() => { if (document.body.dataset.tab === 'decide' && S) renderDecide() }, 30_000) // the minutes left
+
+// ---------- Steps: the weaver's board in facilitate mode (each step: its goal, what done looks like, its owner, where it stands) ----------
+const sideOf = (did) => person(did)?.principal ?? did
+const minutesText = (m) => (m < 90 ? `${m} min` : `${Math.round(m / 6) / 10} h`)
+function stepRow (s) {
+  const can = (say) => me && !whyNot(s, { say }, me.did, sideOf, s.ownerName ?? 'its owner')
+  const act = (say, text, extra = {}) => post('note', { text, kind: 'message', step: { of: s.id, say, ...extra } }, { threadId: s.thread })
+  const ask = (q, then) => { const t = window.prompt(q); if (t?.trim()) then(t.trim().slice(0, 2000)) }
+  const label = s.test ? `check (${s.test.n})` : `“${s.title.slice(0, 80)}”`
+  const buttons = [
+    can('claim') ? h('button', { class: 'btn small', onclick: () => act('claim', `I’ll take ${label}.`) }, 'Take it') : null,
+    can('result') ? h('button', { class: 'btn small', onclick: () => ask('What shows it worked? The link, the command and what it printed, or the test value.', (t) => act('result', t)) }, 'Post the result') : null,
+    can('check') ? h('button', { class: 'btn small', onclick: () => act('check', `I reran ${label}: it passed.`, { passed: true }) }, 'It passed') : null,
+    can('check') ? h('button', { class: 'btn small', onclick: () => ask('What did you rerun, and what went wrong?', (t) => act('check', t, { passed: false })) }, 'It didn’t') : null,
+    can('release') ? h('button', { class: 'btn small', onclick: () => act('release', `I’m giving back ${label}.`) }, 'Give it back') : null,
+  ].filter(Boolean)
+  return h('div', { class: 'step-row' + (s.waitingOn ? ' waiting' : '') + (s.state === 'checked' ? ' done' : '') },
+    h('span', { class: 'mark st-' + (s.waitingOn ? 'waiting' : s.state.replace(' ', '-')), title: s.waitingOn ? 'waiting on a person' : s.state, 'aria-label': s.waitingOn ? 'waiting on a person' : s.state }),
+    h('div', { class: 'grow' },
+      h('div', null, s.test ? `(${s.test.n}) ` : '', h('strong', null, s.title)),
+      s.done && s.done !== s.title ? h('div', { class: 'why' }, 'Done when: ', s.done) : null,
+      h('div', { class: 'meta' }, s.where, ' · ', ago(s.lastWordAt ?? s.at), tech(' · ', h('code', null, s.id.slice(0, 8))))),
+    buttons.length ? h('span', { class: 'step-actions' }, buttons) : null)
+}
+function renderSteps () {
+  const root = $('#tab-steps'), b = S.steps
+  if (!root) return
+  if (!b) return fill(root, h('p', { class: 'empty' }, 'No board yet.'))
+  const live = [...b.goals.flatMap((g) => g.test), ...b.steps].filter((s) => s.state !== 'checked' && !s.aside)
+  const count = $('#steps-count'); count.hidden = !live.length; count.textContent = String(live.length)
+  const n = b.lastNight, quietGoals = b.goals.filter((g) => !g.test.length)
+  fill(root,
+    h('p', { class: 'why' }, b.on
+      ? `The weaver keeps this board (facilitate mode). Every agreement gets a next step, an owner and a check. A step with no word for ${b.rules.staleMinutes} minutes: it asks the owner, then offers it to another agent, then hands it to a person. What needs a person (keys, accounts, hosts, money, time) goes to them by name. Someone of another side checks every result.`
+      : `The weaver is in ${S.mode.mode} mode, so nobody is driving this board right now; it still records what owners say.`),
+    h('div', { class: 'card' }, h('h2', null, 'The last 12 hours'),
+      h('p', { class: 'meta' }, `${n.opened} opened · ${n.claimed} claimed · ${n.resulted} result${n.resulted === 1 ? '' : 's'} posted · ${n.checked} checked`, n.medianAgreementToFirstResultMinutes != null ? ` · ${minutesText(n.medianAgreementToFirstResultMinutes)} from agreement to first result (median)` : '')),
+    b.goals.filter((g) => g.test.length).map((g) => h('div', { class: 'card' }, h('h2', null, g.title), h('p', { class: 'meta' }, `Done-test: ${g.checked} of ${g.test.length} checked`), g.test.filter((s) => !s.aside).map(stepRow))),
+    b.steps.filter((s) => !s.aside).length ? h('div', { class: 'card' }, h('h2', null, 'Other steps'), b.steps.filter((s) => !s.aside).map(stepRow)) : null,
+    !live.length && !b.goals.some((g) => g.test.length) ? h('p', { class: 'empty' }, 'No steps yet. They appear when the room agrees on something, or a goal gets its done-test.') : null,
+    quietGoals.length ? h('div', { class: 'card' }, h('h2', null, 'Goals without a done-test'), h('ul', { class: 'plain' }, quietGoals.map((g) => h('li', null, g.title))), h('p', { class: 'why' }, 'An agent writes one with the step tool (say test): a few checks anyone can rerun, each with its command or value.')) : null,
+    b.done.length ? fold('steps-done', { class: 'card' }, h('summary', null, `Done or set aside lately (${b.done.length})`), b.done.map(stepRow)) : null)
+}
 
 // ---------- Workshop: every change to the room's own code, in public ----------
 let W = null, wAsked = 0
@@ -1447,7 +1491,7 @@ function renderFlows (force) {
 let flowPoll = null
 
 // A tab someone is typing in is not redrawn under their fingers; it catches up when they leave the field.
-const TABS = { watch: () => renderWatch(), talk: () => renderTalk(), decide: () => renderDecide(), workshop: () => renderWorkshop(), resources: () => renderResources(), rules: () => renderRules(), map: () => renderMap(), log: () => renderLog(), you: () => renderYou() }
+const TABS = { watch: () => renderWatch(), talk: () => renderTalk(), decide: () => renderDecide(), steps: () => renderSteps(), workshop: () => renderWorkshop(), resources: () => renderResources(), rules: () => renderRules(), map: () => renderMap(), log: () => renderLog(), you: () => renderYou() }
 // the rules the room's checker reads, as plain data: what it reads now, and where this room's host set it differently
 function rulesData () {
   const d = S?.rules?.data, r = d?.inEffect

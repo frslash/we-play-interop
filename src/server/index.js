@@ -38,6 +38,7 @@ import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { createResolver } from './resolver.js'
 import * as views from './views.js'
 import { Weaver } from './weaver.js'
+import { Facilitator } from './facilitator.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const MAX_BODY = 64 * 1024
@@ -116,6 +117,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   await ctx.never.load()
   log.guards = [(doc) => secretIn(doc.payload), (doc, principal) => ctx.never.check(principal, doc.payload)]
   weaver.skip = () => ctx.check.dids() // the check walks the path; it is not part of the conversation
+  ctx.facilitator = new Facilitator({ ctx }) // the board of steps toward the held goals (facilitate mode)
+  weaver.facilitator = ctx.facilitator
 
   const page = readFileSync(join(root, 'public/index.html'), 'utf8')
   const importMap = /<script type="importmap">([\s\S]*?)<\/script>/.exec(page)?.[1] ?? ''
@@ -185,6 +188,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
     if (path === '/api/info') return send(res, 200, views.info(ctx))
     if (path === '/api/state') return send(res, 200, views.state(ctx))
+    if (path === '/api/steps') return send(res, 200, ctx.facilitator.view())
     if (path === '/api/map' || path === '/api/board') return send(res, 200, views.mapView(ctx))
     if (path === '/api/resources') return send(res, 200, views.resourcesView(ctx, q))
     if (path === '/api/log') return send(res, 200, views.entries(ctx, q))
@@ -388,6 +392,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     timers.push(setInterval(() => board.refresh(), config.boardRefreshMinutes * 60_000))
     timers.push(setInterval(() => board.snapshotIfChanged().catch((e) => console.error('score snapshot:', e)), 60_000))
     timers.push(setInterval(() => weaver.tick(), 30_000))
+    timers.push(setInterval(() => ctx.facilitator.tick(), 30_000)) // the board's procedure: hear, close agreements, chase, report
     timers.push(setInterval(() => executor.tick().catch((e) => console.error('executor:', e)), 30_000))
     if (config.checkEveryMinutes !== 0) ctx.check.start(server.address()?.port)
     await ctx.host.start()
