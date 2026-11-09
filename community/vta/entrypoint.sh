@@ -8,7 +8,6 @@ umask 077
 ulimit -c 0
 : "${VTA_SEED_PASSPHRASE:?VTA_SEED_PASSPHRASE must be set as a sealed Railway variable}"
 [ "${#VTA_SEED_PASSPHRASE}" -ge 22 ] || { echo "VTA_SEED_PASSPHRASE is too short (machine-made, 128 bits or more)" >&2; exit 78; }
-[ "$(id -u)" = 0 ] || { echo "entrypoint must start as root to prepare the volume and the tmpfs, then drops itself" >&2; exit 78; }
 DATA="${VTA_DATA_DIR:-/var/lib/vta}"
 CREDS="${VTA_CREDS_DIR:-/dev/shm/vta-creds}"
 CONF="$DATA/setup.toml"
@@ -19,6 +18,8 @@ CONF="$DATA/setup.toml"
 if [ ! -f "$DATA/.initialised" ]; then
   printf '%s' "${ROOM_ACCESS_LINE:-}" | grep -Eqx '[0-9a-f]{64}' || { echo "ROOM_ACCESS_LINE is not set to the hash of the room's signed line naming who can read this project's secrets: no first admin before it" >&2; exit 78; }
 fi
+# Only now root: the checks above read and refuse, and touch nothing.
+[ "$(id -u)" = 0 ] || { echo "entrypoint must start as root to prepare the volume and the tmpfs, then drops itself" >&2; exit 78; }
 
 # C: the volume belongs to the service user; no RAILWAY_RUN_UID=0.
 chown 10001:10001 "$DATA" && chmod 0700 "$DATA"

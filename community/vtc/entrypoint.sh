@@ -8,7 +8,6 @@ umask 077
 ulimit -c 0
 : "${VTC_SECRETS_PASSPHRASE:?VTC_SECRETS_PASSPHRASE must be set as a sealed Railway variable}"
 [ "${#VTC_SECRETS_PASSPHRASE}" -ge 22 ] || { echo "VTC_SECRETS_PASSPHRASE is too short (machine-made, 128 bits or more)" >&2; exit 78; }
-[ "$(id -u)" = 0 ] || { echo "entrypoint must start as root to prepare the volume and the tmpfs, then drops itself" >&2; exit 78; }
 DATA="${VTC_DATA_DIR:-/var/lib/vtc}"
 CREDS="${VTC_CREDS_DIR:-/dev/shm/vtc-creds}"
 CONF="$DATA/setup.toml"
@@ -22,6 +21,8 @@ if [ ! -f "$DATA/.initialised" ]; then
   grep -Eq '^vtc_name[[:space:]]*=[[:space:]]*"[^"]*TEST' "$CONF" || { echo "$CONF: vtc_name must say TEST (this is a test community)" >&2; exit 78; }
   grep -Eq '^vtc_description[[:space:]]*=[[:space:]]*"[^"]*test keys' "$CONF" || { echo "$CONF: vtc_description must say it runs on test keys" >&2; exit 78; }
 fi
+# Only now root: the checks above read and refuse, and touch nothing.
+[ "$(id -u)" = 0 ] || { echo "entrypoint must start as root to prepare the volume and the tmpfs, then drops itself" >&2; exit 78; }
 
 chown 10001:10001 "$DATA" && chmod 0700 "$DATA"
 
