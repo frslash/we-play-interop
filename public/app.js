@@ -199,7 +199,7 @@ function says (e) {
     case 'note': return p.kind === 'message' ? p.text : `${p.kind}: ${p.text}`
     case 'card': return `updated their card${p.goals?.length ? ': ' + p.goals.join(' · ') : ''}`
     case 'propose': return p.kind === 'goal' ? `proposed a goal: ${p.title}` : `proposed (${p.kind}): ${p.title}`
-    case 'vote': return `${{ for: 'said yes to', against: 'said no to', abstain: 'abstained on' }[p.choice]} "${pr(p.proposal)}"${p.reason ? ': ' + p.reason : ''}`
+    case 'vote': return `${{ for: 'said yes to', against: 'said no to', abstain: 'abstained on' }[p.choice]} "${pr(p.proposal)}"${p.reason ? ': ' + p.reason : ''}${p.judgment ? ' (its own judgment, not its person’s words)' : ''}`
     case 'approve': return `approved "${pr(p.proposal)}"`
     case 'veto': return `vetoed "${pr(p.target)}": ${p.reason}`
     case 'mode': return `set the mode to ${p.mode}${p.reason ? ': ' + p.reason : ''}`
@@ -718,10 +718,16 @@ function modeChoice (a) {
     const t = new Date(), until = a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString()
     await post('delegate', { delegate: a.did, scope: AGENT_SCOPES, ask: ASK_OF[m], label: a.name }, { issuedAt: t.toISOString(), expiresAt: until })
   }
+  const setVoting = async (ev) => {
+    const ask = (a.ask ?? []).filter((x) => x !== 'vote'); if (!ev.target.checked) ask.push('vote')
+    const t = new Date()
+    await post('delegate', { delegate: a.did, scope: a.scope?.length ? a.scope : AGENT_SCOPES, ask, label: a.name }, { issuedAt: t.toISOString(), expiresAt: a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString() })
+  }
   const regrant = async () => { const t = new Date(); await post('delegate', { delegate: a.did, scope: AGENT_SCOPES, ask: a.ask ?? [], label: a.name }, { issuedAt: t.toISOString(), expiresAt: a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString() }) }
   const missing = AGENT_SCOPES.filter((x) => !(a.scope ?? []).includes(x))
   return h('div', { class: 'mode' },
     missing.includes('change') ? h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'It can’t hand the room changes to its code yet: its permission is from before that existed.'), h('button', { class: 'btn small primary', onclick: regrant }, 'Let it hand in code changes')) : null,
+    h('label', { class: 'row', title: 'When off, its votes wait for your OK, like any line it asks you about.' }, h('input', { type: 'checkbox', checked: !(a.ask ?? []).includes('vote'), disabled: !(a.scope ?? []).includes('vote'), onchange: setVoting }), h('span', { class: 'grow meta' }, 'It votes for you by its own judgment (it says when it does; your own vote always outweighs it)')),
     h('div', { class: 'seg small' }, Object.entries(MODES_OF).map(([k, [label]]) => h('button', { class: now === k ? 'on' : '', title: MODES_OF[k][1], onclick: () => set(k) }, label))),
     h('p', { class: 'meta' }, MODES_OF[now][1], a.until ? ` It may act for you until ${new Date(a.until).toLocaleDateString([], { day: 'numeric', month: 'short' })}.` : '', a.hosted ? '' : ' (It holds its own key, so lines that need your OK are refused and it asks you instead.)'))
 }

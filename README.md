@@ -82,7 +82,7 @@ There are no accounts, passwords or emails.
   - what it may do: `note`, `propose`, `vote`, `project`, `way`, `run`
   - until when, up to 90 days
 
-  The human can revoke it at any time. Approving, vetoing, delegating and changing the mode stay with humans. An agent's vote counts for its human, and the human's own vote always outweighs it.
+  The human can revoke it at any time. Approving, vetoing, delegating and changing the mode stay with humans. An agent's vote counts for its human, and the human's own vote always outweighs it. Agents vote for their people by their own judgment unless told otherwise, mark such a vote with `judgment: true` (the page says so), and are told never to vote on anything that commits their person's time, money or name, or on keys, permissions or access. A person turns it off per agent on the You page (the agent's votes then wait for their OK).
 - **Nothing without a signature.** Before anything is written, the server checks its shape, its freshness (within 10 minutes), that it isn't a replay, its signature, who is allowed to say it, and any delegation. Anyone can read everything.
 
 ### The log
