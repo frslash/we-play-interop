@@ -190,3 +190,11 @@ test('an answer and a refusal carry the request\'s parentThreadId and ceremony w
   const plain = responseTo(taskDocument({ type: JOIN, issuer: person.did, recipient: service.did }), {}, service.did)
   assert.ok(!('parentThreadId' in plain) && !('ceremony' in plain))
 })
+
+test('a stated expiresAt is honoured to the second: one second past it is expired, one second before it is accepted', async () => {
+  const now = Date.now(), at = (ms) => instant(now + ms)
+  const mk = (over) => signedTask(person, { type: JOIN, recipient: service.did, issuedAt: at(-60_000), expiresAt: at(0), payload: {}, ...over })
+  const code = (d, t) => { const r = checkTask(d, { me: service.did, now: t }); return r.ok ? 'ok' : r.code }
+  const d = mk(), exp = Date.parse(d.expiresAt)
+  assert.equal(code(d, exp + 1000), 'expired'); assert.equal(code(d, exp), 'expired'); assert.equal(code(d, exp - 1000), 'ok')
+})

@@ -117,7 +117,9 @@ export function acceptedUntil (doc, { horizonMs = MAX_EXPIRY_MS } = {}) {
  * that it is addressed to `me` (one DID, or a list when a service answers to more than one). Returns { ok: true } or
  * { ok: false, code, message, details? } with a shared code. `bytes` is the size of the document as it arrived
  * (checked first, before anything is believed). The codes are the ones OpenVTC's door gives (its own tests pin
- * them): `expired` only for a document that was once good; one that never was (no issuedAt, written in the future,
+ * them): a stated `expiresAt` is honoured to the moment (refused once now >= expiresAt, as upstream refuses at
+ * expiresAt <= now); the slack in acceptedUntil is only how long the record of an id is kept, and a stated expiry
+ * beyond `horizonMs` still stops at the horizon. `expired` only for a document that was once good; one that never was (no issuedAt, written in the future,
  * an expiry at or before its own issuedAt, no recipient) is `malformedRequest`, because waiting will not fix it.
  */
 export function checkTask (doc, { me, now = Date.now(), bytes, maxBytes = MAX_DOCUMENT_BYTES, requireRecipient = true, horizonMs = MAX_EXPIRY_MS } = {}) {
@@ -134,7 +136,7 @@ export function checkTask (doc, { me, now = Date.now(), bytes, maxBytes = MAX_DO
   if (doc.expiresAt !== undefined) {
     if (typeof doc.expiresAt !== 'string' || !RFC3339.test(doc.expiresAt) || !Number.isFinite(Date.parse(doc.expiresAt))) return no('malformedRequest', 'expiresAt: an RFC 3339 time')
     if (Date.parse(doc.expiresAt) <= at) return no('malformedRequest', 'expiresAt is not after issuedAt: this document was never good')
-    if (now > acceptedUntil(doc, { horizonMs })) return no('expired', 'this document has run out (its expiresAt has passed, or it is older than a stated expiry is honoured for)')
+    if (now >= Date.parse(doc.expiresAt) || now > acceptedUntil(doc, { horizonMs })) return no('expired', 'this document has run out (its expiresAt has passed, or it is older than a stated expiry is honoured for)')
   } else if (now > acceptedUntil(doc)) return no('expired', 'this document is older than ten minutes: write a fresh one')
   const mine = me ? [].concat(me) : []
   if (mine.length) {
