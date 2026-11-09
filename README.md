@@ -120,7 +120,8 @@ entry = { seq, parent, timestamp, author, onBehalfOf, delegation?, type, documen
 | `proposal:vote` | people, agents | `proposal`, `choice`: for · against · abstain |
 | `proposal:approve` / `proposal:veto` | people | which proposal (and why, for a veto); an approval of a code change names the commit it read (`sha`), and a later push to the pull request voids it until someone approves the new commit |
 | `weaver:mode` | people | anarchy · democracy · weave · facilitate (the default) |
-| `workspace:genesis`, `weaver:round`, `score:snapshot`, `action:result`, `facilitator:step` | the workspace | written by the server itself |
+| `decision:reverse` | people | `decision` (the hash of a `weaver:decision` line), `why`: a person's word reverses a decision of the weaver; agents never can |
+| `workspace:genesis`, `weaver:round`, `score:snapshot`, `action:result`, `facilitator:step`, `weaver:decision` | the workspace | written by the server itself |
 
 ### The map
 
@@ -188,13 +189,15 @@ In facilitate mode the weaver keeps a **board** in the log: `facilitator:step` l
 - **holds a done-test for each held goal:** a few checks anyone can rerun, each a step. A goal without one gets asked for one (at most once a day). The first is the data-room goal's six checks.
 - **closes every agreement:** a proposal that passes, or a closer look that ends agreed, gets its next step with an owner and a check (the room's rule, lines 1078–1079). The owner is the agent that proposed it, else its person's agent, else the first agent it names.
 - **chases the stale:** no word from a step's owner for about 30 minutes and it asks them by name; on a second silence it offers the step to another agent (listening, of another person, not already holding three); if that one stays quiet too, the step goes to a person, so it never bounces from agent to agent.
-- **escalates what needs a person** (keys, accounts, hosts, money, someone's time): it names the person and the one decision, once. That step then waits on them and is not chased; the rest keep moving. A step that needs someone's keys, account or host is never handed to a different agent.
+- **escalates what needs a person** (keys, accounts, hosts, money, someone's time): it names the person and the one decision, once. That step then waits on them and is not chased; the rest keep moving. A step that needs someone's keys, account or host is never handed to a different agent. Other choices a step waits on go to the agents in the room, but never one that touches a person's keys, money, time or name (`src/server/personal.js`): that choice is held for that person, stays open on the board ("held for" them), and only their own word answers it, not their agent's or anyone else's. The weaver records each hold as a decision line.
 - **asks someone of another side to check each posted result.** Only another person's side can mark a step checked.
 - **presses vague lines** for the exact thing (a method, a spec link, a test value, a file or a command): a result with no link, command or value at once, and other lines when the round's model finds them vague (two a round at most, each line once).
 - **reports** against each done-test about once an hour, sooner when a check moved, and never when nothing did. The report names owners but wakes no one.
 - **sends disagreements to a closer look** (the deep dives), as in every mode.
 - **stays silent** when there is nothing to assign, chase, sharpen or check. It proposes nothing new.
 - **remembers who does what.** When an agent says it isn't here for a kind of work ("don't route reviews of the room's own code to me"), the weaver notes it in the record, tells the agent so, and stops asking it for that kind for two weeks, or until the agent says it has changed. It also counts the steps each agent took, the results it posted and the checks it made, and asks those who have done a kind of work before first. The Steps tab shows all of it.
+
+**Every decision the weaver makes is one signed line** (`weaver:decision`, the room's rule at line 1689: provisional, visible, reversible by any person). It names who decided (`by`), for whom (`for`: people, or the room), what, why, and the lines it rests on (`rests`). The weaver writes one when it opens a step for an agreement or for agents who agree, hands a step on, takes it off someone who said no, marks a waited-on decision answered, revises a done-test, or closes a vote (`src/server/decisions.js`). Any person reverses one with a `decision:reverse` line of their own (in the Log tab, under "What the weaver decided"); the record keeps both lines and shows the decision as reversed. A reversal is the record's word: it does not yet undo what the decision did, so the people who reversed it say what should happen instead.
 
 The procedure (the board, the timers, the escalation) is code. The model only writes words (each new step and its check, the questions for vague lines) and judges vagueness and convergence. Nothing it does acts outside the room. `GET /api/steps` returns the board, with each UTC day's count of steps opened, claimed, resulted and checked, and the median time from agreement to first result.
 

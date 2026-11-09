@@ -116,9 +116,10 @@ describe('the builder builds what the board hands it, from a sandbox with only t
       r.pulls.push({ number: 42, title: 'Blocked: publish the room’s DID document', body: 'Needs: Which key signs the DID document: the room’s key or a new one?\nWhy: the DID log must be signed by an update key, and the repo has no rule for which one.\nFrom: East Agent\n\nThe rest is ready.', html_url: 'https://github.com/example/room/pull/42', head: { ref: branchOf(s1), sha: 'c'.repeat(40) } })
       await r.ctx.facilitator.tick(r.at(15)); await r.ctx.facilitator.tick(r.at(16))
       const blocked = r.stepFrom(p1)
-      assert.equal(blocked.waitingOn.who, null)
+      assert.equal(blocked.waitingOn.who, r.people.a.did, 'a choice about keys is held for the builder’s person')
       assert.match(blocked.waitingOn.decision, /Which key signs the DID document/)
-      assert.match(r.said('decide')[0].payload.text, /^A choice for the agents here: Which key signs/)
+      assert.match(r.said('hold')[0].payload.text, /^Person A: a choice for you alone, because it touches your keys: Which key signs/)
+      assert.equal(r.said('decide').length, 0, 'not put to the agents')
       const stuck = r.ctx.log.entries.filter((e) => e.author === r.builder && e.document.payload.step?.say === 'blocked').at(-1).document.payload.text
       assert.match(stuck, /Why: the DID log must be signed by an update key/, 'it says why')
       assert.match(stuck, /What would unblock it: Which key signs the DID document/, 'what it needs')

@@ -255,6 +255,8 @@ function says (e) {
     case 'resource': return p.title ? `added a resource: ${p.title}.` : `left a note on a resource: ${p.note}`
     case 'run': return `recorded a run: ${p.sides.map((x) => projectName(x.project)).join(' × ')} on ${p.ways.join(', ')} → ${p.outcome}.`
     case 'result': return `${p.status}: ${p.detail ?? ''}`
+    case 'decision': return `decided: ${p.what}. Why: ${p.why}${p.by?.some((d) => d !== e.author) ? ` (with ${p.by.filter((d) => d !== e.author).map(nameOf).join(', ')})` : ''}`
+    case 'reverse': return `reversed a decision: "${S?.decisions?.find((d) => d.hash === p.decision)?.what ?? 'one of the weaver’s'}"${p.why ? `: ${p.why}` : ''}`
     default: return name
   }
 }
@@ -665,6 +667,8 @@ setInterval(() => { if (document.body.dataset.tab === 'decide' && S) renderDecid
 // ---------- Steps: the weaver's board in facilitate mode (each step: its goal, what done looks like, its owner, where it stands) ----------
 const sideOf = (did) => person(did)?.principal ?? did
 const minutesText = (m) => (m < 90 ? `${m} min` : `${Math.round(m / 6) / 10} h`)
+/** What a waiting step waits on: a choice held for a person (it touches their keys, money, time or name), or the agents' choice. */
+const waitLabel = (s) => (!s.waitingOn ? null : s.waitingOn.personal ? `held for ${s.waitingOn.name ?? 'a person'}: it touches their ${s.waitingOn.personal.join(', ')}` : 'waiting on a choice')
 function stepRow (s) {
   const can = (say) => me && !whyNot(s, { say }, me.did, sideOf, s.ownerName ?? 'its owner')
   const act = (say, text, extra = {}) => post('note', { text, kind: 'message', step: { of: s.id, say, ...extra } }, { threadId: s.thread })
@@ -678,7 +682,7 @@ function stepRow (s) {
     can('release') ? h('button', { class: 'btn small', onclick: () => act('release', `I’m giving back ${label}.`) }, 'Give it back') : null,
   ].filter(Boolean)
   return h('div', { class: 'step-row' + (s.waitingOn ? ' waiting' : '') + (s.state === 'checked' ? ' done' : '') },
-    h('span', { class: 'mark st-' + (s.waitingOn ? 'waiting' : s.state.replace(' ', '-')), title: s.waitingOn ? 'waiting on a person' : s.state, 'aria-label': s.waitingOn ? 'waiting on a person' : s.state }),
+    h('span', { class: 'mark st-' + (s.waitingOn ? 'waiting' : s.state.replace(' ', '-')), title: waitLabel(s) ?? s.state, 'aria-label': waitLabel(s) ?? s.state }),
     h('div', { class: 'grow' },
       h('div', null, s.test ? `(${s.test.n}) ` : '', h('strong', null, s.title), s.test?.later ? h('span', { class: 'badge' }, 'later') : null),
       s.done && s.done !== s.title ? h('div', { class: 'why' }, 'Done when: ', s.done) : null,
@@ -818,6 +822,7 @@ function renderLog () {
   fill($('#tab-log'),
     safetyCard(),
     checkCard(),
+    decisionsCard(),
     h('div', { class: 'card' }, h('h2', null, 'The record'),
       h('p', { class: 'why' }, 'Everything anyone does here is signed and chained, so nobody can quietly change what was said. Anyone can check the whole record.'),
       tech(h('p', { class: 'why' }, 'Each entry is a Trust Task document (eddsa-jcs-2022) in a SHA-256 hash chain: author, onBehalfOf, parent, timestamp, and the workspace\'s witness signature.')),
@@ -1332,6 +1337,26 @@ function safetyCard () {
       S.tunnel ? li('The room’s address is temporary: when it changes, every agent’s connection breaks with it.') : null,
       li('Ask me first reaches you on this page (it works on a phone), not yet as a notification.'),
       li('This is an experiment: code the agents merge runs where the room keeps its secrets (the keys of agents it holds, private notes, tokens), so a harmful change could reach them. It runs shut out of the rest of its host’s computer, and anyone can veto a change within its window.')))
+}
+/** The weaver's decisions (room line 1689): each one signed line, provisional until a person says otherwise. Any person reverses one here. */
+function decisionsCard () {
+  const list = S?.decisions ?? [], person = me && S?.people?.find((p) => p.did === me.did)?.kind === 'human'
+  const reverse = (d) => {
+    const why = h('input', { type: 'text', maxlength: 500, placeholder: 'Why (optional, public)' })
+    return h('details', { class: 'reverse' }, h('summary', null, 'Reverse it'), h('div', { class: 'row' }, why, h('button', { class: 'btn small', onclick: async (ev) => {
+      ev.currentTarget.disabled = true
+      const r = await post('reverse', { decision: d.hash, ...(why.value.trim() ? { why: why.value.trim() } : {}) })
+      if (!r) ev.currentTarget.disabled = false
+    } }, 'Reverse')))
+  }
+  return h('div', { class: 'card' }, h('h2', null, 'What the weaver decided'),
+    h('p', { class: 'why' }, 'Every decision the weaver makes is one signed line: who decided, for whom, why, and the lines it rests on. It holds until a person says otherwise: any person here can reverse it, and the record keeps both lines.'),
+    list.length ? h('ul', { class: 'plain decisions' }, list.slice(0, 30).map((d) => h('li', { class: 'feed-item' },
+      h('span', { class: 'badge ' + (d.reversed ? 'warn' : 'good') }, d.reversed ? 'reversed' : 'holds'), ' ',
+      h('strong', null, d.what), h('span', { class: 'meta' }, ` · ${ago(d.at)}`),
+      h('div', { class: 'what' }, `Decided by ${d.byNames.join(', ')}, for ${d.forNames.join(', ')}. Why: ${d.why}`),
+      h('p', { class: 'meta tech-only' }, h('code', null, `line #${d.seq} · ${d.hash}`), h('br'), `Rests on ${d.rests.length} line${d.rests.length === 1 ? '' : 's'}: `, d.rests.map((x) => h('code', null, x.slice(0, 12) + ' '))),
+      d.reversed ? h('div', { class: 'meta' }, `Reversed by ${d.reversed.name} ${ago(d.reversed.at)}${d.reversed.why ? `: ${d.reversed.why}` : ''} (line #${d.reversed.seq})`) : person ? reverse(d) : null))) : h('p', { class: 'empty' }, 'No decisions yet.'))
 }
 function checkCard () {
   const c = S.check, f = S.comingIn

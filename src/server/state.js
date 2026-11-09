@@ -56,6 +56,9 @@ export class State {
     // is not here for (it fades, see facilitator.js), and the steps it took, the results it posted and the checks it made
     this.notFor = new Map() // agent -> { kinds, onlyFor, at, because }
     this.doers = new Map() // agent -> { took, results, checks, code: { took, results, checks }, at }
+    // the weaver's decisions, each one signed line (room line 1689): who decided, for whom, why, the lines it rests on,
+    // and whether a person reversed it (then also by whom, when, why, and the reversing line)
+    this.decisions = new Map() // decision entry hash -> { hash, seq, at, by, for, what, why, rests, about, reversed }
     this.counts = {}
     this.seq = -1
   }
@@ -141,6 +144,14 @@ export class State {
         if (p.facilitator) this.facilitatorSaid(e)
         break
       case 'step': this.step(e); break
+      case 'decision':
+        if (e.author === this.workspace) this.decisions.set(e.hash, { hash: e.hash, seq: e.seq, at: e.timestamp, by: p.by, for: p.for, what: p.what, why: p.why, rests: p.rests, about: p.about ?? null, reversed: null })
+        break
+      case 'reverse': {
+        const d = this.decisions.get(p.decision)
+        if (d && !d.reversed && this.isHuman(e.author) && e.author === e.onBehalfOf) d.reversed = { by: e.author, at: e.timestamp, why: p.why ?? '', hash: e.hash, seq: e.seq }
+        break
+      }
       case 'propose': this.addProposal(e); break
       case 'vote': {
         const pr = this.proposals.get(p.proposal)
