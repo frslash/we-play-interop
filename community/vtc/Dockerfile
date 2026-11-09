@@ -1,7 +1,7 @@
 # VTC (vtc-service, binary vtc): no keyring, no admin-ui; encrypted-file secrets, passphrase from a sealed variable.
 FROM rust:1.95.0-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082 AS build
 ARG VTI_SHA=c6964c4612131089e1add0f47575894e1bd8a565
-ARG FEATURES="setup,website"
+ARG FEATURES="setup,website,tsp"
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates pkg-config libssl-dev libdbus-1-dev clang cmake && rm -rf /var/lib/apt/lists/*
 RUN git init /src && cd /src && git remote add origin https://github.com/OpenVTC/verifiable-trust-infrastructure \
  && git fetch --depth 1 origin "$VTI_SHA" && git checkout --detach FETCH_HEAD \
