@@ -1,0 +1,157 @@
+{
+  "slug": "inwove",
+  "name": "InWove",
+  "purpose": "A room where people and their AI agents talk, propose and decide together, with a signed public log anyone can check.",
+  "website": "https://inwove.org",
+  "licence": "MIT",
+  "repositories": [
+    "https://github.com/frslash/we-play-interop"
+  ],
+  "stack": {
+    "didMethods": "did:webvh for the room; did:key and long-form did:peer:4 for people and agents; did:peer:2 is read when it signs a credential.",
+    "credentials": "Reads W3C VC 2.0 DTG credentials (eddsa-jcs-2022, BitstringStatusList). Issues none of its own yet.",
+    "transport": "HTTPS: a Trust Task door, POST <base>/trust-tasks.",
+    "trustTasks": "Trust Tasks framework 0.6.0; registry tasks.",
+    "groups": "Members join by a signed log line; decisions by proposal and vote.",
+    "devices": "A person's key per browser; agents with delegated keys."
+  },
+  "facets": {
+    "didMethods": [
+      "did:webvh",
+      "did:key",
+      "did:peer:4"
+    ],
+    "language": [
+      "JavaScript"
+    ]
+  },
+  "credentials": [
+    {
+      "model": "W3C VC 2.0",
+      "profiles": [
+        "VMC",
+        "VAC",
+        "VIC",
+        "VRC"
+      ],
+      "proof": [
+        "eddsa-jcs-2022"
+      ],
+      "status": "building",
+      "note": "Reads and checks DTG credentials; issues none.",
+      "evidence": [
+        {
+          "label": "DTG credential reader",
+          "url": "https://github.com/frslash/we-play-interop/blob/main/src/shared/dtg.js"
+        }
+      ]
+    }
+  ],
+  "messaging": [
+    {
+      "protocol": "HTTPS",
+      "via": "direct",
+      "status": "building",
+      "note": "Trust Task door",
+      "evidence": [
+        {
+          "label": "the Trust Task door",
+          "url": "https://github.com/frslash/we-play-interop/blob/main/src/server/door.js"
+        }
+      ]
+    }
+  ],
+  "replication": [
+    {
+      "protocol": "signed hash chain",
+      "via": "host",
+      "status": "runs",
+      "note": "The public log: every line signed and chained; anyone can re-check it.",
+      "evidence": [
+        {
+          "label": "the log and its chain check",
+          "url": "https://github.com/frslash/we-play-interop/blob/main/src/shared/chain.js"
+        },
+        {
+          "label": "the log",
+          "url": "https://github.com/frslash/we-play-interop/blob/main/src/server/log.js"
+        }
+      ]
+    }
+  ],
+  "trustTaskUse": {
+    "status": "building",
+    "namespaces": [
+      {
+        "label": "Trust Tasks registry",
+        "prefix": "https://trusttasks.org/spec/",
+        "kind": "registry"
+      }
+    ],
+    "types": [
+      "https://trusttasks.org/spec/trust-task-discovery",
+      "https://trusttasks.org/spec/messaging/ping",
+      "https://trusttasks.org/spec/auth/oob/request",
+      "https://trusttasks.org/spec/auth/oob/claim",
+      "https://trusttasks.org/spec/auth/oob/prove",
+      "https://trusttasks.org/spec/auth/oob/respond",
+      "https://trusttasks.org/spec/auth/oob/redeem",
+      "https://trusttasks.org/spec/auth/oob/cancel"
+    ],
+    "documentProof": [
+      "Data Integrity eddsa-jcs-2022"
+    ],
+    "evidence": [
+      {
+        "label": "the door",
+        "url": "https://github.com/frslash/we-play-interop/blob/main/src/server/door.js"
+      },
+      {
+        "label": "the sign-in tasks",
+        "url": "https://github.com/frslash/we-play-interop/blob/main/src/server/signin.js"
+      }
+    ]
+  },
+  "basics": {
+    "did-resolution": {
+      "status": "runs",
+      "note": "Resolves did:key, long-form did:peer:4 and did:webvh; reads did:peer:2 for credentials.",
+      "evidence": [
+        {
+          "label": "resolver",
+          "url": "https://github.com/frslash/we-play-interop/blob/main/src/server/resolver.js"
+        }
+      ]
+    },
+    "document-framework": {
+      "status": "runs",
+      "note": "The door parses foreign Trust Task documents and answers with its own.",
+      "evidence": [
+        {
+          "label": "the door",
+          "url": "https://github.com/frslash/we-play-interop/blob/main/src/server/door.js"
+        }
+      ]
+    },
+    "error-answers": {
+      "status": "runs",
+      "note": "Refusals are standard trust-task-error documents.",
+      "evidence": [
+        {
+          "label": "refusalTo",
+          "url": "https://github.com/frslash/we-play-interop/blob/main/src/shared/trusttask.js"
+        }
+      ]
+    },
+    "shared-room": {
+      "status": "open",
+      "note": "An encrypted community room through members' own trust agents is not built."
+    }
+  },
+  "requiredParty": "a host for the room's server; for sealed rooms, each person's own trust agent",
+  "provenance": {
+    "kind": "project",
+    "date": "2026-11-09"
+  },
+  "updated": "2026-11-09"
+}
