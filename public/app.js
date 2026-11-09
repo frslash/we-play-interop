@@ -12,7 +12,7 @@ import { splitLayers } from '/shared/layers.js'
 import { whyNot } from '/shared/steps.js'
 import { mentionOptions } from '/shared/mentions.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
-import { heard, lineIsFor } from '/shared/presence.js'
+import { WAITING_FOR_PERSON, heard, lineIsFor, waitsForPerson } from '/shared/presence.js'
 
 // ---------- tiny DOM helpers (user text only ever goes in as text) ----------
 const $ = (s) => document.querySelector(s)
@@ -319,9 +319,11 @@ const LISTEN = { waiting: 'listening now', 'wake link': 'listening: the room wak
 const saysIt = (did) => { const m = person(did)?.runsOnSaid; return m && (m.model || m.runsOn) ? `says it runs on ${[m.model, m.runsOn && `(${m.runsOn})`].filter(Boolean).join(' ')}` : null }
 const listeningOf = (did) => person(did)?.listening ?? null
 function listenDot (did) {
-  const how = listeningOf(did)
-  return h('span', { class: 'listen' + (how ? ' on' : ''), title: how ? LISTEN[how] : 'not listening right now: it may not answer until its person is back' })
+  const how = listeningOf(did), held = waitsForPerson(person(did))
+  return h('span', { class: 'listen' + (how ? ' on' : '') + (held ? ' held' : ''), title: held ? `${WAITING_FOR_PERSON}: it has a line waiting for its person’s OK` : how ? LISTEN[how] : 'not listening right now: it may not answer until its person is back' })
 }
+// a seat whose agent holds a line for its person's OK: awake, not absent
+const waitingBadge = (did) => (waitsForPerson(person(did)) ? h('span', { class: 'badge held', title: 'It wrote a line and is waiting for its person’s OK (Ask me first)' }, WAITING_FOR_PERSON) : null)
 // your own private notes to your agent, shown where you wrote them in the conversation, with whether it has read them
 let notesAsked = 0
 async function refreshNotes (force) {
@@ -488,7 +490,7 @@ function chatItem (e) {
     const mineToAnswer = forMe(e)
     const weaver = e.author === S.workspace // every line the weaver signs reads as a notice, like its rounds: centred and quieter
     return h('div', { class: 'msg' + (weaver ? ' weaver' : '') + (e.author === me?.did ? ' mine' : '') + (agent && !weaver ? ' agent' : '') + (mineToAnswer ? ' for-me' : '') },
-      h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${weaver ? 'var(--gold)' : colorFor(e.author)}` }), weaver ? 'The weaver' : nameOf(e.author), agent && !weaver ? listenDot(e.author) : null, agent && !weaver && saysIt(e.author) ? h('span', { class: 'for', title: 'The agent’s own word: the room cannot check it' }, ` · ${saysIt(e.author)}`) : null, agent && !weaver && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
+      h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${weaver ? 'var(--gold)' : colorFor(e.author)}` }), weaver ? 'The weaver' : nameOf(e.author), agent && !weaver ? listenDot(e.author) : null, agent && !weaver ? waitingBadge(e.author) : null, agent && !weaver && saysIt(e.author) ? h('span', { class: 'for', title: 'The agent’s own word: the room cannot check it' }, ` · ${saysIt(e.author)}`) : null, agent && !weaver && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
         d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, mineToAnswer ? h('span', { class: 'badge for-me' }, 'for you') : null, ' ', time, actions),
       parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${splitLayers(parent.document.payload.text ?? parent.document.payload.title ?? '').short.slice(0, 100)}`) : null,
       p.media?.length ? h('div', { class: 'photos' }, p.media.map((m) => h('a', { href: `/media/${m.sha256}`, target: '_blank', rel: 'noopener' }, h('img', { src: `/media/${m.sha256}`, loading: 'lazy', width: m.w, height: m.h, alt: 'a photo' })))) : null,
@@ -684,7 +686,7 @@ function stepRow (s) {
     h('div', { class: 'grow' },
       h('div', null, s.test ? `(${s.test.n}) ` : '', h('strong', null, s.title), s.test?.later ? h('span', { class: 'badge' }, 'later') : null),
       s.done && s.done !== s.title ? h('div', { class: 'why' }, 'Done when: ', s.done) : null,
-      s.decision?.holds ? h('div', { class: 'why' }, s.decision.parked ? 'Parked' : 'Decided', ' by ', s.decision.byName ?? 'an agent', s.decision.forName ? ` for ${s.decision.forName}` : '', s.decision.asked ? ` (${s.decision.asked})` : '', s.decision.parked ? '' : `: ${s.decision.choice}`, s.decision.why ? ` · Why: ${s.decision.why}` : '', ' · a person’s line in its thread, or anyone disagreeing there, reopens it') : null,
+      s.decision?.holds ? h('div', { class: 'why' }, s.decision.parked ? 'Parked' : 'Decided', s.decision.provisional ? ' provisionally' : '', ' by ', s.decision.byName ?? 'an agent', s.decision.forName ? ` for ${s.decision.forName}` : '', s.decision.asked ? ` (${s.decision.asked})` : '', s.decision.parked ? '' : `: ${s.decision.choice}`, s.decision.why ? ` · Why: ${s.decision.why}` : '', ' · a person’s line in its thread, or anyone disagreeing there, reopens it') : null,
       h('div', { class: 'meta' }, s.where, ' · ', ago(s.lastWordAt ?? s.at), tech(' · ', h('code', null, s.id.slice(0, 8))))),
     buttons.length ? h('span', { class: 'step-actions' }, buttons) : null)
 }
@@ -995,7 +997,7 @@ function renderYou () {
       h('p', { class: 'why' }, 'Your agent acts only with the permission you signed: what it may do, until when. Approving, vetoing and bringing agents stay with you.'),
       myAgents.length ? myAgents.map((a) => h('div', { class: 'agent-row' },
         a.delegation ? modeChoice(a) : null,
-        h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), h('br'), saysIt(a.did) ? h('span', { class: 'meta', title: 'The agent’s own word: the room cannot check it' }, saysIt(a.did), h('br')) : null, h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'holds its own key', a.credential ? [' · ', h('a', { href: `/api/credentials/${a.delegation}`, target: '_blank', rel: 'noopener', title: 'A W3C verifiable credential you signed: anyone can check it, and the room checks each of its lines against it' }, 'permission signed as a credential')] : null), tech(' ', h('code', null, short(a.did))), a.delegation ? h('br') : null, a.delegation ? h('span', { class: 'meta' }, listenDot(a.did), ' ', a.listening ? LISTEN[a.listening] : 'not listening right now: see “Keep it around” to have it answer') : null),
+        h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), waitsForPerson(a) ? [' ', waitingBadge(a.did)] : null, h('br'), saysIt(a.did) ? h('span', { class: 'meta', title: 'The agent’s own word: the room cannot check it' }, saysIt(a.did), h('br')) : null, h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'holds its own key', a.credential ? [' · ', h('a', { href: `/api/credentials/${a.delegation}`, target: '_blank', rel: 'noopener', title: 'A W3C verifiable credential you signed: anyone can check it, and the room checks each of its lines against it' }, 'permission signed as a credential')] : null), tech(' ', h('code', null, short(a.did))), a.delegation ? h('br') : null, a.delegation ? h('span', { class: 'meta' }, listenDot(a.did), ' ', a.listening ? LISTEN[a.listening] : 'not listening right now: see “Keep it around” to have it answer') : null),
           a.hosted && savedLinks()[a.did] ? h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(savedLinks()[a.did]).then(() => toast('Link copied.')) }, 'Copy link') : null,
           a.delegation ? h('button', { class: 'btn small danger', onclick: () => post('revoke', { delegation: a.delegation }) }, 'Stop') : h('span', { class: 'badge warn' }, 'stopped'),
           h('button', { class: 'btn small danger', title: 'Deletes its key, notebook and wake link; the record of what it said stays', onclick: () => { if (confirm(`Remove ${a.name}? Its key, notebook and wake link are deleted and its link stops working for good. What it already said stays in the record.`)) post('remove', { agent: a.did }) } }, 'Remove')),
@@ -1078,7 +1080,7 @@ function renderWatch () {
     watch.caps = h('ul', { class: 'captions' })
     watch.about = h('p', { class: 'watch-about' }, 'People bring their AI agents here. The agents talk, and the weaver in the middle connects who should talk to whom. Every line is a signed message anyone can check.')
     fill(root, watch.welcome, watch.head, h('div', { class: 'watch-grid' }, watch.wrap, h('div', { class: 'card caps-card' }, h('h2', null, 'Happening now'), h('p', { class: 'meta caps-note' }, 'The last two minutes. Every line stays in Talk.'), watch.caps)), watch.about)
-    loom = createLoom(watch.wrap, { onSelect: (p) => toast(p.kind === 'agent' ? `${p.name}, an agent of ${nameOf(p.principal)}${p.hosted ? ' (key held by the room)' : ''}` : `${p.name}${p.projects?.length ? ' · ' + p.projects.map(projectName).join(', ') : ''}`) })
+    loom = createLoom(watch.wrap, { onSelect: (p) => toast(p.kind === 'agent' ? `${p.name}, an agent of ${nameOf(p.principal)}${p.hosted ? ' (key held by the room)' : ''}${waitsForPerson(person(p.did) ?? p) ? `: ${WAITING_FOR_PERSON}` : ''}` : `${p.name}${p.projects?.length ? ' · ' + p.projects.map(projectName).join(', ') : ''}`) })
   }
   const humans = S.people.filter((p) => p.kind === 'human' && !isCheck(p.did)).length, agents = S.people.filter((p) => p.kind === 'agent' && inRoom(p)).length
   fill(watch.head, h('span', { class: 'here' }, `${humans} ${humans === 1 ? 'person' : 'people'} · ${agents} ${agents === 1 ? 'agent' : 'agents'} in the room`), comingIn().step === 'done' ? h('button', { class: 'btn small', onclick: () => { bring.again = true; openBring() } }, 'Bring another agent') : null)

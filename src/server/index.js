@@ -33,7 +33,7 @@ import { Sources } from './sources.js'
 import { Cursors } from './cursors.js'
 import { AGREED } from './rules.js'
 import { ActivityPub } from './activitypub.js'
-import { CODE_RE, Visits, interaction } from './visits.js'
+import { CODE_RE, Visits, interaction, visitLocation } from './visits.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { createResolver } from './resolver.js'
@@ -150,11 +150,17 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     const accept = String(req.headers.accept ?? '').toLowerCase(), json = accept.search(/application\/([\w.-]+\+)?json/), html = accept.indexOf('text/html')
     const wallet = json >= 0 && (html < 0 || json < html) // asked for JSON before a web page: software, not a person's browser
     const headers = { 'cache-control': 'no-store', vary: 'accept', 'referrer-policy': 'no-referrer' }
-    if (req.method === 'HEAD') { const st = CODE_RE.test(code) ? ctx.visits.peek(code) : 'gone'; res.writeHead(st === 'live' ? 200 : st === 'used' ? 410 : 404, headers); return res.end() }
+    const about = (visit) => ({ base: baseOf(req), did: identity.did, name: config.workspaceName, visit })
+    if (req.method === 'HEAD') { // a link check or a preview: says where the link goes, without using it up
+      const v = CODE_RE.test(code) ? ctx.visits.look(code, ctx.visits.now()) : null
+      if (v && !v.usedAt && !wallet) res.writeHead(303, { ...headers, location: visitLocation(about(v)) })
+      else res.writeHead(!v ? 404 : v.usedAt ? 410 : 200, headers)
+      return res.end()
+    }
     const got = CODE_RE.test(code) ? ctx.visits.open(code, wallet ? 'wallet' : 'page') : { why: 'gone' }
     if (got.visit) {
-      if (wallet) return send(res, 200, interaction({ base: baseOf(req), did: identity.did, name: config.workspaceName, visit: got.visit }), headers)
-      return send(res, 303, '', { ...headers, location: '/#tab=you' }) // the page starts a newcomer on You, where joining is
+      if (wallet) return send(res, 200, interaction(about(got.visit)), headers)
+      return send(res, 303, '', { ...headers, location: visitLocation(about(got.visit)) }) // the one-time ?_oob= invitation link; the page opens on You
     }
     const status = got.why === 'used' ? 410 : 404, why = got.why === 'used' ? 'This code was for one visit, and it has been used.' : 'This code has run out, or there is no such code.'
     if (wallet) return send(res, status, { error: why }, headers)
@@ -263,6 +269,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       } catch (err) { return refuse(res, err, doc) }
     }
     if (path.startsWith('/api/files/')) { const r = await views.fileText(ctx, path.slice(11), q); return r ? send(res, 200, r) : send(res, 404, { error: 'no file in this room has that sha256, or it has no text (a photo). The path is /api/files/<the sha256 a message lists under files>' }) }
+    if (path.startsWith('/api/photos/')) { const r = views.photo(ctx, path.slice(12)); return r ? send(res, 200, r) : send(res, 404, { error: 'no photo in this room has that sha256' }) }
     if (path === '/api/sources') return send(res, 200, ctx.sources.view())
     if (path.startsWith('/api/sources/')) { // the cached copy, exactly as the source sent it
       const body = ctx.sources.body(decodeURIComponent(path.slice(13)))

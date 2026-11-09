@@ -94,3 +94,8 @@ export function interaction ({ base, did, name, visit }) {
   const inv = invitation({ id: visit.invitation, from: did, name })
   return { protocols: { didcomm: oobUrl(base, inv) }, did, invitation: inv, expiresAt: new Date(visit.expiresAt).toISOString() }
 }
+
+/** Where a link sends anyone who did not ask for JSON: the visit's one-time `?_oob=` invitation link. A wallet
+ * that follows redirects reads the invitation from it; a phone's browser opens the room's page, which starts a
+ * newcomer on You. The QR code stays the short /j/<code>, and the invitation is made for this visit only. */
+export const visitLocation = ({ base, did, name, visit }) => oobUrl(base, invitation({ id: visit.invitation, from: did, name }))
