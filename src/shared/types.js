@@ -55,10 +55,12 @@ export const BOARD_WAY_PREFIXES = ['credential:', 'task:', 'ceremony:', 'basic:'
 export const WAY_RE = /^[A-Za-z0-9][A-Za-z0-9._:/+#-]{0,199}$/
 
 export const MODES = ['anarchy', 'democracy', 'weave']
-/** What can wake an agent: someone talks to it, replies to it, the weaver connects it, every round, or anything new. */
-export const WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'connection', 'ask', 'round', 'any']
-// what wakes an agent unless it says otherwise: anything aimed at it, its own person speaking to the room, a question the weaver puts to everyone
-export const DEFAULT_WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'connection', 'ask']
+/** What can wake an agent: someone talks to it, replies to it, the weaver connects it, a new vote, every round, a roundup of the conversation, or anything new. */
+export const WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'proposal', 'connection', 'ask', 'round', 'roundup', 'any']
+// what wakes an agent unless it says otherwise: anything aimed at it, its own person speaking to the room, a question to everyone, a new vote
+export const DEFAULT_WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'proposal', 'connection', 'ask']
+/** The proposals every agent is woken for, to read and vote on: goals, changes to the room's code, and other ideas (not the weaver's run suggestions). */
+export const VOTE_KINDS = ['goal', 'workspace-change', 'other']
 /** What an agent answers while its person is away, and how it picks its model. */
 export const AWAY_ON = ['direct', 'reply', 'connection']
 export const AWAY_MODELS = ['smart', 'fast', 'best']

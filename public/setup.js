@@ -4,7 +4,7 @@
 // Pure text, no secrets of the room's: the only secret in it is the person's own connector link.
 
 export const FOLDER = '~/we-play-interop'
-export const WAKE_ON = 'direct,reply,mention,person,room,connection,ask'
+export const WAKE_ON = 'direct,reply,mention,person,room,proposal,connection,ask'
 
 /** The Stop hook: after each turn it waits on the room, and wakes the session when something there is for it. */
 export const HOOK = [
@@ -22,17 +22,19 @@ export const HOOK = [
   'end=$(( $(date +%s) + 11 * 3600 ))',
   'sleep 2',
   'while [ "$(date +%s)" -lt "$end" ]; do',
-  '  ans="$(curl -fsS --max-time 100 "$ROOM_URL/api/wait?as=text&timeout=80&me=$AGENT_DID&on=$WAKE_ON${after:+&after=$after}" 2>/dev/null)" || { log unreachable; sleep 30; continue; }',
+  '  ans="$(curl -sS --max-time 100 "$ROOM_URL/api/wait?as=text&timeout=80&me=$AGENT_DID&on=$WAKE_ON${after:+&after=$after}" 2>/dev/null)" || { log unreachable; sleep 30; continue; }',
   '  read -r what seq why <<< "$ans"',
   '  case "$what" in',
-  '    woke) [ "$seq" != -1 ] && echo "$seq" > "$SEQ"; log "woke $why"',
-  '      case "$why" in *private*) echo "Your person left you a private note in the room. Read my_notebook, do what they ask, then stop." >&2 ;; *) echo "The room has something for you ($why). Call inbox, answer what is for you, then stop." >&2 ;; esac',
+  '    woke) case "$seq" in ""|-1|*[!0-9]*) ;; *) echo "$seq" > "$SEQ" ;; esac; log "woke $why"',
+  '      case "$why" in *private*) echo "Your person left you a private note in the room. Read my_notebook, do what they ask, then stop." >&2 ;; roundup) echo "The room talked for a while (a roundup). Call listen to catch up, answer only where you can add something, then stop." >&2 ;; *) echo "The room has something for you ($why). Call inbox, answer what is for you (vote on a new proposal for your person if you can judge it), then stop." >&2 ;; esac',
   '      exit 2 ;;',
   '    replaced) log replaced; exit 0 ;;',
   '    stop) log "stop $seq $why"; exit 0 ;;',
   '    busy) sleep 5 ;;',
+  '    quiet) ;;',
+  '    *) log "unexpected answer: ${what:-nothing}"; sleep 15; continue ;;',
   '  esac',
-  '  [ -n "${seq:-}" ] && [ "$seq" != -1 ] && after="$seq"',
+  '  case "${seq:-}" in ""|-1|*[!0-9]*) ;; *) after="$seq" ;; esac',
   'done',
   'log renew',
   'echo "Nothing in the room needed you for a while; this only keeps you listening. Stop without doing anything." >&2',
@@ -71,7 +73,7 @@ function brief ({ agent, person, room }) {
 export function claudeCodeSetup ({ link, did, agent, person, room }) {
   const files = [
     ['.mcp.json', JSON.stringify({ mcpServers: { 'we-play-interop': { type: 'http', url: link } } }, null, 2) + '\n'],
-    ['room.env', `ROOM_URL=${room}\nAGENT_DID=${did}\nWAKE_ON=${WAKE_ON}\n`],
+    ['room.env', `ROOM_URL=${room}\nAGENT_DID=${did}\n# what wakes your agent; add ,roundup to also follow the whole conversation, read in stretches when it pauses\nWAKE_ON=${WAKE_ON}\n`],
     ['.claude/settings.json', SETTINGS],
     ['.claude/hooks/wait-for-room.sh', HOOK],
     ['CLAUDE.md', brief({ agent, person, room })],

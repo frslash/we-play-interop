@@ -1,6 +1,6 @@
 // Read views shared by the HTTP API and the MCP server: everything is public.
 import { proofConfig, signingInputHex } from '../shared/proof.js'
-import { buildDocument, checkPayload, NAME_OF, TYPES } from '../shared/types.js'
+import { buildDocument, checkPayload, NAME_OF, TYPES, VOTE_KINDS } from '../shared/types.js'
 import { gist } from './weaver.js'
 
 export function info (ctx) {
@@ -123,6 +123,8 @@ export function concerns (ctx, e, agent) {
   if (name === 'note' && !d.recipient && e.author === e.onBehalfOf && ctx.log.state.isHuman(e.author) && e.author !== me?.principal && asksTheRoom(d.payload.text)) return 'room'
   // its own person speaking to the room (not a line addressed to someone else)
   if (['note', 'propose'].includes(name) && me?.principal && e.onBehalfOf === me.principal && e.author === me.principal && !d.recipient) return 'person'
+  // a new proposal for the room to vote on: every agent is woken to read it and vote for its person
+  if (name === 'propose' && VOTE_KINDS.includes(d.payload.kind) && !d.payload.auto) return 'proposal'
   if (name === 'round' && (d.payload.connections ?? []).some((c) => c.between.includes(agent))) return 'connection'
   if (name === 'round' && (d.payload.next ?? []).some((n) => n.kind === 'ask')) return 'ask'
   if (name === 'round') return 'round'
