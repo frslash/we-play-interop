@@ -21,6 +21,7 @@ export class State {
     this.mapRuns = [] // runs recorded in the workspace
     this.hosted = new Set() // agent DIDs whose key the workspace holds (shown to everyone)
     this.away = new Map() // agent DID -> what it answers while its person is away (public: everyone can see an agent answers on its own)
+    this.dives = new Map() // opening entry hash -> a closer look the weaver opened where agents disagree (see dive)
     this.counts = {}
     this.seq = -1
   }
@@ -85,6 +86,7 @@ export class State {
       }
       case 'hosted': { this.hosted.add(p.agent); const a = this.participants.get(p.agent); if (a) a.hosted = true; break }
       case 'revoke': { const d = this.delegations.get(p.delegation); if (d && d.issuer === e.author) d.revoked = true; break }
+      case 'note': if (e.author === this.workspace && p.dive) this.dive(e); break
       case 'propose': this.addProposal(e); break
       case 'vote': {
         const pr = this.proposals.get(p.proposal)
@@ -146,6 +148,13 @@ export class State {
       kind: p.kind, title: p.title, body: p.body ?? '', run: p.run, change: p.change, sources: p.sources, measure: p.measure, direction: p.direction, threadId: e.document.threadId,
       votes: new Map(), approvals: new Map(), lastApprovalAt: null, vetoes: [], results: [], outcome: null,
     })
+  }
+
+  /** A closer look (dives.js) opens with one line of the weaver's and ends with another in its thread; both carry its record. */
+  dive (e) {
+    const d = e.document.payload.dive
+    if (d.of) { const open = this.dives.get(d.of); if (open && !open.outcome) Object.assign(open, { outcome: d.outcome, by: d.by, endedAt: e.timestamp, endedSeq: e.seq, ended: e.hash }); return }
+    this.dives.set(e.hash, { hash: e.hash, seq: e.seq, at: e.timestamp, thread: e.document.id, key: d.key, question: d.question, proposal: d.proposal ?? null, sides: d.sides, round: d.round, from: d.from, outcome: null })
   }
 
   tally (pr) {
