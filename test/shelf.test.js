@@ -1,15 +1,15 @@
 // The projects shelf: other projects' public code at one named commit, for agents to list, read and search.
 // A local server plays GitHub (the tests run offline): it answers the head-commit lookup and serves a tar.gz.
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, test } from 'node:test'
 import { gzipSync } from 'node:zlib'
 import { config as baseConfig } from '../src/server/config.js'
 import { createApp } from '../src/server/index.js'
-import { FETCHES_PER_MINUTE, MAX_FILE_BYTES, SHELF, SIGNER_FETCHES_PER_HOUR, Shelf, namedRepos, pinOf, pinsFromCommunity, repoOf, secretPath, tarReader } from '../src/server/shelf.js'
+import { FETCHES_PER_MINUTE, MAX_FILE_BYTES, SHELF, SIGNER_FETCHES_PER_HOUR, Shelf, namedRepos, pinOf, pinsFromCommunity, LICENCES, MAX_NAMED_PROJECTS, insideFolder, licenceOf, repoOf, secretPath, tarReader } from '../src/server/shelf.js'
 import { registerAgentTools } from '../src/agent-tools.js'
 import * as views from '../src/server/views.js'
 
@@ -46,7 +46,7 @@ const REPO_FILES = (sha) => [
   ['LICENSE', 'Apache License, Version 2.0\n'],
   ['notes.txt', `someone left this in a text file: ${PLANTED}\n`],
   ['.env', `TOKEN=${PLANTED}\n`],
-  ['.env.example', 'TOKEN=\n'],
+  ['.env.example', `TOKEN=${PLANTED}\n`], // a kept example file: public, so it reads as itself, and still never reaches a log line
   ['deploy/server.key', '-----BEGIN PRIVATE KEY-----\n'],
   ['.ssh/config', 'Host x\n'],
   ['src/main.rs', 'fn main() {\n    let features = "cli-synthesis";\n    serve(8100);\n}\n'],
@@ -61,18 +61,21 @@ const REPO_FILES = (sha) => [
   ['link', '', '2'],
 ]
 
-let head, hits, sawAuth, mode
+let head, hits, sawAuth, mode, override, compare // `override(sha, repo)`: the files the stand-in serves instead of REPO_FILES
 const fake = createServer((req, res) => {
   hits.push(req.url); if (req.headers.authorization) sawAuth = true
   if (mode === 'down') { res.writeHead(503); return res.end('down') }
   const m = /^\/repos\/([^/]+\/[^/]+)\/commits\/HEAD$/.exec(req.url)
   if (m) { if (m[1] === 'o/private') { res.writeHead(404); return res.end('Not Found') } res.writeHead(200, { 'content-type': 'application/vnd.github.sha' }); return res.end(head) }
+  if (/^\/repos\/[^/]+\/[^/]+\/compare\/[0-9a-f]{40}\.\.\.HEAD(\?|$)/.test(req.url)) { // is the commit on the default branch? `compare` is the answer to give (a string is sent as it is)
+    res.writeHead(200, { 'content-type': 'application/json', 'x-ratelimit-limit': '60', 'x-ratelimit-remaining': '56' }); return res.end(typeof compare === 'string' ? compare : JSON.stringify(compare))
+  }
   const t = /^\/([^/]+)\/([^/]+)\/tar\.gz\/([0-9a-f]{40})$/.exec(req.url)
   if (t && mode === 'redirect') { res.writeHead(302, { location: 'http://127.0.0.1:9/elsewhere.tar.gz' }); return res.end() }
   if (t && t[1] !== 'gone') {
-    const files = t[2] === 'nolicence' ? REPO_FILES(t[3]).filter(([p]) => p !== 'LICENSE') : REPO_FILES(t[3])
+    const files = override ? override(t[3], t[2]) : t[2] === 'nolicence' ? REPO_FILES(t[3]).filter(([p]) => p !== 'LICENSE') : REPO_FILES(t[3])
     res.writeHead(200, { 'content-type': 'application/x-gzip', 'x-ratelimit-limit': '60', 'x-ratelimit-remaining': '57', 'x-ratelimit-reset': '1794000000' })
-    return res.end(tarGz(`${t[2]}-${t[3]}`, files, mode === 'wrong-commit' ? D : t[3]))
+    return res.end(tarGz(`${t[2]}-${t[3]}`, files, mode === 'wrong-commit' ? D : mode === 'no-record' ? null : t[3]))
   }
   res.writeHead(404); res.end('Not Found')
 })
@@ -82,7 +85,7 @@ describe('the projects shelf', () => {
   const shelf = (over = {}) => new Shelf({ dataDir: mkdtempSync(join(dir, 's-')), list: [{ repo: 'o/demo', title: 'Demo', pin: A }, { repo: 'o/pinned', title: 'Pinned', pin: PIN }], hosts: { api: base, code: base }, allowHttp: true, ...over })
   before(async () => { await new Promise((r) => fake.listen(0, '127.0.0.1', r)); base = `http://127.0.0.1:${fake.address().port}`; dir = mkdtempSync(join(tmpdir(), 'wpi-shelf-')) })
   after(() => { fake.close(); rmSync(dir, { recursive: true, force: true }) })
-  const reset = () => { head = A; hits = []; sawAuth = false; mode = 'ok' }
+  const reset = () => { head = A; hits = []; sawAuth = false; mode = 'ok'; override = null; compare = { status: 'ahead', behind_by: 0, ahead_by: 3 } }
 
   test('the list in code names the projects on the Resources page, and no address anyone typed', () => {
     assert.ok(SHELF.length >= 9)
@@ -98,8 +101,8 @@ describe('the projects shelf', () => {
     assert.equal(repoOf('https://github.com/o/r.git'), 'o/r')
     assert.equal(pinOf(`https://github.com/o/r/tree/${A}`), A); assert.equal(pinOf(`https://github.com/o/r/commit/${A}`), A); assert.equal(pinOf(`https://github.com/o/r/blob/${A}/src/x.rs`), A)
     for (const no of ['https://github.com/o/r', 'https://github.com/o/r/tree/main', 'https://github.com/o/r/tree/v1.2.3', `https://github.com/o/r/tree/${A.slice(0, 12)}`, `https://github.com/o/r/releases/tag/${A}`, `https://gitlab.com/o/r/tree/${A}`, `https://github.com/o/r/tree/${A.toUpperCase()}`]) assert.equal(pinOf(no), null, no) // a branch, a tag or a short commit is not a pin
-    for (const yes of ['.env', '.env.production', 'a/b/.npmrc', 'deploy/server.key', 'certs/site.pem', '.ssh/config', 'home/.aws/credentials', 'id_ed25519', '.git-credentials']) assert.equal(secretPath(yes), true, yes)
-    for (const no of ['.env.example', '.env.sample', 'src/env.rs', 'docs/keys.md', 'id_ed25519.pub', '.github/workflows/ci.yml', 'src/key.rs']) assert.equal(secretPath(no), false, no)
+    for (const yes of ['.env', '.env.production', 'a/b/.npmrc', 'deploy/server.key', 'certs/site.pem', '.ssh/config', 'home/.aws/credentials', 'id_ed25519', '.git-credentials', '.env.local', '.env.dist', '.env.defaults', '.env.default', '.env.production.local', 'app/.env.example.bak']) assert.equal(secretPath(yes), true, yes)
+    for (const no of ['.env.example', '.env.sample', '.env.template', 'app/.ENV.EXAMPLE', 'src/env.rs', 'docs/keys.md', 'id_ed25519.pub', '.github/workflows/ci.yml', 'src/key.rs']) assert.equal(secretPath(no), false, no)
     for (const no of ['https://github.com/TrustStackers', 'https://github.com/orgs/x/repositories', 'http://github.com/o/r', 'https://gitlab.com/o/r', 'https://github.com.evil.example/o/r', 'https://user:pw@github.com/o/r', 'https://github.com/o/..', 'not a url', null]) assert.equal(repoOf(no), null, String(no))
   })
 
@@ -124,7 +127,7 @@ describe('the projects shelf', () => {
     assert.equal(hits.filter((u) => u.includes('/tar.gz/')).length, 1) // one fetch serves every read
     assert.equal(hits.some((u) => u.includes('/commits/')), false) // a pinned project never asks where its branch is
     const v = s.view().projects.find((p) => p.project === 'o/demo')
-    assert.equal(v.copy.licence, 'LICENSE'); assert.equal(v.pinned, true)
+    assert.equal(v.copy.licence, 'Apache-2.0'); assert.equal(v.copy.licenceFile, 'LICENSE'); assert.equal(v.pinned, true)
   })
 
   test('search finds text exactly as written, with file and line; under narrows it; max caps it', async () => {
@@ -154,7 +157,9 @@ describe('the projects shelf', () => {
   test('only the room\'s own repository follows its default branch, looked up at most every six hours', async () => {
     reset(); let now = Date.parse('2026-11-09T12:00:00Z')
     const s = shelf({ now: () => now, own: 'o/own' })
-    assert.equal((await s.files('o/own')).commit, A)
+    const own = await s.files('o/own'); assert.equal(own.commit, A)
+    assert.match(own.note, /^Room text: this comes from the room's own repository/); assert.match((await s.search('o/own', '8100')).note, /^Room text/) // labelled as the room's own text, never as another project's
+    assert.deepEqual(own.files.map((f) => f.path).sort(), (await s.files('o/demo')).files.map((f) => f.path).sort()) // and the same file rules: no .env, no key, no dependency
     head = B
     assert.equal((await s.files('o/own')).commit, A) // within the six hours: no new lookup
     assert.equal((await s.files('o/demo')).commit, A) // a pinned project stays at its pin whatever the branch does
@@ -201,7 +206,8 @@ describe('the projects shelf', () => {
     const list = await s.files('o/demo')
     for (const gone of ['.env', 'deploy/server.key', '.ssh/config']) { assert.equal(list.files.some((f) => f.path === gone), false, gone); await assert.rejects(s.read('o/demo', gone), /no file/) }
     assert.match((await s.read('o/demo', 'notes.txt')).text, new RegExp(PLANTED)) // the text file that holds it is public code, and reads as itself…
-    assert.equal((await s.search('o/demo', PLANTED)).found, 1)
+    assert.match((await s.read('o/demo', '.env.example')).text, new RegExp(PLANTED)) // the kept example file reads as itself too
+    assert.equal((await s.search('o/demo', PLANTED)).found, 2) // notes.txt and .env.example
     await assert.rejects(s.read('o/demo', `${PLANTED}.txt`), /no file/)
     s.flush()
     const kept = [readFileSync(join(s.dir, 'fetch-log.jsonl'), 'utf8'), readFileSync(join(s.dir, 'use.json'), 'utf8'), JSON.stringify(s.view()), JSON.stringify(s.logLines())].join('\n')
@@ -226,6 +232,147 @@ describe('the projects shelf', () => {
     await assert.rejects(s.files('o/nolicence'), (e) => e.status === 409 && /states no licence at its top level/.test(e.message))
     await assert.rejects(s.files('o/nolicence'), /states no licence/) // and it is not asked for again at that commit
     assert.equal(hits.filter((u) => u.includes('/nolicence/')).length, 1); assert.equal(existsSync(join(s.dir, 'o__nolicence', A)), false)
+  })
+
+  test('a file is written only inside its own project\'s folder', () => {
+    const root = join(dir, 'copy', 'files')
+    for (const ok of [join(root, 'a.txt'), join(root, 'src/deep/b.rs'), join(root, 'a/../b.txt')]) assert.equal(insideFolder(root, ok), true, ok)
+    for (const no of [join(root, '../escape.txt'), join(root, 'a/../../x'), '/etc/passwd', root, join(root, '..', 'files-other', 'x'), join(dir, 'copy', 'index.json')]) assert.equal(insideFolder(root, no), false, no)
+  })
+
+  test('the licence is recognised by its title lines in the first kilobyte, from a list, and named in the copy', async () => {
+    const MIT = 'MIT License\n\nCopyright (c) 2026 Someone\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\n'
+    const BSD2 = 'Copyright (c) 2026, Someone\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are met:\n\n1. Redistributions of source code must retain the above copyright notice.\n2. Redistributions in binary form must reproduce the above copyright notice.\n'
+    const texts = {
+      'Apache-2.0': '                                 Apache License\n                           Version 2.0, January 2004\n', MIT, ISC: 'ISC License\n\nCopyright (c) 2026\n\nPermission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted',
+      'BSD-2-Clause': BSD2, 'BSD-3-Clause': BSD2 + '3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse.\n',
+      'MPL-2.0': 'Mozilla Public License Version 2.0\n==================================\n', 'GPL-2.0': '                    GNU GENERAL PUBLIC LICENSE\n                       Version 2, June 1991\n', 'GPL-3.0': '                    GNU GENERAL PUBLIC LICENSE\n                       Version 3, 29 June 2007\n',
+      'LGPL-2.1': '                  GNU LESSER GENERAL PUBLIC LICENSE\n                       Version 2.1, February 1999\n', 'LGPL-3.0': '                   GNU LESSER GENERAL PUBLIC LICENSE\n                       Version 3, 29 June 2007\n',
+      'AGPL-3.0': '                    GNU AFFERO GENERAL PUBLIC LICENSE\n                       Version 3, 19 November 2007\n', 'CC-BY-4.0': 'Creative Commons Attribution 4.0 International (CC BY 4.0)\n', 'CC-BY-SA-4.0': 'Attribution-ShareAlike 4.0 International\n\n=====\n',
+      'CC0-1.0': 'CC0 1.0 Universal\n\nStatement of Purpose\n', Unlicense: 'This is free and unencumbered software released into the public domain.\n',
+    }
+    assert.deepEqual(Object.keys(texts).sort(), [...LICENCES].sort()) // every licence on the list has a test text
+    for (const [name, text] of Object.entries(texts)) assert.equal(licenceOf(text), name, name)
+    assert.equal(licenceOf(`${' '.repeat(2000)}Apache License Version 2.0`), null) // only the first kilobyte counts
+    for (const no of ['', 'All rights reserved. Do not copy.\n', 'Attribution-NonCommercial 4.0 International\n', 'GNU GENERAL PUBLIC LICENSE\nVersion 1, February 1989\n', 'Business Source License 1.1\n', 'SSPL', 'WTFPL\n']) assert.equal(licenceOf(no), null, no)
+    // a licence file that matches none is refused, and the words say which the shelf keeps
+    reset(); override = (sha) => REPO_FILES(sha).map(([p, b]) => (p === 'LICENSE' ? [p, 'Do whatever you like, the author is not liable.\n'] : [p, b]))
+    const s = shelf()
+    await assert.rejects(s.files('o/demo'), (e) => e.status === 409 && /does not start like a licence the shelf keeps/.test(e.message) && e.message.includes('Apache-2.0, MIT, BSD-2-Clause') && /CC0-1\.0, Unlicense/.test(e.message))
+    await assert.rejects(s.files('o/demo'), /does not start like/); assert.equal(hits.filter((u) => u.includes('/tar.gz/')).length, 1); assert.equal(existsSync(join(s.dir, 'o__demo', A)), false)
+    // two licence files (a text licence and a code licence): the plainer name is the project's, both are noted
+    reset(); override = (sha) => [...REPO_FILES(sha).filter(([p]) => p !== 'LICENSE'), ['LICENSE', texts['CC-BY-4.0']], ['LICENSE-CODE', texts.MIT]]
+    const two = (await shelf().copy('o/demo')).ix
+    assert.deepEqual([two.licence, two.licenceFile, two.licences.map((l) => l.name)], ['CC-BY-4.0', 'LICENSE', ['CC-BY-4.0', 'MIT']])
+  })
+
+  test('the ten projects on the list are each under a licence the shelf keeps (checked against the local source copies when they are there)', () => {
+    const top = process.env.WPI_SOURCES ?? join(homedir(), 'Desktop/Umbrella/inwove-sources') // a folder per project, named owner_repo
+    const seen = []
+    for (const p of SHELF) {
+      const d = join(top, p.repo.replace('/', '_'))
+      if (!existsSync(d)) continue // CI does not have the sources: skip quietly
+      const names = readdirSync(d).filter((n) => /^(licen[sc]e|copying|unlicense)/i.test(n)).sort((a, b) => a.length - b.length)
+      assert.ok(names.length, `${p.repo} has a licence file`)
+      const fd = openSync(join(d, names[0]), 'r'), buf = Buffer.alloc(1024), n = readSync(fd, buf, 0, 1024, 0); closeSync(fd)
+      const name = licenceOf(buf.subarray(0, n).toString('utf8')); seen.push(`${p.repo} ${name}`)
+      assert.ok(name, `${p.repo}: ${names[0]} is recognised`)
+    }
+    if (process.env.WPI_SHOW_LICENCES) console.log(seen.join('\n'))
+  })
+
+  test('a shelf size of 0 turns fetching off: nothing is asked of GitHub', async () => {
+    reset(); const s = shelf({ maxBytes: 0, own: 'o/own' })
+    for (const who of ['o/demo', 'o/own']) await assert.rejects(s.files(who), (e) => e.status === 503 && /switched off.*SHELF_MAX_MB is 0/.test(e.message))
+    assert.deepEqual(hits, []); assert.deepEqual(s.logLines(), [])
+  })
+
+  test('the room\'s people can name only so many projects; the rest are listed as not taken, and the registry is worked out once per answer', async () => {
+    reset(); const named = Array.from({ length: MAX_NAMED_PROJECTS + 5 }, (_, i) => ({ repo: `m/r${i}`, pin: A, by: 'did:key:zMember', at: i })) // the newest are r204 … r5
+    let calls = 0; const s = shelf({ list: [{ repo: 'o/demo', pin: A }], named: () => { calls++; return named } })
+    const all = s.all()
+    assert.equal(all.length, 1 + MAX_NAMED_PROJECTS); assert.equal(all.some((p) => p.repo === 'm/r204'), true); assert.equal(all.some((p) => p.repo === 'm/r4'), false)
+    assert.deepEqual(s.notTaken.map((n) => n.project).sort(), ['m/r0', 'm/r1', 'm/r2', 'm/r3', 'm/r4'])
+    calls = 0; const v = s.view()
+    assert.equal(calls, 1) // one pass over the named entries for the whole listing, however many projects it holds
+    assert.equal(v.projects.length, 1 + MAX_NAMED_PROJECTS); assert.equal(v.notTaken.count, 5); assert.match(v.notTaken.why, /at most 200 projects/)
+    assert.equal(v.limits.namedProjectsAtMost, MAX_NAMED_PROJECTS)
+    await assert.rejects(s.files('m/r0'), (e) => e.status === 404 && /takes at most 200 projects/.test(e.message)); assert.deepEqual(hits, []) // nothing fetched for it
+    await s.files('o/demo'); calls = 0; await s.files('o/demo'); assert.equal(calls, 1) // a read of a held copy works the registry out once too (a first fetch adds one pass to make room)
+    assert.equal(shelf({ list: [], named: () => named.slice(0, 3) }).view().notTaken, undefined) // under the cap, nothing to say
+  })
+
+  test('shelf leftovers: a name like x/.. is no repository, a path that comes twice is one row, an archive must say its commit, and the view says whether it did', async () => {
+    for (const no of ['https://github.com/o/..', 'https://github.com/o/.', 'https://github.com/o/..git']) assert.equal(repoOf(no) === 'o/..' || repoOf(no) === 'o/.', false, no)
+    const s0 = shelf({ list: [{ repo: 'x/..', pin: A }, { repo: 'x/.', pin: A }, { repo: 'x/ok.', pin: A }], named: () => [{ repo: 'y/..', pin: A, by: 'did:key:zM', at: 1 }, { repo: 'y/.', pin: B, by: 'did:key:zM', at: 2 }, { repo: 'y/ok', pin: B, by: 'did:key:zM', at: 3 }] })
+    assert.deepEqual(s0.all().map((p) => p.repo).sort(), ['x/ok.', 'y/ok']); assert.deepEqual(s0.waitingForACommit, [])
+    reset(); override = (sha) => [...REPO_FILES(sha), ['README.md', 'second readme\n'], ['src/main.rs', Buffer.concat([Buffer.from('x'), Buffer.from([0])])], ['LICENSE', 'MIT License\n']] // README twice (the last is kept), main.rs again as a binary (so it is gone), LICENSE again
+    const s = shelf(), list = await s.files('o/demo')
+    assert.equal(list.files.filter((f) => f.path === 'README.md').length, 1); assert.equal(list.files.some((f) => f.path === 'src/main.rs'), false)
+    assert.equal((await s.read('o/demo', 'README.md')).text, 'second readme\n'); assert.equal(existsSync(join(s.dir, 'o__demo', A, 'files', 'src/main.rs')), false)
+    assert.equal(s.view().projects.find((p) => p.project === 'o/demo').copy.licence, 'MIT')
+    const copy = s.view().projects.find((p) => p.project === 'o/demo').copy; assert.equal(copy.commitConfirmed, true)
+    reset(); mode = 'no-record'; const t = shelf()
+    await assert.rejects(t.files('o/demo'), (e) => e.status === 502 && /did not say which commit it was cut from.*not confirmed/.test(e.message)); assert.equal(existsSync(join(t.dir, 'o__demo', A)), false)
+  })
+
+  test('a pin a member chose: every answer says so, and GitHub is asked once whether the commit is on the default branch', async () => {
+    const entry = { repo: 'team/thing', title: 'Thing', from: 'added to the Resources in the room', pin: A, by: 'did:key:zMember', at: '2026-11-09T10:00:00Z' }
+    const asked = () => hits.filter((u) => u.includes('/compare/')), archives = () => hits.filter((u) => u.includes('/tar.gz/'))
+    // an ancestor of the default branch: fetched, remembered, and every answer carries who chose it
+    reset(); const dataDir = mkdtempSync(join(dir, 'k-')); let now = Date.parse('2026-11-09T12:00:00Z')
+    const s = shelf({ dataDir, now: () => now, list: [{ repo: 'o/demo', pin: A }], named: () => [entry] })
+    const f = await s.files('team/thing')
+    assert.equal(f.pinnedBy, 'did:key:zMember'); assert.match(f.memberChoice, /A member of the room chose this commit; it is not on the room's own list\. Check it is the project's own/)
+    for (const a of [await s.read('team/thing', 'README.md'), await s.search('team/thing', '8100')]) { assert.equal(a.pinnedBy, 'did:key:zMember'); assert.match(a.memberChoice, /member of the room chose/) }
+    const v = s.view().projects.find((p) => p.project === 'team/thing'); assert.equal(v.pinnedBy, 'did:key:zMember'); assert.match(v.memberChoice, /member of the room chose/)
+    assert.equal(asked().length, 1); assert.match(asked()[0], new RegExp(`^/repos/team/thing/compare/${A}\\.\\.\\.HEAD`)); assert.equal(archives().length, 1); assert.equal(sawAuth, false)
+    const line = s.logLines().find((l) => l.kind === 'compare')
+    assert.deepEqual([line.project, line.commit, line.status, line.relation, line.behindBy], ['team/thing', A, 200, 'ahead', 0]); assert.deepEqual(line.github, { 'x-ratelimit-limit': '60', 'x-ratelimit-remaining': '56' }); assert.ok(line.ms >= 0)
+    assert.deepEqual(Object.values(JSON.parse(readFileSync(join(s.dir, 'default-branch.json'), 'utf8'))).map((x) => x.ok), [true]) // the yes is kept
+    assert.equal((await s.files('o/demo')).memberChoice, undefined); assert.equal(s.view().projects.find((p) => p.project === 'o/demo').memberChoice, undefined) // the room's list is not a member's choice…
+    assert.equal(asked().length, 1) // …and is not asked about
+    const own = shelf({ own: 'o/own', list: [] }); await own.files('o/own'); assert.equal(asked().length, 1); assert.equal((await own.files('o/own')).memberChoice, undefined)
+    // a fork's commit (diverged): refused for good, remembered across a restart, and the archive is never asked for
+    for (const bad of [{ status: 'diverged', behind_by: 4 }, { status: 'behind', behind_by: 2 }, { status: 'ahead', behind_by: 1 }]) {
+      reset(); compare = bad; const d2 = mkdtempSync(join(dir, 'k-')), t = shelf({ dataDir: d2, list: [], named: () => [entry] })
+      await assert.rejects(t.files('team/thing'), (e) => e.status === 409 && /this commit \(a{12}\) is not on team\/thing's default branch, so the shelf cannot tell it is the project's own \(it may be from a fork\)/.test(e.message))
+      await assert.rejects(t.files('team/thing'), /not on team\/thing's default branch/)
+      await assert.rejects(shelf({ dataDir: d2, list: [], named: () => [entry] }).files('team/thing'), /not on team\/thing's default branch/) // after a restart
+      assert.equal(asked().length, 1); assert.equal(archives().length, 0); assert.equal(existsSync(join(t.dir, 'team__thing')), false)
+    }
+    // GitHub cannot say: refused for now, asked again after the usual wait, and then it works
+    for (const broken of ['down', 'garbage', 'no-fields']) {
+      reset(); let at = Date.parse('2026-11-09T12:00:00Z'); mode = broken === 'down' ? 'down' : 'ok'; compare = broken === 'garbage' ? 'not json at all' : broken === 'no-fields' ? { status: 'who knows' } : compare
+      const t = shelf({ now: () => at, list: [], named: () => [entry] })
+      await assert.rejects(t.files('team/thing'), (e) => e.status === 502 && /try again later/.test(e.message) && /(GitHub answered 503|could not be read)/.test(e.message)); assert.equal(archives().length, 0)
+      await assert.rejects(t.files('team/thing'), /the shelf asks GitHub again ten minutes after a failure/); assert.equal(hits.length, 1) // not asked again at once
+      assert.equal(existsSync(join(t.dir, 'default-branch.json')), false) // nothing was decided
+      at += 11 * 60 * 1000; mode = 'ok'; compare = { status: 'identical', behind_by: 0 }
+      assert.equal((await t.files('team/thing')).commit, A); assert.equal(asked().length, 2); assert.equal(archives().length, 1)
+    }
+    // the asking counts against the member's own limit
+    reset(); const many = Array.from({ length: SIGNER_FETCHES_PER_HOUR + 1 }, (_, i) => ({ ...entry, repo: `one/r${i}`, at: i })); let t3 = Date.parse('2026-11-09T12:00:00Z'); const g = shelf({ now: () => t3, list: [], named: () => many })
+    for (const e of many.slice(0, SIGNER_FETCHES_PER_HOUR)) { await g.files(e.repo); t3 += 15_000 }
+    await assert.rejects(g.files(many.at(-1).repo), (e) => e.status === 429 && /one member named/.test(e.message)); assert.equal(asked().length, SIGNER_FETCHES_PER_HOUR)
+  })
+
+  test('a cap that is passed stops the unpack and discards it: no partial copy, and no second try at that commit', async () => {
+    const refuseAt = async (limits, why, files = null) => {
+      reset(); override = files; const s = shelf({ limits })
+      await assert.rejects(s.files('o/demo'), (e) => e.status === 413 && why.test(e.message) && /no copy was kept/.test(e.message))
+      assert.equal(existsSync(join(s.dir, 'o__demo', A)), false); assert.equal(existsSync(join(s.dir, 'o__demo', `${A}.tmp`)), false) // nothing left on disk
+      await assert.rejects(s.files('o/demo'), /no copy was kept/); assert.equal(hits.filter((u) => u.includes('/tar.gz/')).length, 1) // a refusal that cannot change is not asked for again
+      assert.equal(s.logLines().find((l) => l.kind === 'copy').error.includes('no copy'), true)
+      return s
+    }
+    await refuseAt({ bytes: 100 }, /more than 100 bytes of text/)
+    await refuseAt({ files: 2 }, /more than 2 files/)
+    await refuseAt({ depth: 1 }, /more than 1 folders deep/)
+    await refuseAt({ download: 200 }, /download of more than 200 bytes/) // the compressed bytes are counted as they arrive
+    await refuseAt({ unpacked: 1_000_000 }, /more than 1000000 bytes once unpacked/, () => [['LICENSE', 'MIT License\n'], ['junk.bin', Buffer.alloc(5_000_000)]]) // a few KB that inflate to 5 MB, none of it kept
+    reset(); assert.equal((await shelf().files('o/demo')).commit, A) // the real limits let an ordinary project through
+    assert.equal('partial' in shelf().view().projects[0], false)
   })
 
   test('a failed fetch waits ten minutes; one minute and one member each have their own limit', async () => {
@@ -294,7 +441,7 @@ describe('the projects shelf', () => {
 
   test('a large project lists as folders with counts', async () => {
     const many = Array.from({ length: 450 }, (_, i) => [`pkg${i % 3}/f${i}.js`, `// ${i}\n`])
-    const big = createServer((req, res) => { if (req.url.includes('/commits/')) { res.writeHead(200); return res.end(A) } res.writeHead(200); res.end(tarGz('big-aaaaaaa', [['LICENSE', 'MIT\n'], ['top.md', 'hi\n'], ...many])) })
+    const big = createServer((req, res) => { if (req.url.includes('/commits/')) { res.writeHead(200); return res.end(A) } res.writeHead(200); res.end(tarGz('big-aaaaaaa', [['LICENSE', 'MIT License\n'], ['top.md', 'hi\n'], ...many], A)) })
     await new Promise((r) => big.listen(0, '127.0.0.1', r))
     try {
       const s = new Shelf({ dataDir: mkdtempSync(join(dir, 'b-')), list: [{ repo: 'o/big', pin: A }], hosts: { api: `http://127.0.0.1:${big.address().port}`, code: `http://127.0.0.1:${big.address().port}` }, allowHttp: true })
@@ -349,7 +496,7 @@ describe('the shelf in a running room', () => {
   let dir, ctx, base, gh
   const get = async (p) => { const r = await fetch(base + p); return { status: r.status, body: await r.json() } }
   before(async () => {
-    head = A; hits = []; sawAuth = false; mode = 'ok'
+    head = A; hits = []; sawAuth = false; mode = 'ok'; compare = { status: 'ahead', behind_by: 0 }
     await new Promise((r) => fake.listen(0, '127.0.0.1', r)); gh = `http://127.0.0.1:${fake.address().port}`
     dir = mkdtempSync(join(tmpdir(), 'wpi-shelf-app-'))
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, checkEveryMinutes: 0, githubToken: 'ghp_must_never_be_sent', workspaceRepo: 'o/demo', llm: { ...baseConfig.llm, apiKey: '', anthropicKey: '', provider: 'openai' } }
