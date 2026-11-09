@@ -729,3 +729,23 @@ describe('what the room says about it', () => {
     } finally { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) }
   })
 })
+
+describe('who sign-in signs as', () => {
+  test('with a door it is the door\'s first identity: the did:webvh only when its document holds the room\'s key; without a door, the log\'s DID as before', async () => {
+    const key = newIdentity(), webvh = 'did:webvh:scidroom:inwove.example.org'
+    const read = async () => ({ did: webvh, document: didDoc(webvh, newIdentity().publicKey, '#room') }) // a log whose document holds some OTHER key
+    const own = { did: key.did, seed: key.seed, verificationMethod: key.verificationMethod }
+    let held = false
+    const door = { identities: () => (held ? [{ did: webvh, seed: key.seed, verificationMethod: `${webvh}#room` }, own] : [own]), register () {} }
+    const make = (withDoor) => { const s = new SignIn({ identity: key, resolver: createResolver(), config: { publicUrl: ORIGIN }, readDid: read, ...(withDoor ? { door: () => door } : {}) }); s.registered = true; return s }
+    const a = make(true); await a.refresh(true)
+    assert.equal(a.me.did, key.did, 'the log names a DID that does not hold the key: the room signs as its did:key')
+    assert.equal(a.did, a.me.did, 'the DID a link names agrees with the one that signs')
+    assert.ok(a.didDocument().missing.includes('assertionMethod'), 'and the document check still says why a wallet would refuse')
+    held = true
+    assert.deepEqual([a.me.did, a.me.verificationMethod], [webvh, `${webvh}#room`])
+    assert.equal(a.did, webvh)
+    const b = make(false); await b.refresh(true)
+    assert.equal(b.me.did, webvh, 'no door: the log\'s DID, as before')
+  })
+})
