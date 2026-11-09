@@ -232,7 +232,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     let size = 0, over = false; const chunks = []
     req.on('data', (c) => {
       size += c.length
-      if (over) return
+      if (over) { if (size > 16 * MAX_BODY) req.destroy(); return } // read and thrown away, up to a point: past 1 MB the sender is only holding the room's connection open, and the 413 has long been sent
       if (size > MAX_BODY) { over = true; chunks.length = 0; reject(new TaskError('malformedRequest', 'a document is at most 64 KB', { status: 413 })) } else chunks.push(c)
     })
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
