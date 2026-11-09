@@ -1,7 +1,11 @@
 // The workspace's current state, folded from the log entry by entry.
 // Nothing here is stored on its own: restart, replay the log, same state.
 import { checkPermissionCredential, claimsOf, grantMismatch } from '../shared/credential.js'
-import { DEFAULT_MODE, NAME_OF } from '../shared/types.js'
+import { DEFAULT_MODE, NAME_OF, resourceKey } from '../shared/types.js'
+
+// The newest notes on one resource the room shows and hands to agents: enough to see what each project found in it,
+// not a history (that is the log, which keeps every note).
+const RESOURCE_NOTES_KEPT = 40
 
 // What a grant's credential says: its signature was verified when the grant was appended (log.js).
 // null for a grant without one, and for one that is not well formed (never a crash on replay).
@@ -30,6 +34,7 @@ export class State {
     this.links = new Map() // hash -> a request to link an old name to a new key: { hash, from, old, why, at, vouches: Map(person -> { at, hash }), replacedAt }
     this.mapWays = new Map() // id -> a way of doing interop, defined in the workspace
     this.mapRuns = [] // runs recorded in the workspace
+    this.resources = new Map() // resourceKey(url) -> a source someone added to the Resources tab, and the notes on it
     this.hosted = new Set() // agent DIDs whose key the workspace holds (shown to everyone)
     this.away = new Map() // agent DID -> what it answers while its person is away (public: everyone can see an agent answers on its own)
     this.dives = new Map() // opening entry hash -> a closer look the weaver opened where agents disagree (see dive)
@@ -165,6 +170,20 @@ export class State {
       case 'project': {
         const prev = this.mapProjects.get(p.slug)
         this.mapProjects.set(p.slug, { slug: p.slug, name: p.name, url: p.url ?? null, about: p.about ?? '', ways: p.ways, addedBy: prev?.addedBy ?? e.onBehalfOf, updatedBy: e.onBehalfOf, at: e.timestamp, hash: e.hash })
+        break
+      }
+      case 'resource': {
+        // One record per address. Its adder may update it; anyone else's title is kept as a note, never over theirs.
+        const key = resourceKey(p.url), who = e.onBehalfOf ?? e.author, agent = e.author !== who ? e.author : null
+        const r = this.resources.get(key) ?? { url: p.url, title: null, kind: null, status: null, about: '', addedBy: null, agent: null, at: null, hash: null, notes: [] }
+        if (p.title !== undefined && (!r.addedBy || r.addedBy === who)) {
+          Object.assign(r, { title: p.title, kind: p.kind ?? r.kind, status: p.status ?? r.status, about: p.about ?? r.about, addedBy: r.addedBy ?? who, agent: r.agent ?? agent, at: r.at ?? e.timestamp, hash: r.hash ?? e.hash })
+        }
+        if (p.note !== undefined) {
+          r.notes.push({ text: p.note, by: who, agent, at: e.timestamp, hash: e.hash })
+          if (r.notes.length > RESOURCE_NOTES_KEPT) r.notes.splice(0, r.notes.length - RESOURCE_NOTES_KEPT) // the log keeps every one
+        }
+        this.resources.set(key, r)
         break
       }
       case 'way':

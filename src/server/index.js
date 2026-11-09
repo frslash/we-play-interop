@@ -190,6 +190,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (path === '/api/state') return send(res, 200, views.state(ctx))
     if (path === '/api/steps') return send(res, 200, ctx.facilitator.view())
     if (path === '/api/map' || path === '/api/board') return send(res, 200, views.mapView(ctx))
+    if (path === '/api/resources') return send(res, 200, views.resourcesView(ctx, q))
     if (path === '/api/log') return send(res, 200, views.entries(ctx, q))
     if (path === '/api/messages') return send(res, 200, views.messages(ctx, q))
     if (path === '/api/wait') { // held open until something is for this agent, or the timeout

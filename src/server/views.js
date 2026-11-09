@@ -1,9 +1,10 @@
 // Read views shared by the HTTP API and the MCP server: everything is public.
 import { proofConfig, signingInputHex } from '../shared/proof.js'
-import { buildDocument, checkPayload, NAME_OF, TYPES, VOTE_KINDS } from '../shared/types.js'
+import { buildDocument, checkPayload, NAME_OF, resourceKey, TYPES, VOTE_KINDS } from '../shared/types.js'
 import { heard } from '../shared/presence.js'
 import { differences, inEffect } from '../shared/rules.js'
 import { AGREED } from './rules.js'
+import { KINDS as RESOURCE_KINDS, RESOURCES as CURATED } from '../../public/resources.js'
 import { gist } from './weaver.js'
 
 export function info (ctx) {
@@ -186,6 +187,7 @@ export function read (ctx, path) {
   if (p === '/api/map') return mapView(ctx)
   if (p === '/api/sources') return ctx.sources.view()
   if (p === '/api/steps') return ctx.facilitator.view()
+  if (p === '/api/resources') return resourcesView(ctx, q)
   if (p === '/api/messages') return messages(ctx, q)
   if (p === '/api/wait') return ctx.waits.wait(q)
   if (p.startsWith('/api/files/')) return fileText(ctx, p.slice(11), q)
@@ -245,4 +247,28 @@ export function draft (ctx, { type, payload, issuer, onBehalfOf, delegation, thr
     document: doc, proof: cfg, signingInputHex: signingInputHex(doc, cfg), problem,
     howTo: 'Sign the signingInputHex bytes with Ed25519, set document.proof = { ...proof, proofValue: "z" + base58btc(signature) }, POST document to /api/entries within 10 minutes.',
   }
+}
+
+/** The Resources tab: the list the room's code carries (resources.js) and every source people and agents added in the
+ *  room, each with the notes on what was found in it. Filter by kind, or by words in a title, about or note (q). */
+export function resourcesView (ctx, { kind, q } = {}) {
+  const st = ctx.log.state, name = (did) => (did ? st.nameOf(did) : null)
+  const notes = (r) => (r?.notes ?? []).map((n) => ({ text: n.text, by: name(n.by), ...(n.agent ? { agent: name(n.agent) } : {}), at: n.at, id: n.hash }))
+  const seen = new Set(), list = []
+  for (const c of CURATED) {
+    const key = resourceKey(c.url), r = st.resources.get(key)
+    seen.add(key)
+    list.push({ title: c.title, url: c.url, kind: c.kind, by: c.by, status: c.status ?? '', about: c.about ?? '', ...(c.source ? { source: c.source, read: `read_file with file "source:${c.source}": the room's own copy` } : {}), notes: notes(r) })
+  }
+  for (const [key, r] of st.resources) {
+    if (seen.has(key)) continue
+    const by = name(r.addedBy ?? r.notes[0]?.by), agent = name(r.agent ?? r.notes[0]?.agent)
+    list.push({ title: r.title ?? r.url, url: r.url, kind: r.kind || 'Added in the room', by: agent ? `${agent} for ${by}` : by, status: r.status ?? '', about: r.about ?? '', added: r.at ?? r.notes[0]?.at, id: r.hash ?? r.notes[0]?.hash, notes: notes(r) })
+  }
+  const words = String(q ?? '').toLowerCase().split(/\s+/).filter(Boolean)
+  const hit = (r) => (!kind || r.kind.toLowerCase() === String(kind).toLowerCase()) &&
+    words.every((w) => [r.title, r.url, r.about, r.status, ...r.notes.map((n) => n.text)].join(' ').toLowerCase().includes(w))
+  const shown = list.filter(hit)
+  const kinds = [...RESOURCE_KINDS, ...list.map((r) => r.kind)].filter((k, i, a) => a.indexOf(k) === i)
+  return { kinds, count: shown.length, resources: shown }
 }
