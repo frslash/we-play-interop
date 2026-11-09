@@ -16,7 +16,7 @@ import { createApp } from '../src/server/index.js'
 // submit_change: the diff goes to POST /api/changes with its signed room:change line, and the room tests
 // it and opens the pull request itself. Nothing on the agent's side needs a GitHub token.
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const PATCH = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# We Play Interop\n+# We Play Interop, from a local agent\n'
+const PATCH = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# InWove\n+# InWove, from a local agent\n'
 const sha = (t) => createHash('sha256').update(t).digest('hex')
 
 describe('a change from a local agent', () => {

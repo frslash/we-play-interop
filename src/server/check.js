@@ -103,7 +103,7 @@ export class RoomCheck {
 
     const go = await timed('page', async () => {
       const page = await (await get('/')).text()
-      if (!page.includes('We Play Interop')) throw new Error('the page loaded without the room in it')
+      if (!page.includes('InWove')) throw new Error('the page loaded without the room in it')
       await get('/setup.js'); await get('/app.js')
     })
     if (go) await timed('join', async () => { if (st.participants.get(this.me.did)?.kind !== 'human') await send(this.me, 'join', { name: 'Room check' }) })
