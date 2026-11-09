@@ -10,6 +10,7 @@ import { newIdentity } from '../src/shared/did.js'
 import { NAME_OF, TYPES, signedDocument } from '../src/shared/types.js'
 import { config as baseConfig } from '../src/server/config.js'
 import { BUILD_MS, branchOf } from '../src/server/builder.js'
+import { SETTLE_EVERY_MS } from '../src/server/facilitator.js'
 import { createApp } from '../src/server/index.js'
 import { createResolver } from '../src/server/resolver.js'
 import { closeVotes } from '../src/server/votes.js'
@@ -20,9 +21,9 @@ const MIN = 60_000
 
 async function room () {
   const dir = mkdtempSync(join(tmpdir(), 'wpi-builder-'))
-  const fired = [], pulls = []
+  const fired = [], pulls = [], closedPulls = [], reads = []
   const wakeFetch = async (url, init) => { fired.push({ url, init, body: JSON.parse(init.body) }); return { ok: true, status: 200 } }
-  const gh = async (method, path) => { if (method === 'GET' && path.includes('/pulls?')) return pulls; return {} }
+  const gh = async (method, path) => { if (method === 'GET') reads.push(path); if (method === 'GET' && path.includes('/pulls?state=closed')) return closedPulls; if (method === 'GET' && path.includes('/pulls?')) return pulls; return {} }
   const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, voteMinutes: 10, workspaceRepo: 'example/room', publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }
   const ctx = await createApp(config, { resolver: createResolver(), hostWelcomeMs: null, wakeFetch, gh })
   await new Promise((r) => ctx.server.listen(0, r))
@@ -52,7 +53,7 @@ async function room () {
     return pr
   }
   const stop = async () => { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) }
-  return { ctx, send, as, people, agents, builder, fired, pulls, st, stepFrom, said, at, agreeForBuilder, stop }
+  return { ctx, send, as, people, agents, builder, fired, pulls, closedPulls, reads, st, stepFrom, said, at, agreeForBuilder, stop }
 }
 
 describe('the builder builds what the board hands it, from a sandbox with only the repository', () => {
@@ -102,8 +103,7 @@ describe('the builder builds what the board hands it, from a sandbox with only t
       const after = r.stepFrom(pr)
       assert.equal(after.state, 'result posted'); assert.equal(after.evidence[0].url, 'https://github.com/example/room/pull/41')
       assert.ok(!r.said('press').length, 'a pull request is the exact thing')
-      const ask = r.said('check')
-      assert.equal(ask.length, 1); assert.match(ask[0].payload.text, /^(South|East) Agent: please check/)
+      assert.equal(r.said('check').length, 0, 'no separate check: the room’s approvals in Decide are its check, and the board ends it when it merges')
     } finally { await r.stop() }
   })
 
@@ -189,6 +189,73 @@ describe('a blocked step is reported once, not on every look', () => {
       assert.ok(b.view().blockedRepeatsHeld >= 3, 'the guard counts what it held back')
       await b.look(t0 + 2 * 3600_000)
       assert.equal(stuckLines(), 2, 'after an hour it may say so once more')
+    } finally { await r.stop() }
+  })
+})
+
+describe('the board settles steps from GitHub, so it never chases finished work', () => {
+  const settledAfter = (r) => r.at(12) + SETTLE_EVERY_MS + 60_000
+  const built = async (r, n, title) => {
+    const p = await r.agreeForBuilder(title)
+    await r.ctx.facilitator.tick(r.at(11)); await r.ctx.facilitator.tick(r.at(12))
+    const s = r.stepFrom(p)
+    r.pulls.push({ number: n, title, body: 'Done.', html_url: `https://github.com/example/room/pull/${n}`, head: { ref: branchOf(s), sha: 'a'.repeat(40) } })
+    await r.ctx.facilitator.tick(r.at(15)); await r.ctx.facilitator.tick(r.at(16))
+    assert.equal(r.stepFrom(p).state, 'result posted')
+    return p
+  }
+  const close = (r, n, merged) => { const i = r.pulls.findIndex((x) => x.number === n); const [pr] = r.pulls.splice(i, 1); r.closedPulls.push({ ...pr, state: 'closed', merged_at: merged ? new Date().toISOString() : null }) }
+
+  test('its pull request merged: the step is done, with no check asked and nothing chased', async () => {
+    const r = await room()
+    try {
+      const p = await built(r, 41, 'Link each step’s pull request')
+      close(r, 41, true)
+      await r.ctx.facilitator.tick(settledAfter(r))
+      const s = r.stepFrom(p)
+      assert.equal(s.state, 'checked'); assert.equal(s.settled, 'pull request #41 merged')
+      assert.ok(!r.ctx.facilitator.steps().some((x) => x.id === s.id), 'off the board')
+      assert.equal(r.said('check').length, 0)
+      const report = r.ctx.facilitator.reportText(new Set([s.id])) // the report names what moved, and a settled step moved
+      assert.match(report, /Done: pull request #41 merged\./, 'a settled step is reported as one that moved')
+      assert.match(report, /On the board: \d+ steps?/)
+      assert.match(r.ctx.facilitator.where(s), /^Done: pull request #41 merged\.$/)
+    } finally { await r.stop() }
+  })
+
+  test('its pull request closed without merging: the step is set aside, and says why', async () => {
+    const r = await room()
+    try {
+      const p = await built(r, 42, 'Show the builder’s runs')
+      close(r, 42, false)
+      await r.ctx.facilitator.tick(settledAfter(r))
+      const s = r.stepFrom(p)
+      assert.equal(s.aside, true); assert.equal(s.settled, 'pull request #42 closed without merging')
+    } finally { await r.stop() }
+  })
+
+  test('closing is a step’s job only when its title says so', async () => {
+    const { closingStep } = await import('../src/server/facilitator.js')
+    for (const t of ['Close #78 as replaced by #77', "Someone, as the repository's holder, closes #61 with a comment", 'close pull request #12']) assert.ok(closingStep(t), t)
+    for (const t of ['Builder fixes #62 so that a choice holds, and closes #61', 'Land #68 and close #61', 'Disclose #5']) assert.ok(!closingStep(t), t)
+  })
+
+  test('a step that asked for pull requests to be closed is done once they are, and GitHub is read every ten minutes, not every tick', async () => {
+    const r = await room()
+    try {
+      const p = await r.agreeForBuilder('Close #61 and #62, replaced by #68')
+      await r.ctx.facilitator.tick(r.at(11)); await r.ctx.facilitator.tick(r.at(12))
+      r.closedPulls.push({ number: 61, state: 'closed', merged_at: null, head: { ref: 'claude/builder-0123456789ab' } })
+      r.pulls.push({ number: 62, title: 'Still open', head: { ref: 'claude/builder-abcdefabcdef', sha: 'b'.repeat(40) } }, { number: 68, title: 'The replacement', head: { ref: 'claude/builder-111111111111', sha: 'c'.repeat(40) } })
+      await r.ctx.facilitator.tick(settledAfter(r))
+      assert.notEqual(r.stepFrom(p).state, 'checked', 'not while #62 is still open')
+      const before = r.reads.filter((x) => x.includes('/pulls?state=closed')).length
+      close(r, 62, false)
+      await r.ctx.facilitator.tick(settledAfter(r) + 60_000)
+      assert.equal(r.reads.filter((x) => x.includes('/pulls?state=closed')).length, before, 'not read again within ten minutes')
+      await r.ctx.facilitator.tick(settledAfter(r) + SETTLE_EVERY_MS + 60_000)
+      const s = r.stepFrom(p)
+      assert.equal(s.state, 'checked'); assert.equal(s.settled, '#61, #62 are closed, as it asked')
     } finally { await r.stop() }
   })
 })
