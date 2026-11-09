@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { Executor } from '../src/server/actions.js'
 import { checkPayload, MAX_REPLACES } from '../src/shared/types.js'
+import { willClose } from '../src/shared/replaces.js'
+import { readFileSync } from 'node:fs'
 
 const SHA = 'a'.repeat(40)
 const config = { workspaceRepo: 'x/y', githubToken: 't' }
@@ -22,7 +24,7 @@ function fakeGitHub (pulls) {
   return { gh, calls }
 }
 
-const open = (n) => ({ number: n, state: 'open', merged: false, merged_at: null, head: { sha: SHA, ref: `branch-${n}` }, base: { ref: 'main' }, title: `pull ${n}` })
+const open = (n, login = 'builder') => ({ number: n, user: { login }, state: 'open', merged: false, merged_at: null, head: { sha: SHA, ref: `branch-${n}` }, base: { ref: 'main' }, title: `pull ${n}` })
 const proposal = (replaces) => ({ hash: 'h', principal: 'did:key:z1', change: { pr: 90, sha, ...(replaces ? { replaces } : {}) }, head: SHA })
 const sha = SHA
 const executor = (gh) => {
@@ -78,6 +80,63 @@ describe('a merged workspace-change closes the pull requests it replaces', () =>
     const out = await executor(gh).closeReplaced({ change: { pr: 90, sha, replaces: [90] } })
     assert.deepEqual(out, { closed: [], skipped: [] })
     assert.ok(!calls.length)
+  })
+})
+
+describe('a change merged without votes closes only its own side’s pull requests', () => {
+  const small = (replaces) => ({ ...proposal(replaces), lane: 'small' })
+
+  test('a no-vote change that names another person’s open pull request leaves it open', async () => {
+    const pulls = { 90: open(90, 'builder'), 77: open(77, 'someone-else') }
+    const { gh, calls } = fakeGitHub(pulls)
+    const result = await executor(gh).mergeChange(small([77]))
+    assert.equal(result.status, 'merged')
+    assert.equal(pulls[77].state, 'open')
+    assert.deepEqual(result.replaced.closed, [])
+    assert.deepEqual(result.replaced.skipped.map((s) => s.pr), [77])
+    assert.match(result.replaced.skipped[0].why, /without votes/)
+    assert.ok(!calls.some((c) => c.method === 'PATCH' || /comments$/.test(c.path)), 'no comment and no close on another person’s pull request')
+    assert.match(result.detail, /left #77 open/)
+  })
+
+  test('a no-vote change still closes a pull request by the same author', async () => {
+    const pulls = { 90: open(90, 'builder'), 77: open(77, 'builder'), 78: open(78, 'someone-else') }
+    const { gh } = fakeGitHub(pulls)
+    const result = await executor(gh).mergeChange(small([77, 78]))
+    assert.deepEqual(result.replaced.closed, [77])
+    assert.equal(pulls[77].state, 'closed'); assert.equal(pulls[78].state, 'open')
+  })
+
+  test('a no-vote change whose own author is unknown closes nothing', async () => {
+    const pulls = { 77: open(77, 'builder') }
+    const { gh } = fakeGitHub(pulls)
+    const out = await executor(gh).closeReplaced(small([77]))
+    assert.deepEqual(out.closed, []); assert.equal(pulls[77].state, 'open')
+  })
+
+  test('a change the room voted on may still close another author’s pull request it names', async () => {
+    const pulls = { 90: open(90, 'builder'), 77: open(77, 'someone-else') }
+    const { gh } = fakeGitHub(pulls)
+    const result = await executor(gh).mergeChange(proposal([77]))
+    assert.deepEqual(result.replaced.closed, [77])
+  })
+})
+
+describe('Decide shows what a change will close', () => {
+  test('a change that lists replaces shows "will close #n"', () => {
+    assert.equal(willClose({ kind: 'workspace-change', change: { pr: 90, sha, replaces: [77] } }), ' · will close #77')
+    assert.equal(willClose({ kind: 'workspace-change', change: { pr: 90, sha, replaces: [77, 78] } }), ' · will close #77, #78')
+    assert.match(willClose({ kind: 'workspace-change', lane: 'small', change: { pr: 90, sha, replaces: [77] } }), /^ · will close #77 \(only those its own side opened/)
+  })
+  test('a change that lists none shows nothing', () => {
+    assert.equal(willClose({ kind: 'workspace-change', change: { pr: 90, sha } }), '')
+    assert.equal(willClose({ kind: 'workspace-change', change: { pr: 90, sha, replaces: [] } }), '')
+    assert.equal(willClose({ kind: 'other' }), '')
+  })
+  test('the Decide card puts it after the pull request link', () => {
+    const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+    assert.match(app, /import \{ willClose \} from '\/shared\/replaces\.js'/)
+    assert.match(app, /`pull request #\$\{p\.change\.pr\}`\), ` at \$\{p\.change\.sha\.slice\(0, 10\)\}`, willClose\(p\)\)/)
   })
 })
 

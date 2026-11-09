@@ -10,6 +10,7 @@ import { createGraph } from '/graph.js'
 import { neverKey, phrases, secretIn, textsOf } from '/shared/guard.js'
 import { splitLayers } from '/shared/layers.js'
 import { whyNot } from '/shared/steps.js'
+import { willClose } from '/shared/replaces.js'
 import { mentionOptions } from '/shared/mentions.js'
 import { silentRound } from '/shared/round.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
@@ -727,7 +728,7 @@ function decisionCard (p) {
     h('div', { class: 'meta' }, p.byWeaver ? 'The weaver suggests' : `${p.authorName} proposes`, ` · ${p.kind}`, open && p.kind !== 'goal' && left > 0 ? ` · closes in ${Math.ceil(left / 60_000)} min` : '', !open ? ` · ${p.status}` : ''),
     h('h3', { class: 'decision-title' }, p.title),
     cleanBody(p.body) ? h('p', { class: 'why' }, cleanBody(p.body)) : null,
-    p.change ? h('p', { class: 'meta' }, h('a', { href: `https://github.com/${S.workspaceRepo}/pull/${p.change.pr}`, target: '_blank', rel: 'noopener' }, `pull request #${p.change.pr}`), ` at ${p.change.sha.slice(0, 10)}`) : null,
+    p.change ? h('p', { class: 'meta' }, h('a', { href: `https://github.com/${S.workspaceRepo}/pull/${p.change.pr}`, target: '_blank', rel: 'noopener' }, `pull request #${p.change.pr}`), ` at ${p.change.sha.slice(0, 10)}`, willClose(p)) : null,
     h('p', { class: 'meta' }, `${p.tally.for} yes · ${p.tally.against} no`, p.approvals?.length ? ` · approved by ${p.approvals.map((a) => `${a.name}${a.sha ? ` (${a.sha.slice(0, 7)}${a.void ? ', void: a newer commit came after it' : ''})` : ''}`).join(', ')}` : '', p.vetoes.length ? ` · stopped by ${p.vetoes.map((v) => v.name).join(', ')}` : ''),
     open ? h('p', { class: 'meta need' }, needOf(p)) : result ? h('p', { class: 'meta' }, result.url ? h('a', { href: result.url, target: '_blank', rel: 'noopener' }, result.status) : h('strong', null, result.status), result.detail ? ` · ${result.detail}` : '') : null,
     open ? voteButtons(p) : null)
