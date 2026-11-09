@@ -5,6 +5,7 @@
 //   record-run        a pull request that appends one run to dtg-interop runs.json, nothing else
 //   issue             an issue on dtg-interop
 //   workspace-change  merge one pull request of this workspace's repo, pinned to the approved commit
+//                     (an approval names the commit it read; a later push voids it until someone approves the new one)
 // It never edits another project's files. Without GITHUB_TOKEN it prepares the
 // step (a link a person can open) and says so in the log.
 import { EXTERNAL_KINDS, checkBoardRun } from '../shared/types.js'
@@ -39,11 +40,18 @@ export class Executor {
   /** The facts the rules' checker reads about a proposal. */
   facts (pr, now = Date.now()) {
     const st = this.log.state
-    const people = [...new Set([...pr.approvals.keys(), ...[...pr.votes].filter(([, v]) => v.choice === 'for').map(([d]) => d)])].filter((d) => st.isHuman(d)) // a person's yes in the open vote is their approval
+    const held = st.holding(pr)
+    const people = [...new Set([...held.dids, ...this.yesVoters(pr)])].filter((d) => st.isHuman(d)) // a person's yes in the open vote is their approval
     const owner = pr.byWeaver && pr.sources?.length ? this.log.byHash.get(pr.sources[0])?.onBehalfOf ?? pr.principal : pr.principal // a change an agent handed the room is its person's
-    const backers = new Set([...pr.approvals.keys()].map((d) => st.participants.get(d)?.principal ?? d).filter((p) => p !== owner)) // different people, never the proposer's own
-    const yesTimes = [pr.lastApprovalAt, ...[...pr.votes.values()].filter((v) => v.choice === 'for').map((v) => v.at)].filter(Boolean).map((t) => Date.parse(t)).filter(Number.isFinite)
+    const backers = new Set(held.dids.map((d) => st.participants.get(d)?.principal ?? d).filter((p) => p !== owner)) // different people, never the proposer's own
+    const yesTimes = [held.at, ...[...pr.votes].filter(([d, v]) => v.choice === 'for' && this.yesVoters(pr).includes(d)).map(([, v]) => v.at)].filter(Boolean).map((t) => Date.parse(t)).filter(Number.isFinite)
     return { kind: pr.kind, external: EXTERNAL_KINDS.includes(pr.kind), vetoed: pr.vetoes.length > 0, acted: Boolean(pr.outcome), lane: pr.lane ?? null, proposedAt: Date.parse(pr.at), yesTimes, people, owner, otherPeoplesAgents: backers.size, democracy: st.mode.mode === 'democracy' ? st.tally(pr) : null, now }
+  }
+
+  /** Who said yes in the vote, counted as approval. A vote names no commit, so for a code change it holds only while the pull request is still at the commit the proposal names. */
+  yesVoters (pr) {
+    if (pr.kind === 'workspace-change' && pr.head !== pr.change?.sha) return []
+    return [...pr.votes].filter(([, v]) => v.choice === 'for').map(([d]) => d)
   }
 
   /** Why a proposal is (not yet) ready to act; null means ready. The rules' checker decides, from rules.json. */
@@ -69,7 +77,7 @@ export class Executor {
     return [
       `Proposed in the We Play Interop workspace ${base} and approved there.`,
       `- proposal: log entry \`${pr.hash}\` by ${st.nameOf(pr.principal)} (${pr.principal})`,
-      `- approved by: ${[...pr.approvals.keys()].map((d) => `${st.nameOf(d)} (${d})`).join(', ')}`,
+      `- approved by: ${st.holding(pr).dids.map((d) => `${st.nameOf(d)} (${d})${pr.approvals.get(d).sha ? ` for commit ${pr.approvals.get(d).sha}` : ''}`).join(', ')}`,
       `- votes: ${JSON.stringify(st.tally(pr))}; mode ${st.mode.mode}`,
       `- verify: ${base}/api/log/${pr.hash}`,
     ].join('\n')
@@ -143,16 +151,18 @@ export class Executor {
 
   /** null when a code change may merge now; a reason it waits; or "failed: …" when it never will as it is. */
   async changeReady (pr) {
-    const repo = this.config.workspaceRepo, { pr: number, sha } = pr.change, st = this.log.state
+    const repo = this.config.workspaceRepo, { pr: number } = pr.change, st = this.log.state
     const pull = await this.gh('GET', `/repos/${repo}/pulls/${number}`)
     if (pull.state !== 'open') return `failed: pull request #${number} is ${pull.state}`
-    if (pull.head.sha !== sha) return `failed: pull request #${number} changed after it was approved (now ${pull.head.sha.slice(0, 10)}); propose the new commit`
+    st.setHead(pr, pull.head.sha)
+    const sha = pr.head
+    if (sha !== pr.change.sha && !st.holding(pr).dids.length) return `pull request #${number} has a new commit (${sha.slice(0, 10)}): approvals of earlier commits are void until someone reads it and approves it again`
     const files = await this.gh('GET', `/repos/${repo}/pulls/${number}/files?per_page=100`)
     const names = files.map((f) => f.filename)
     const rules = this.rules()
     pr.lane = laneOf(rules, names) // the small lane, by rules.json: the page and the docs only (public/setup.js is never small)
     const touched = needAPerson(rules, names)
-    if (touched.length && ![...pr.approvals.keys(), ...[...pr.votes].filter(([, v]) => v.choice === 'for').map(([d]) => d)].some((d) => st.isHuman(d))) return `it changes the room's safety (${touched.slice(0, 3).join(', ')}), so a person approves it too`
+    if (touched.length && ![...st.holding(pr).dids, ...this.yesVoters(pr)].some((d) => st.isHuman(d))) return `it changes the room's safety (${touched.slice(0, 3).join(', ')}), so a person approves it too`
     const runs = (await this.gh('GET', `/repos/${repo}/actions/runs?head_sha=${sha}&per_page=20`)).workflow_runs ?? []
     const tests = runs.filter((r) => (r.name ?? '').toLowerCase().includes(rules.codeChanges.testsMustPass.toLowerCase()))
     if (!tests.length) return 'its tests have not run yet'
@@ -162,13 +172,13 @@ export class Executor {
   }
 
   async mergeChange (pr) {
-    const repo = this.config.workspaceRepo, { pr: number, sha } = pr.change
+    const repo = this.config.workspaceRepo, { pr: number } = pr.change, sha = pr.head ?? pr.change.sha // the commit the holding approvals read
     const url = `https://github.com/${repo}/pull/${number}`
     if (!this.config.githubToken) return { status: 'prepared', url, detail: `Approved in the workspace for commit ${sha}. No GITHUB_TOKEN is set; a maintainer merges it, checking the head is still ${sha}.` }
     const pull = await this.gh('GET', `/repos/${repo}/pulls/${number}`)
     if (pull.state !== 'open') throw new Error(`pull request #${number} is ${pull.state}`)
     if (pull.base?.ref && pull.base.ref !== (this.config.workspaceBranch || 'main')) throw new Error(`pull request #${number} is into ${pull.base.ref}; this room merges into ${this.config.workspaceBranch || 'main'}`)
-    if (pull.head.sha !== sha) throw new Error(`pull request #${number} changed after it was approved (now ${pull.head.sha}); propose the new commit`)
+    if (pull.head.sha !== sha) throw new Error(`pull request #${number} changed after it was approved (now ${pull.head.sha}); the approvals of ${sha.slice(0, 10)} are void, so approve the new commit or propose it`)
     // the commit status branch protection can require, so code merges only through this loop
     try { await this.gh('POST', `/repos/${repo}/statuses/${sha}`, { state: 'success', context: 'we-play-interop/approval', description: 'Approved in the workspace log', target_url: this.config.publicUrl ? `${this.config.publicUrl}/api/log/${pr.hash}` : undefined }) } catch (err) { console.warn('approval mark not set:', err.message) } // a token without commit-status rights still merges, unless the branch rules require the mark
     const merged = await this.gh('PUT', `/repos/${repo}/pulls/${number}/merge`, { sha, merge_method: 'squash', commit_title: `${pull.title} (#${number})`, commit_message: this.provenance(pr) })

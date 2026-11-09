@@ -444,7 +444,7 @@ function voteButtons (p) {
   return h('div', { class: 'row' },
     h('button', { class: 'btn small' + (mine === 'for' ? ' primary' : ''), onclick: () => post('vote', { proposal: p.hash, choice: 'for' }) }, goal ? 'Yes, this' : 'For'),
     h('button', { class: 'btn small' + (mine === 'against' ? ' primary' : ''), onclick: () => post('vote', { proposal: p.hash, choice: 'against' }) }, goal ? 'Not this' : 'Against'),
-    outside && !p.approvals.some((a) => a.did === me.did) ? h('button', { class: 'btn small', onclick: () => post('approve', { proposal: p.hash }) }, 'Approve') : null,
+    outside && !p.approvals.some((a) => a.did === me.did && !a.void) ? h('button', { class: 'btn small', title: p.head ? `Approves commit ${p.head}, the one you read` : null, onclick: () => post('approve', { proposal: p.hash, ...(p.head ? { sha: p.head } : {}) }) }, p.head ? `Approve ${p.head.slice(0, 7)}` : 'Approve') : null,
     h('button', { class: 'btn small danger', onclick: () => { const reason = prompt('Why stop this? (it is public)'); if (reason) post('veto', { target: p.hash, reason }) } }, 'Veto'))
 }
 function proposalBubble (e) {
@@ -643,7 +643,7 @@ function decisionCard (p) {
     h('h3', { class: 'decision-title' }, p.title),
     cleanBody(p.body) ? h('p', { class: 'why' }, cleanBody(p.body)) : null,
     p.change ? h('p', { class: 'meta' }, h('a', { href: `https://github.com/${S.workspaceRepo}/pull/${p.change.pr}`, target: '_blank', rel: 'noopener' }, `pull request #${p.change.pr}`), ` at ${p.change.sha.slice(0, 10)}`) : null,
-    h('p', { class: 'meta' }, `${p.tally.for} yes · ${p.tally.against} no`, p.approvals?.length ? ` · approved by ${p.approvals.map((a) => a.name).join(', ')}` : '', p.vetoes.length ? ` · stopped by ${p.vetoes.map((v) => v.name).join(', ')}` : ''),
+    h('p', { class: 'meta' }, `${p.tally.for} yes · ${p.tally.against} no`, p.approvals?.length ? ` · approved by ${p.approvals.map((a) => `${a.name}${a.sha ? ` (${a.sha.slice(0, 7)}${a.void ? ', void: a newer commit came after it' : ''})` : ''}`).join(', ')}` : '', p.vetoes.length ? ` · stopped by ${p.vetoes.map((v) => v.name).join(', ')}` : ''),
     open ? h('p', { class: 'meta need' }, needOf(p)) : result ? h('p', { class: 'meta' }, result.url ? h('a', { href: result.url, target: '_blank', rel: 'noopener' }, result.status) : h('strong', null, result.status), result.detail ? ` · ${result.detail}` : '') : null,
     open ? voteButtons(p) : null)
 }
