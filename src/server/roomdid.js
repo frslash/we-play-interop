@@ -2,8 +2,9 @@
 // The log is public by design (a hash-chained list of signed entries); it holds no key. It is read from the room's data
 // folder (DID_LOG_FILE, default <DATA_DIR>/did.jsonl) on every request, so a new entry (a key rotation, a host move)
 // is live as soon as the file changes, without a restart. The signing keys never come near this server.
-import { existsSync, readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { mintRoomDid } from '../../agent/mint-room-did.js'
 
 const MAX_LOG_BYTES = 256 * 1024 // a rehearsal log is a few KB; this tripwire stands for "this is a DID log, not a data dump"
 
@@ -29,4 +30,35 @@ export function handleRoomDid (req, res, path, opts) {
   res.writeHead(200, { 'content-type': 'text/jsonl; charset=utf-8', 'access-control-allow-origin': '*', 'cache-control': 'public, max-age=60', 'x-content-type-options': 'nosniff' })
   res.end(req.method === 'HEAD' ? undefined : text)
   return true
+}
+
+/** The host a did:webvh is minted for: the host of PUBLIC_URL (from config, never hard-coded). '' when there is none. */
+export function didHostOf (publicUrl) {
+  try { return publicUrl ? new URL(publicUrl).host.replace(':', '%3A') : '' } catch { return '' }
+}
+
+/**
+ * On start: if the room has no DID log yet, mint one for its public host. The update key is written next to the log
+ * (mode 0600) and is never logged; a sibling did-test.json marks it as a rehearsal DID, not the one handed to Project Weave.
+ * Returns { minted, did?, reason? }. Never throws: a room without a DID still runs, and says why.
+ */
+export async function ensureRoomDid ({ dataDir, file = '', publicUrl, log = console.log, now = () => new Date() }) {
+  const path = file || join(dataDir, 'did.jsonl')
+  if (existsSync(path)) return { minted: false, reason: 'has a log' }
+  const host = didHostOf(publicUrl)
+  if (!host) return { minted: false, reason: 'no PUBLIC_URL' }
+  try {
+    const m = await mintRoomDid(host)
+    const dir = dirname(path)
+    mkdirSync(dir, { recursive: true })
+    const at = now().toISOString()
+    writeFileSync(join(dir, 'update-key.txt'), m.seedHex + '\n', { mode: 0o600 })
+    writeFileSync(join(dir, 'did-test.json'), JSON.stringify({ test: true, did: m.did, mintedAt: at, note: 'A rehearsal DID on a test key. Not the DID handed to Project Weave; their people make the first real keys.' }) + '\n', { mode: 0o600 })
+    writeFileSync(path, m.log, { mode: 0o600 }) // last, so a half-finished mint leaves no log and is retried
+    log(`room DID minted (test): ${m.did} at ${at}`)
+    return { minted: true, did: m.did }
+  } catch (e) {
+    log(`room DID not minted: ${e?.code || e?.name || 'error'}`)
+    return { minted: false, reason: 'error' }
+  }
 }

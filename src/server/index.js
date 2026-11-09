@@ -1,6 +1,6 @@
 // We Play Interop: one small server. Reads are public; every write is a signed
 // Trust Task document, verified and appended to the hash-chained log.
-import { handleRoomDid } from './roomdid.js'
+import { handleRoomDid, ensureRoomDid } from './roomdid.js'
 import { createHash } from 'node:crypto'
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -412,6 +412,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const ctx = await createApp()
+  await ensureRoomDid({ dataDir: defaultConfig.dataDir, file: defaultConfig.didLogFile, publicUrl: defaultConfig.publicUrl })
   ctx.server.listen(defaultConfig.port, () => {
     console.log(`${defaultConfig.workspaceName} on :${defaultConfig.port} · workspace ${ctx.identity.did} · ${ctx.db.kind} · ${ctx.log.entries.length} entries`)
     console.log(ctx.llm.configured ? `weaver model: ${ctx.llm.model ?? 'picked at the first round'} via ${ctx.llm.endpoint ?? defaultConfig.llm.baseUrl}` : 'No model key (ANTHROPIC_API_KEY or LLM_API_KEY) is set: the weaver runs its built-in tally instead of a model, and every round says so.')
