@@ -30,6 +30,7 @@ import { Changes } from './changes.js'
 import { Workshop } from './workshop.js'
 import { Cursors } from './cursors.js'
 import { ActivityPub } from './activitypub.js'
+import { CODE_RE, Visits, interaction } from './visits.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { createResolver } from './resolver.js'
@@ -96,6 +97,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.host = new Host({ ctx, welcomeAfterMs: hostWelcomeMs })
   ctx.media = new Media({ dataDir: config.dataDir })
   ctx.cursors = new Cursors({ dataDir: config.dataDir })
+  ctx.visits = new Visits() // join links for one visit each, in memory
   ctx.types = TYPES
   ctx.changes = new Changes({ ctx, dataDir: config.dataDir })
   log.on('entry', (e) => ctx.changes.onEntry(e))
@@ -130,6 +132,25 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     req.on('error', reject)
   })
   const ipOf = (req) => String(req.headers['fly-client-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim()
+  const baseOf = (req) => config.publicUrl || `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`
+  const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+
+  /** A join link opened: a browser goes to the page's join flow, a wallet asking for JSON gets what the room offers. Once. */
+  function openVisit (req, res, code) {
+    const accept = String(req.headers.accept ?? '').toLowerCase(), json = accept.search(/application\/([\w.-]+\+)?json/), html = accept.indexOf('text/html')
+    const wallet = json >= 0 && (html < 0 || json < html) // asked for JSON before a web page: software, not a person's browser
+    const headers = { 'cache-control': 'no-store', vary: 'accept', 'referrer-policy': 'no-referrer' }
+    if (req.method === 'HEAD') { const st = CODE_RE.test(code) ? ctx.visits.peek(code) : 'gone'; res.writeHead(st === 'live' ? 200 : st === 'used' ? 410 : 404, headers); return res.end() }
+    const got = CODE_RE.test(code) ? ctx.visits.open(code, wallet ? 'wallet' : 'page') : { why: 'gone' }
+    if (got.visit) {
+      if (wallet) return send(res, 200, interaction({ base: baseOf(req), did: identity.did, name: config.workspaceName, visit: got.visit }), headers)
+      return send(res, 303, '', { ...headers, location: '/#tab=you' }) // the page starts a newcomer on You, where joining is
+    }
+    const status = got.why === 'used' ? 410 : 404, why = got.why === 'used' ? 'This code was for one visit, and it has been used.' : 'This code has run out, or there is no such code.'
+    if (wallet) return send(res, status, { error: why }, headers)
+    return send(res, status, `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(config.workspaceName)}</title><p>${why} <a href="/">Open the room</a> to join, or show its page again on the other screen for a fresh code.</p>`,
+      { ...headers, 'content-type': TYPES_OF['.html'], 'content-security-policy': "default-src 'none'", 'x-content-type-options': 'nosniff' })
+  }
 
   async function route (req, res) {
     const url = new URL(req.url, 'http://local')
@@ -173,6 +194,14 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       if (!t || t.length > 600) return send(res, 400, 'text: 1 to 600 characters')
       return send(res, 200, await QRCode.toString(t, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' }), { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=3600' })
     }
+    if (path === '/api/visit') { // a join link for this visit (POST), or how the links have been used (GET)
+      if (req.method === 'GET') return send(res, 200, ctx.visits.view())
+      if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' })
+      const v = ctx.visits.make(ipOf(req))
+      if (!v) return send(res, 429, { error: 'too many join links from this address; try again in a minute' }, { 'retry-after': '60' })
+      return send(res, 201, { url: `${baseOf(req)}/j/${v.code}?iuv=1`, expiresAt: new Date(v.expiresAt).toISOString() }, { 'cache-control': 'no-store' })
+    }
+    if (path.startsWith('/j/') && (req.method === 'GET' || req.method === 'HEAD')) return openVisit(req, res, path.slice(3))
     if (path === '/api/events') {
       // no-transform and no buffering, so proxies and tunnels pass each event on at once; the padding pushes past buffers that wait for a first chunk
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no', connection: 'keep-alive', 'access-control-allow-origin': '*' })
