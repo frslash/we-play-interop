@@ -9,7 +9,7 @@ import { describe, test } from 'node:test'
 import { newIdentity } from '../src/shared/did.js'
 import { NAME_OF, TYPES, signedDocument } from '../src/shared/types.js'
 import { config as baseConfig } from '../src/server/config.js'
-import { BUILD_MS, branchOf } from '../src/server/builder.js'
+import { BUILD_MS, CLOSE_MAX, TIDY_EVERY_MS, branchOf, closesOf, namesPull } from '../src/server/builder.js'
 import { createApp } from '../src/server/index.js'
 import { createResolver } from '../src/server/resolver.js'
 import { closeVotes } from '../src/server/votes.js'
@@ -20,9 +20,9 @@ const MIN = 60_000
 
 async function room () {
   const dir = mkdtempSync(join(tmpdir(), 'wpi-builder-'))
-  const fired = [], pulls = []
+  const fired = [], pulls = [], calls = []
   const wakeFetch = async (url, init) => { fired.push({ url, init, body: JSON.parse(init.body) }); return { ok: true, status: 200 } }
-  const gh = async (method, path) => { if (method === 'GET' && path.includes('/pulls?')) return pulls; return {} }
+  const gh = async (method, path, body) => { calls.push({ method, path, body }); if (method === 'GET' && path.includes('/pulls?')) return pulls; return {} }
   const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, voteMinutes: 10, workspaceRepo: 'example/room', publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }
   const ctx = await createApp(config, { resolver: createResolver(), hostWelcomeMs: null, wakeFetch, gh })
   await new Promise((r) => ctx.server.listen(0, r))
@@ -52,7 +52,7 @@ async function room () {
     return pr
   }
   const stop = async () => { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) }
-  return { ctx, send, as, people, agents, builder, fired, pulls, st, stepFrom, said, at, agreeForBuilder, stop }
+  return { ctx, send, as, people, agents, builder, fired, pulls, calls, st, stepFrom, said, at, agreeForBuilder, stop }
 }
 
 describe('the builder builds what the board hands it, from a sandbox with only the repository', () => {
@@ -189,6 +189,94 @@ describe('a blocked step is reported once, not on every look', () => {
       assert.ok(b.view().blockedRepeatsHeld >= 3, 'the guard counts what it held back')
       await b.look(t0 + 2 * 3600_000)
       assert.equal(stuckLines(), 2, 'after an hour it may say so once more')
+    } finally { await r.stop() }
+  })
+})
+
+describe('the room closes pull requests itself, so no person has to', () => {
+  const closedNums = (r) => r.calls.filter((c) => c.method === 'PATCH' && c.body?.state === 'closed').map((c) => Number(c.path.split('/').pop())).sort((a, b) => a - b)
+  const commentOn = (r, n) => r.calls.find((c) => c.method === 'POST' && c.path.endsWith(`/issues/${n}/comments`))?.body?.body
+  const sayOf = (r, what) => r.ctx.log.entries.filter((e) => e.author === r.builder && e.document.payload.step?.say === what).at(-1)?.document.payload.text
+
+  test('what a "Close:" line asks for, and what a step names', () => {
+    assert.deepEqual(closesOf('Close: #39, #41\nWhy: the step asks\n**Close:** #61, #39\nCloses #5\nclose #7 please'), [39, 41, 61], 'only "Close:" lines, each number once')
+    assert.ok(namesPull('close #61 with a comment', 61)); assert.ok(namesPull('PR 61 is replaced', 61)); assert.ok(namesPull('see https://github.com/x/y/pull/61', 61))
+    assert.ok(!namesPull('close #610', 61)); assert.ok(!namesPull('61 apples', 61))
+  })
+
+  test('a "Close:" pull request: the room closes what the step names and a builder opened, never a person’s or one in Decide, then closes the request and posts the result', async () => {
+    const r = await room()
+    try {
+      const p = await r.agreeForBuilder('Close #61, #34 and #62: the newer rule replaces them')
+      await r.ctx.facilitator.tick(r.at(11)); await r.ctx.facilitator.tick(r.at(12))
+      assert.match(r.fired[0].body.text, /open a pull request titled "Close: #N"/, 'the brief says how to ask')
+      const s = r.stepFrom(p)
+      await r.send(r.people.c, 'propose', { kind: 'workspace-change', title: 'A rule still weighed', change: { pr: 62, sha: 'd'.repeat(40) } })
+      r.pulls.push(
+        { number: 61, title: 'An older rule', head: { ref: 'claude/builder-0123456789ab', sha: 'e'.repeat(40) } },
+        { number: 34, title: 'A person’s own change', head: { ref: 'claude/live-deltas', sha: 'f'.repeat(40) } },
+        { number: 62, title: 'A rule still in Decide', head: { ref: 'claude/builder-abcdefabcdef', sha: 'd'.repeat(40) } },
+        { number: 77, title: 'Something the step never named', head: { ref: 'claude/builder-111111111111', sha: '1'.repeat(40) } },
+        { number: 80, title: 'Close: #61, #34, #62', body: 'Close: #61, #34, #62, #77, #99\nWhy: the step asks for it.', html_url: 'https://github.com/example/room/pull/80', head: { ref: branchOf(s), sha: '8'.repeat(40) } })
+      await r.ctx.facilitator.tick(r.at(15)); await r.ctx.facilitator.tick(r.at(16))
+      assert.deepEqual(closedNums(r), [61, 80], 'the one it may close, and the request itself')
+      assert.match(commentOn(r, 61), /^Closed by the room for the step “Close #61, #34 and #62/)
+      assert.match(commentOn(r, 80), /^Done: the room closed #61 for this step/)
+      const after = r.stepFrom(p)
+      assert.equal(after.state, 'result posted'); assert.equal(after.evidence[0].url, 'https://github.com/example/room/pull/61')
+      const result = sayOf(r, 'result')
+      assert.match(result, /^Closed #61 on GitHub, as the step asked\./)
+      assert.match(result, /#34: neither a builder nor the room opened it/); assert.match(result, /#62: it is in Decide/)
+      assert.match(result, /#77: the step doesn’t name it/); assert.match(result, /#99: it isn’t open/)
+      assert.ok(![...r.st().proposals.values()].some((x) => x.change?.pr === 80), 'a request to close is never proposed for merging')
+      assert.equal(r.ctx.builder.view().closed.length, 2)
+    } finally { await r.stop() }
+  })
+
+  test('a "Close:" pull request with nothing the room may close is reported stuck, with why, and stays open', async () => {
+    const r = await room()
+    try {
+      const p = await r.agreeForBuilder('Close #34, which a person opened')
+      await r.ctx.facilitator.tick(r.at(11)); await r.ctx.facilitator.tick(r.at(12))
+      const s = r.stepFrom(p)
+      r.pulls.push({ number: 34, title: 'A person’s own change', head: { ref: 'claude/live-deltas', sha: 'f'.repeat(40) } },
+        { number: 81, title: 'Close: #34', body: 'Close: #34', html_url: 'https://github.com/example/room/pull/81', head: { ref: branchOf(s), sha: '8'.repeat(40) } })
+      await r.ctx.facilitator.tick(r.at(15)); await r.ctx.facilitator.tick(r.at(16))
+      assert.deepEqual(closedNums(r), [])
+      const stuck = sayOf(r, 'blocked')
+      assert.match(stuck, /closed none of #34/); assert.match(stuck, /Why: #34: neither a builder nor the room opened it/); assert.match(stuck, /Any agent here: can you help\?/)
+      assert.ok(r.stepFrom(p).waitingOn, 'the step waits on the agents')
+    } finally { await r.stop() }
+  })
+
+  test('a builder’s "Blocked:" pull request whose step moved on is closed; one still waiting, in Decide, or not a builder’s stays', async () => {
+    const r = await room()
+    try {
+      const p = await r.agreeForBuilder('Publish the room’s DID document')
+      await r.ctx.facilitator.tick(r.at(11)); await r.ctx.facilitator.tick(r.at(12))
+      const s = r.stepFrom(p)
+      await r.send(r.people.c, 'propose', { kind: 'workspace-change', title: 'Proposed by hand', change: { pr: 44, sha: '4'.repeat(40) } })
+      r.pulls.push(
+        { number: 42, title: 'Blocked: publish the DID', body: 'Needs: Which key signs?', head: { ref: branchOf(s), sha: 'c'.repeat(40) } },
+        { number: 39, title: 'Blocked: move a data room', body: 'Needs: Who runs two hosts?', head: { ref: 'claude/builder-0123456789ab', sha: 'e'.repeat(40) } },
+        { number: 43, title: 'Blocked: a step since checked', body: 'Needs: x', head: { ref: 'claude/builder-abcdefabcdef', sha: '3'.repeat(40) } },
+        { number: 44, title: 'Blocked: but someone proposed it', body: 'Needs: y', head: { ref: 'claude/builder-222222222222', sha: '4'.repeat(40) } },
+        { number: 45, title: 'Blocked: a person’s', body: 'Needs: z', head: { ref: 'claude/someone', sha: '5'.repeat(40) } })
+      const real = r.ctx.facilitator.find.bind(r.ctx.facilitator)
+      r.ctx.facilitator.find = (id) => id === 'abcdefabcdef' ? { ...s, id: 'abcdefabcdef'.padEnd(64, '0'), state: 'checked', title: 'A step since checked' } : real(id)
+      await r.ctx.builder.look(r.at(30))
+      assert.deepEqual(closedNums(r), [39, 43])
+      assert.match(commentOn(r, 39), /its step is no longer on the board/); assert.match(commentOn(r, 43), /its step is done \(board step abcdefabcdef, “A step since checked”\)/)
+      r.pulls.splice(0, r.pulls.length, ...r.pulls.filter((x) => ![39, 43].includes(x.number)), { number: 46, title: 'Blocked: another', head: { ref: 'claude/builder-333333333333', sha: '6'.repeat(40) } })
+      await r.ctx.builder.look(r.at(33))
+      assert.ok(!closedNums(r).includes(46), 'stale ones are looked for every quarter hour, not every look')
+      await r.ctx.builder.look(r.at(30) + TIDY_EVERY_MS + MIN)
+      assert.ok(closedNums(r).includes(46))
+      // a tripwire: one look never closes more than CLOSE_MAX
+      for (let i = 0; i < CLOSE_MAX + 3; i++) r.pulls.push({ number: 100 + i, title: 'Blocked: old', head: { ref: `claude/builder-${String(900000000000 + i)}`, sha: '7'.repeat(40) } })
+      const before = closedNums(r).length
+      await r.ctx.builder.look(r.at(30) + 2 * TIDY_EVERY_MS + 2 * MIN)
+      assert.equal(closedNums(r).length - before, CLOSE_MAX)
     } finally { await r.stop() }
   })
 })

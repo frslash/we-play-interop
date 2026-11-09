@@ -10,7 +10,11 @@
 //     when it appears, proposes it in the room in the builder's name (kind workspace-change, pinned to its commit) and
 //     posts it as the step's result. The room's own rules then decide whether it merges: agents of other people
 //     approve, and files about keys, permissions, the record and the rules wait for a person;
-//  3. a pull request titled "Blocked: …" is posted as the step waiting on a person's decision instead.
+//  3. a pull request titled "Blocked: …" is posted as the step waiting on a person's decision instead;
+//  4. a pull request with a "Close: #N" line closes the pull requests its step names (the room holds the repository's
+//     token, so no person has to): only the room's own (a builder's or a change the room made), never one in Decide;
+//  5. a builder's "Blocked: …" pull request whose step has moved on (checked, set aside, taken by another agent, gone
+//     from the board) is closed, so stale questions don't pile up on GitHub.
 // The routine never speaks in the room: the room speaks for it, from what it did on GitHub.
 import { createHash } from 'node:crypto'
 import { TYPES, signedDocument } from '../shared/types.js'
@@ -28,6 +32,16 @@ const BRIEF_MAX = 12_000 // what a routine's start can carry: the step, its line
 export const diffLink = (publicUrl, number) => publicUrl ? `${String(publicUrl).replace(/\/+$/, '')}/api/pulls/${number}/diff` : null
 export const branchOf = (step) => `claude/builder-${step.id.slice(0, 12)}`
 const same = (s) => String(s ?? '').toLowerCase().replace(/[’`]/g, "'")
+export const TIDY_EVERY_MS = 15 * 60_000 // a builder's "Blocked:" pull request whose step moved on is closed within a quarter hour
+// A tripwire, not the rule: closing is reopenable and each close says why, but a fault (a wrong board, a bad parse)
+// should never empty the repository's list in one look. Ten is more than any step has asked for so far.
+export const CLOSE_MAX = 10
+const OWN_BRANCH = /^claude\/builder-([0-9a-f]{12})$/
+const ROOM_BRANCH = /^(claude\/builder-[0-9a-f]{12}|change\/[\w.-]+)$/ // the room's own: a builder's branch, or a change the room made
+/** The pull requests a "Close: #N, #M" line asks the room to close (any number of such lines; nothing else counts). */
+export const closesOf = (body) => [...new Set(String(body ?? '').split(/\r?\n/).filter((l) => /^\s*\**close\**\s*:/i.test(l)).flatMap((l) => [...l.matchAll(/#(\d{1,7})\b/g)].map((m) => Number(m[1]))))]
+/** Whether a text names pull request n: "#61", "PR 61", "pull request 61" or a …/pull/61 link. */
+export const namesPull = (text, n) => new RegExp(`(#|\\bPR\\s*#?|\\bpull request\\s*#?|/pull/)${n}(?!\\d)`, 'i').test(String(text ?? ''))
 
 /**
  * What a stuck builder says in its "Blocked:" pull request: what would unblock it (Needs:, or the body's first line),
@@ -46,7 +60,7 @@ export function stuckOf (pr) {
 }
 
 export class Builder {
-  constructor ({ ctx }) { this.ctx = ctx; this.lookedAt = 0; this.lastError = null; this.fired = []; this.reported = new Map(); this.guarded = 0 }
+  constructor ({ ctx }) { this.ctx = ctx; this.lookedAt = 0; this.tidiedAt = 0; this.lastError = null; this.fired = []; this.reported = new Map(); this.guarded = 0; this.closed = [] }
   get st () { return this.ctx.log.state }
 
   /** A builder: a hosted agent (the room holds its key) named "… builder", with a live permission and a routine as its wake link. */
@@ -93,6 +107,7 @@ export class Builder {
       `JOB step: ${step.id}`,
       `JOB branch: ${branchOf(step)}`,
       'JOB rule: never close, merge or delete a pull request, yours or anyone’s, and don’t close it when your run ends: the room merges it once enough approvals are in. If you stop, leave it open (titled "Blocked: …" if you are stuck).',
+      'JOB rule: if the step asks for pull requests to be closed, don’t ask a person to close them: open a pull request titled "Close: #N" with the line "Close: #N, #M" in its body (a one-line note in docs/blocked/ gives it a change). The room closes the ones the step names that a builder or the room opened and that aren’t in Decide, then closes yours and posts the result. A pull request that changes code can carry the same line for the ones it replaces.',
       again ? 'JOB note: you were started on this step before and no pull request came. If the work is done, open it; if you are stuck, open it titled "Blocked: …" with the one decision a person must make.' : null,
       `Step: ${clip(step.title, 400)}`,
       `Done when: ${clip(step.done, 400)}`,
@@ -118,19 +133,79 @@ export class Builder {
     return true
   }
 
+  /** Whether pull request n is in Decide: a change the room is still weighing is never closed under it. */
+  inDecide (n) { return [...this.st.proposals.values()].some((p) => p.kind === 'workspace-change' && p.change?.pr === n && ['open', 'approved'].includes(this.st.statusOf(p))) }
+
+  /** Close one pull request with the room's token, then say why on it. Every close is kept for the board's view. */
+  async closeOne (n, body, now, why) {
+    const repo = this.ctx.config.workspaceRepo, gh = this.ctx.executor.gh
+    await gh('PATCH', `/repos/${repo}/pulls/${n}`, { state: 'closed' })
+    let said = true
+    await gh('POST', `/repos/${repo}/issues/${n}/comments`, { body }).catch((err) => { said = false; this.lastError = `saying why #${n} was closed: ${clip(err.message, 200)}` }) // the close is what matters; a lost comment is not worth undoing it
+    this.closed.push({ at: new Date(now).toISOString(), pr: n, why: clip(why, 140), said })
+    this.closed = this.closed.slice(-50)
+  }
+
+  /** A "Close: #N" line: close each pull request the step names, if the room or a builder opened it and it isn't in Decide. */
+  async closeFor (s, pr, pulls, asked, now) {
+    const from = s.from ? this.st.proposals.get(s.from) : null
+    const agreed = [s.title, s.done, from?.title, from?.body].join('\n') // what the room agreed, never what anyone said after
+    const closed = [], refused = []
+    for (const n of asked) {
+      const t = pulls.find((p) => p.number === n)
+      const why = closed.length >= CLOSE_MAX ? 'one look closes at most ten' : !t ? 'it isn’t open' : !ROOM_BRANCH.test(t.head?.ref ?? '') ? 'neither a builder nor the room opened it' : !namesPull(agreed, n) ? 'the step doesn’t name it' : this.inDecide(n) ? 'it is in Decide' : null
+      if (why) { refused.push(`#${n}: ${why}`); continue }
+      try {
+        await this.closeOne(n, `Closed by the room for the step “${clip(s.title, 160)}” (board step ${s.id.slice(0, 12)}), as agreed there; asked in #${pr.number}. The branch stays, so nothing is lost.`, now, `step ${s.id.slice(0, 12)} asked`)
+        closed.push(n)
+      } catch (err) { refused.push(`#${n}: GitHub refused (${clip(err.message, 100)})`) }
+    }
+    return { closed, refused }
+  }
+
+  /** A builder's "Blocked: …" pull request whose step has moved on asks a question nobody needs answered: close it. */
+  async tidy (pulls, now) {
+    const f = this.ctx.facilitator, board = this.st.steps.size + this.st.stepsDone.length
+    let n = 0
+    for (const pr of pulls) {
+      if (n >= CLOSE_MAX) break
+      const m = OWN_BRANCH.exec(pr.head?.ref ?? '')
+      if (!m || !/^blocked\b/i.test(pr.title ?? '') || this.inDecide(pr.number)) continue
+      const s = f.find(m[1]), other = s?.owner && !/\bbuilder$/i.test(this.st.participants.get(s.owner)?.name ?? '')
+      const why = !s ? (board ? 'its step is no longer on the board' : null) : s.aside ? 'its step was set aside' : s.state === 'checked' ? 'its step is done' : other ? `${this.st.nameOf(s.owner)} took its step` : null
+      if (!why) continue
+      await this.closeOne(pr.number, `The room closed this: ${why} (board step ${m[1]}${s ? `, “${clip(s.title, 140)}”` : ''}), so the question here is settled. The branch stays, so nothing is lost.`, now, why)
+      n++
+    }
+  }
+
   /** The builders' pull requests: a new one on a step's branch is proposed in the room and posted as the step's result. */
   async look (now = Date.now()) {
     const waiting = this.ctx.facilitator.steps().filter((s) => this.is(s.owner) && ['claimed', 'in progress'].includes(s.state) && !s.waitingOn && !isParked(s)) // a parked step is not looked at, so never reported stuck
-    if (!waiting.length || now - this.lookedAt < LOOK_EVERY_MS || !this.ctx.executor?.gh) return []
+    const tidy = now - this.tidiedAt >= TIDY_EVERY_MS // stale "Blocked:" pull requests are looked for even while nothing is building
+    if ((!waiting.length && !tidy) || now - this.lookedAt < LOOK_EVERY_MS || !this.ctx.executor?.gh) return []
     this.lookedAt = now
     const repo = this.ctx.config.workspaceRepo, done = []
     let pulls
-    try { pulls = await this.ctx.executor.gh('GET', `/repos/${repo}/pulls?state=open&per_page=50`) } catch (err) { this.lastError = `looking for the builder’s pull requests: ${clip(err.message, 200)}`; return [] }
+    try { pulls = (await this.ctx.executor.gh('GET', `/repos/${repo}/pulls?state=open&per_page=50`)) ?? [] } catch (err) { this.lastError = `looking for the builder’s pull requests: ${clip(err.message, 200)}`; return [] }
+    if (tidy) { this.tidiedAt = now; await this.tidy(pulls, now).catch((err) => { this.lastError = `closing stale “Blocked:” pull requests: ${clip(err.message, 200)}` }) }
+    const named = (ns) => ns.map((n) => `#${n}`).join(', ')
     for (const s of waiting) {
-      const pr = (pulls ?? []).find((p) => p.head?.ref === branchOf(s))
+      const pr = pulls.find((p) => p.head?.ref === branchOf(s))
       if (!pr) continue
       const builder = s.owner, link = pr.html_url ?? `https://github.com/${repo}/pull/${pr.number}`
-      if (/^blocked\b/i.test(pr.title ?? '')) {
+      const asked = closesOf(pr.body).filter((n) => n !== pr.number), request = /^close\b/i.test(pr.title ?? '')
+      const closes = asked.length ? await this.closeFor(s, pr, pulls, asked, now) : null
+      if (request && closes?.closed.length) {
+        // a request to close and nothing more: the closes are the step's result, and the request itself is done with
+        const not = closes.refused.length ? ` Not closed: ${closes.refused.join('; ')}.` : ''
+        await this.closeOne(pr.number, `Done: the room closed ${named(closes.closed)} for this step.${not} Nothing here needed merging.`, now, 'its closes are done').catch((err) => { this.lastError = `closing #${pr.number}: ${clip(err.message, 200)}` })
+        await this.say(builder, { text: clip(`Closed ${named(closes.closed)} on GitHub, as the step asked.${not} (Asked in pull request #${pr.number}, now closed too.)`, 2000), kind: 'message', step: { of: s.id, say: 'result', evidence: closes.closed.map((n) => ({ label: `pull request #${n}, closed`, url: `https://github.com/${repo}/pull/${n}` })) } }, { threadId: s.thread })
+        done.push({ step: s.id, pr: pr.number, closed: closes.closed })
+        continue
+      }
+      const stuck = request && closes ? { needs: `Which pull requests should the room close for this step? It closed none of ${named(asked)}`, why: closes.refused.join('; '), from: null } : /^blocked\b/i.test(pr.title ?? '') ? stuckOf(pr) : null
+      if (stuck) {
         // report once: a step an agent has answered goes back to claimed with its Blocked: pull request still open, and
         // without this memory the room re-posted "I'm stuck" (and the weaver re-asked) on every look
         // and once per step state: a step whose choice was answered in its thread (an option, or parked) is not reported
@@ -138,7 +213,7 @@ export class Builder {
         // restart (every merge redeploys the room) does not post it all over again.
         const sig = createHash('sha256').update(`${pr.number}\n${pr.title}\n${pr.body ?? ''}`).digest('hex').slice(0, 16)
         const kept = s.stuck?.stateKey === stateKey(s) ? { sig: s.stuck.sig, at: Date.parse(s.stuck.at) } : null, before = this.reported.get(s.id) ?? kept ?? (s.decided ? { sig, at: now - BLOCKED_MIN_MS } : undefined) // after a restart, a step the agents already decided counts as reported
-        const stuck = stuckOf(pr), d = decided(s), same = (a, b) => String(a ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '') === String(b ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '')
+        const d = decided(s), same =(a, b) => String(a ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '') === String(b ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '')
         if (d && same(d.asked, clip(stuck.needs, 280).replace(/\.$/, ''))) { this.guarded++; continue }
         if (before && (now - before.at < BLOCKED_MIN_MS || (before.sig === sig && now - before.at < BLOCKED_AGAIN_MS))) { this.guarded++; continue }
         this.reported.set(s.id, { sig, at: now })
@@ -151,7 +226,8 @@ export class Builder {
       // proposed like any change to the room's code, pinned to the commit it was built at: the room's rules decide
       const diff = diffLink(this.ctx.config.publicUrl, pr.number), read = `Read its changes from the room: ${diff ?? `read_pull_request with pr ${pr.number}`} (head commit ${pr.head.sha}).`
       const proposal = await this.say(builder, { kind: 'workspace-change', title: clip(pr.title, 140), body: clip(`Built for the step “${s.title}” (board step ${s.id.slice(0, 8)}). Done when: ${s.done}\n${read}\n\n${pr.body ?? ''}`, 4000), change: { pr: pr.number, sha: pr.head.sha } }, { type: 'propose' })
-      await this.say(builder, { text: `Built: ${clip(pr.title, 200)}. Pull request #${pr.number}, now in Decide for the room's approval. ${read}`, kind: 'message', step: { of: s.id, say: 'result', evidence: [{ label: `pull request #${pr.number}`, url: link }, ...(diff ? [{ label: `its changes, as text (head ${pr.head.sha.slice(0, 7)})`, url: diff }] : [])] } }, { threadId: s.thread })
+      const also = closes?.closed.length ? ` It also closed ${named(closes.closed)}, as the step asked.` : ''
+      await this.say(builder, { text: `Built: ${clip(pr.title, 200)}. Pull request #${pr.number}, now in Decide for the room's approval. ${read}${also}`, kind: 'message', step: { of: s.id, say: 'result', evidence: [{ label: `pull request #${pr.number}`, url: link }, ...(diff ? [{ label: `its changes, as text (head ${pr.head.sha.slice(0, 7)})`, url: diff }] : [])] } }, { threadId: s.thread })
       done.push({ step: s.id, pr: pr.number, proposal: proposal?.hash ?? null })
     }
     return done
@@ -159,7 +235,7 @@ export class Builder {
 
   view () {
     const seats = [...this.st.participants.values()].filter((p) => p.kind === 'agent' && !p.removed && /\bbuilder$/i.test(p.name ?? ''))
-    return { builders: seats.filter((p) => this.is(p.did)).map((p) => ({ did: p.did, name: p.name })), notReady: seats.filter((p) => !this.is(p.did)).map((p) => ({ did: p.did, name: p.name, why: this.notReady(p.did) })), fired: this.fired.slice(-10), lastError: this.lastError, blockedRepeatsHeld: this.guarded }
+    return { builders: seats.filter((p) => this.is(p.did)).map((p) => ({ did: p.did, name: p.name })), notReady: seats.filter((p) => !this.is(p.did)).map((p) => ({ did: p.did, name: p.name, why: this.notReady(p.did) })), fired: this.fired.slice(-10), lastError: this.lastError, blockedRepeatsHeld: this.guarded, closed: this.closed.slice(-10) }
   }
 }
 
