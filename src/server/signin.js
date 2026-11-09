@@ -167,8 +167,15 @@ export class SignIn {
   }
 
   /** The DID a link names and every document is addressed to: the room's did:webvh when it has one, else its did:key. */
-  get did () { return this.status.did ?? this.identity.did }
-  get me () { const did = this.did; return { did, seed: this.identity.seed, verificationMethod: did === this.identity.did ? this.identity.verificationMethod : `${did}#room` } }
+  /**
+   * Who sign-in signs as, and the DID a link names. With the room's door it is whoever the door answers as first: the
+   * did:webvh only once that DID's document holds the room's key (door.identities() checks that), else the did:key. A
+   * did:webvh whose document does not hold the key would sign answers no one can verify; didDocument() still reports it.
+   * Without a door (sign-in on its own), the DID log's did:webvh as read here.
+   */
+  #asOf () { const door = this.findDoor?.(); return door?.identities ? door.identities()[0] : null }
+  get did () { return this.#asOf()?.did ?? this.status.did ?? this.identity.did }
+  get me () { const w = this.#asOf(); if (w) return w; const did = this.did; return { did, seed: this.identity.seed, verificationMethod: did === this.identity.did ? this.identity.verificationMethod : `${did}#room` } }
   get name () { const n = String(this.config.workspaceName ?? '').trim().slice(0, 128); return n || this.did.slice(0, 128) }
 
   /**
@@ -176,10 +183,26 @@ export class SignIn {
    * counts only when it names the very host the request was sent to (a page calling its own server).
    */
   portalOrigin (http) {
-    if (this.config.publicUrl) { try { return new URL(this.config.publicUrl).origin } catch { return null } }
-    if (!http?.origin || !http?.host) return null
-    let o; try { o = new URL(http.origin) } catch { return null }
-    return o.host.toLowerCase() === String(http.host).toLowerCase() ? o.origin : null
+    let o = null
+    if (this.config.publicUrl) { try { o = new URL(this.config.publicUrl).origin } catch { return null } }
+    else {
+      if (!http?.origin || !http?.host) return null
+      let u; try { u = new URL(http.origin) } catch { return null }
+      o = u.host.toLowerCase() === String(http.host).toLowerCase() ? u.origin : null
+    }
+    return this.#originAllowed(o) ? o : null
+  }
+
+  /**
+   * The schema (the origin in step 1) allows https only, and a real wallet refuses anything else. The room departs from
+   * that in one place, on purpose and for local trial only: outside production it also takes http://localhost or
+   * http://127.0.0.1 (an address on this machine), so the page can be tried without a certificate. In production an
+   * origin that is not https is never answered, whatever PUBLIC_URL or the Origin header says.
+   */
+  #originAllowed (o) {
+    if (!o) return false
+    let u; try { u = new URL(o) } catch { return false }
+    return u.protocol === 'https:' || (!this.config.production && u.protocol === 'http:' && LOOPBACK(hostnameOf(u.host)))
   }
 
   /**
@@ -191,7 +214,7 @@ export class SignIn {
 
   /** Why a real wallet would refuse this room's code, from the room's own DID document as it is published. */
   didDocument () {
-    const doc = this.status.document, did = this.did
+    const doc = this.status.document, did = this.status.did ?? this.did // the DID the log says, whatever the room signs as now
     if (!doc) return { status: 'missing', missing: [HTTPS_SERVICE, 'SignInPortal'], why: 'the room has no did:webvh yet (it needs PUBLIC_URL); a did:key cannot say where a wallet should send anything' }
     const missing = [], origin = this.portalOrigin(null)
     const ofType = (t) => (doc.service ?? []).filter((s) => (Array.isArray(s.type) ? s.type : [s.type]).includes(t)).map((s) => (typeof s.serviceEndpoint === 'string' ? s.serviceEndpoint : s.serviceEndpoint?.uri)).filter((e) => typeof e === 'string')
