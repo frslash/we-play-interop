@@ -131,7 +131,7 @@ export class Builder {
       if (/^blocked\b/i.test(pr.title ?? '')) {
         // report once: a step an agent has answered goes back to claimed with its Blocked: pull request still open, and
         // without this memory the room re-posted "I'm stuck" (and the weaver re-asked) on every look
-        const sig = createHash('sha256').update(`${pr.number}\n${pr.title}\n${pr.body ?? ''}`).digest('hex').slice(0, 16), before = this.reported.get(s.id)
+        const sig = createHash('sha256').update(`${pr.number}\n${pr.title}\n${pr.body ?? ''}`).digest('hex').slice(0, 16), before = this.reported.get(s.id) ?? (s.decided ? { sig, at: now - BLOCKED_MIN_MS } : undefined) // after a restart, a step the agents already decided counts as reported
         if (before && (now - before.at < BLOCKED_MIN_MS || (before.sig === sig && now - before.at < BLOCKED_AGAIN_MS))) { this.guarded++; continue }
         this.reported.set(s.id, { sig, at: now })
         const stuck = stuckOf(pr)
