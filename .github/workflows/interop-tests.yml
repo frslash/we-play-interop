@@ -44,3 +44,34 @@ jobs:
         run: |
           cargo build --locked --release
           cargo test --locked --no-run
+  log-roundtrip:
+    name: export inwove.org's log, import it into an empty data dir
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: export the live room's public log
+        run: node agent/export-log.js https://inwove.org > "$RUNNER_TEMP/room-export.json"
+      - name: import it into an empty data dir
+        env:
+          DATABASE_URL: ''
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/wpi-empty-data"
+          rm -rf "$dir" && mkdir "$dir"
+          node agent/import-log.js "$RUNNER_TEMP/room-export.json" "$dir" | tee "$RUNNER_TEMP/import.json"
+      - name: summary (ok, entries, head seq and hash, unchecked signatures)
+        run: |
+          node -e '
+            const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))
+            const line = `ok=${r.ok} entries=${r.entries} head.seq=${r.head?.seq} head.hash=${r.head?.hash} signaturesNotChecked=${r.signaturesNotChecked}`
+            console.log(line)
+            require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, line + "\n")
+            if (r.ok !== true || r.signaturesNotChecked !== 0) process.exit(1)
+          ' "$RUNNER_TEMP/import.json"
