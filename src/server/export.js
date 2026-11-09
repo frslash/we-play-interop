@@ -35,7 +35,7 @@ export async function checkExport (doc, { keyFor } = {}) {
 export async function importExport (db, doc, { keyFor } = {}) {
   if ((await loadEntries(db)).length) throw new Error('refusing to import: this database already has a log')
   const checked = await checkExport(doc, { keyFor })
-  if (!checked.ok) throw new Error(`refusing to import: ${checked.problem}`)
+  if (!checked.ok) throw Object.assign(new Error(`refusing to import: ${checked.problem}`), { report: checked.report })
   for (const e of doc.entries) await insertEntry(db, e)
   const back = await loadEntries(db), head = back.at(-1)
   if (back.length !== doc.count || head.hash !== doc.head.hash) throw new Error('import did not reproduce the chain head; nothing should move until it does')
