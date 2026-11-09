@@ -154,7 +154,9 @@ describe('the projects shelf', () => {
   test('only the room\'s own repository follows its default branch, looked up at most every six hours', async () => {
     reset(); let now = Date.parse('2026-11-09T12:00:00Z')
     const s = shelf({ now: () => now, own: 'o/own' })
-    assert.equal((await s.files('o/own')).commit, A)
+    const own = await s.files('o/own'); assert.equal(own.commit, A)
+    assert.match(own.note, /^Room text: this comes from the room's own repository/); assert.match((await s.search('o/own', '8100')).note, /^Room text/) // labelled as the room's own text, never as another project's
+    assert.deepEqual(own.files.map((f) => f.path).sort(), (await s.files('o/demo')).files.map((f) => f.path).sort()) // and the same file rules: no .env, no key, no dependency
     head = B
     assert.equal((await s.files('o/own')).commit, A) // within the six hours: no new lookup
     assert.equal((await s.files('o/demo')).commit, A) // a pinned project stays at its pin whatever the branch does
