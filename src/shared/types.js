@@ -111,6 +111,10 @@ export const PROPOSAL_KINDS = ['goal', 'run', 'record-run', 'issue', 'workspace-
  */
 export const MEASURES = ['passingPairs', 'freshPairs', 'connected', 'projects', 'ways', 'waysTried', 'runs', 'freshRuns', 'missing', 'faded', 'fadingSoon', 'dtgPlays']
 export const EXTERNAL_KINDS = ['record-run', 'issue', 'workspace-change']
+
+/** At most this many pull requests one workspace-change may name as replaced (a tripwire on what one merge closes). */
+export const MAX_REPLACES = 10
+
 export const SUBJECT_KINDS = ['credential', 'task', 'ceremony', 'basic']
 export const OUTCOMES = ['pass', 'fail', 'partial']
 
@@ -291,6 +295,8 @@ export function checkPayload (name, doc) {
       }
       if (p.kind === 'workspace-change') {
         if (!isObj(p.change) || !Number.isInteger(p.change.pr) || p.change.pr < 1 || !/^[0-9a-f]{40}$/.test(p.change.sha ?? '')) return 'change: { pr: pull request number, sha: its 40-character head commit }'
+        const r = p.change.replaces // the pull requests this one replaces: once it merges, the room closes each with "Replaced by #pr" (never deleting a branch)
+        if (r !== undefined && (!Array.isArray(r) || r.length > MAX_REPLACES || !r.every((n) => Number.isInteger(n) && n >= 1 && n !== p.change.pr) || new Set(r).size !== r.length)) return `change.replaces: up to ${MAX_REPLACES} other pull request numbers, each once`
       }
       return null
     case 'resource':

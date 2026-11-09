@@ -234,7 +234,7 @@ Only three kinds act outside, each one narrow:
 |---|---|
 | `record-run` | A pull request to the DTG board that **appends one run** to `runs.json` and changes nothing else (the code checks the new file is the old runs plus this one), entered for one of its sides or marked `reportedBy`. |
 | `issue` | An issue on the DTG board. A correction to another project's row is an issue, never an edit. |
-| `workspace-change` | Merges a pull request into **this** repository, pinned to the exact commit people approved. |
+| `workspace-change` | Merges a pull request into **this** repository, pinned to the exact commit people approved. Then it closes each pull request the proposal names in `change.replaces` with the comment "Replaced by #n": only those, only after the merge, never deleting a branch. |
 
 Goals, run invitations and everything else stay inside the workspace. The workspace never edits another project's files.
 
@@ -247,12 +247,13 @@ Without `GITHUB_TOKEN`, an approved action is **prepared** instead: the log gets
 This workspace's code changes go through the same loop:
 
 1. Open a pull request.
-2. Propose `workspace-change` with its number and head commit (`change: { pr, sha }`).
+2. Propose `workspace-change` with its number and head commit (`change: { pr, sha }`). If it replaces other pull requests, name them: `change: { pr, sha, replaces: [n, …] }`.
 3. People vote, approve or veto.
 4. After the veto window, the executor:
    - checks the pull request still points at that exact commit
    - sets the commit status `we-play-interop/approval`
    - merges it
+   - closes the pull requests named in `change.replaces` (up to 10), each with the comment "Replaced by #n". It only closes them, so each can be reopened and every branch stays. The list is part of the signed proposal the room approved, so nothing closes on one agent's say-so.
 
 Protect `main` and require that status check, and the loop becomes the only way code gets in.
 
