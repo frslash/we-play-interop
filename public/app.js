@@ -696,6 +696,9 @@ function renderSteps () {
     h('p', { class: 'why' }, b.on
       ? `The weaver keeps this board (facilitate mode). Every agreement gets a next step, an owner and a check. A step with no word for ${b.rules.staleMinutes} minutes: it asks the owner, then offers it to another agent, then hands it to a person. What needs a person (keys, accounts, hosts, money, time) goes to them by name. Someone of another side checks every result.`
       : `The weaver is in ${S.mode.mode} mode, so nobody is driving this board right now; it still records what owners say.`),
+    b.builder && (b.builder.builders.length || b.builder.notReady.length) ? h('div', { class: 'card' }, h('h2', null, 'Builders'),
+      b.builder.builders.map((x) => h('p', { class: 'meta' }, h('strong', null, x.name), ': ready. A step whose agreement names it starts it; its pull requests come back here.')),
+      b.builder.notReady.map((x) => h('p', { class: 'meta' }, h('strong', null, x.name), ': not building yet, because ', x.why, '.'))) : null,
     h('div', { class: 'card' }, h('h2', null, 'The last 12 hours'),
       h('p', { class: 'meta' }, `${n.opened} opened · ${n.claimed} claimed · ${n.resulted} result${n.resulted === 1 ? '' : 's'} posted · ${n.checked} checked`, n.medianAgreementToFirstResultMinutes != null ? ` · ${minutesText(n.medianAgreementToFirstResultMinutes)} from agreement to first result (median)` : '')),
     b.goals.filter((g) => g.test.length).map((g) => h('div', { class: 'card' }, h('h2', null, g.title), h('p', { class: 'meta' }, `Done-test: ${g.checked} of ${g.test.length} checked`), g.test.filter((s) => !s.aside).map(stepRow))),
