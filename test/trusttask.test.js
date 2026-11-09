@@ -113,8 +113,8 @@ test('a refusal has the members of the registry\'s error and no others, and alwa
 })
 
 test('the status that goes with a refusal over https is the binding\'s table: 400, 403, 409, 503, 500, and 422 for the rest', () => {
-  assert.deepEqual(['malformedRequest', 'permissionDenied', 'idConflict', 'unavailable', 'internalError'].map(statusFor), [400, 403, 409, 503, 500])
-  for (const c of ['unsupportedType', 'unsupportedVersion', 'expired', 'proofRequired', 'proofInvalid', 'wrongRecipient', 'identityMismatch', 'cancelled', 'taskFailed', 'indeterminate', 'rooms:versionConflict']) assert.equal(statusFor(c), 422, c)
+  assert.deepEqual(['malformedRequest', 'permissionDenied', 'idConflict', 'unavailable', 'indeterminate', 'internalError'].map(statusFor), [400, 403, 409, 503, 503, 500]) // indeterminate: a host that is down, try again
+  for (const c of ['unsupportedType', 'unsupportedVersion', 'expired', 'proofRequired', 'proofInvalid', 'wrongRecipient', 'identityMismatch', 'cancelled', 'taskFailed', 'rooms:versionConflict']) assert.equal(statusFor(c), 422, c)
 })
 
 test('postTask sends to <base>/trust-tasks with no token, and goes by the answer\'s type', async () => {

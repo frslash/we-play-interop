@@ -33,14 +33,15 @@ export const MAX_DOCUMENT_BYTES = 64 * 1024
 export const CODES = ['malformedRequest', 'unsupportedType', 'unsupportedVersion', 'unsupportedExtension', 'expired', 'proofRequired', 'proofInvalid', 'permissionDenied', 'wrongRecipient', 'identityMismatch', 'idConflict', 'cancelled', 'taskFailed', 'unavailable', 'indeterminate', 'internalError']
 /**
  * The HTTP status that goes with a refusal over https (the https binding's table, section 4): a document that could
- * not be read is 400, "you may not" 403, another document under a used id 409, "try again later" 503, the service's
- * own fault 500. Every other refusal (a wrong recipient, a stale or unsigned document, an unknown type, a task's own
+ * not be read is 400, "you may not" 403, another document under a used id 409, "try again later" 503 (`unavailable`, and
+ * `indeterminate`: a did:webvh host that is down is not an answer, and a 422 would tell a client not to retry), the
+ * service's own fault 500. Every other refusal (a wrong recipient, a stale or unsigned document, an unknown type, a task's own
  * "<family>:<local>" code) is one flat 422, so a status line tells a prober nothing the signed code would not.
  * Read from OpenVTC's own tests of its door (vta-service/tests/it/trust_task_admin.rs, auth_flow.rs,
  * vtc-service/tests/it/join_requests.rs, relationships.rs) and the starter kit's mirror of the table
  * (templates/inbox-verifier/src/server.ts). The code in the document is what counts; the status is a courtesy.
  */
-export const statusFor = (code) => ({ malformedRequest: 400, permissionDenied: 403, idConflict: 409, unavailable: 503, internalError: 500 }[String(code)] ?? 422)
+export const statusFor = (code) => ({ malformedRequest: 400, permissionDenied: 403, idConflict: 409, unavailable: 503, indeterminate: 503, internalError: 500 }[String(code)] ?? 422)
 /** What a refusal's `retryable` says when its maker does not: only "try again later" is worth trying again unchanged. */
 export const retryableByDefault = (code) => ['unavailable', 'indeterminate', 'internalError'].includes(code)
 
