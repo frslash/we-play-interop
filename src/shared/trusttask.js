@@ -225,7 +225,8 @@ export async function postTask (base, doc, { fetch: f = globalThis.fetch, bearer
   const text = await res.text(), wait = res.headers.get('retry-after')
   const later = wait ? { retryAfter: wait } : {} // a 429 or 503 may carry a body too (a signed refusal): the header still says how long to wait
   if (!text) return { status: res.status, reply: null, kind: res.status === 202 ? 'in-flight' : res.status === 204 ? 'done-no-body' : res.status === 429 ? 'slow-down' : 'empty', retryAfter: wait }
-  let reply; try { reply = JSON.parse(text) } catch { return { status: res.status, reply: null, kind: 'not-json', text: text.slice(0, 300), ...later } }
+  let reply; try { reply = JSON.parse(text) } catch { return { status: res.status, reply: null, kind: res.status === 429 ? 'slow-down' : 'not-json', text: text.slice(0, 300), ...later } }
+  if (res.status === 429) return { status: 429, reply, ...classify(reply, doc.type), kind: 'slow-down', ...later } // slow down, with a body or without (a community's per-address limit sends JSON): the kind is slow-down whatever the body, and a signed refusal's code and message stay readable
   return { status: res.status, reply, ...classify(reply, doc.type), ...later }
 }
 

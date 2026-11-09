@@ -215,7 +215,9 @@ describe('a door on its own: each step, in order', () => {
     const { send, doc, door } = make({ perAddressPerMinute: 2 })
     await send(doc()); await send('not json')
     const slow = await send(doc({}, other))
-    assert.equal(slow.status, 429); assert.equal(slow.body, '')
+    assert.equal(slow.status, 429) // the address's 429 has a small JSON body, as OpenVTC's community gives for its per-address limiter; the signer's stays empty
+    assert.deepEqual(Object.keys(JSON.parse(slow.body)).sort(), ['error', 'limiter', 'message', 'retry_after_secs']); assert.equal(JSON.parse(slow.body).error, 'rate_limited'); assert.equal(JSON.parse(slow.body).limiter, 'address')
+    assert.equal(JSON.parse(slow.body).retry_after_secs, Number(slow.headers['retry-after'])); assert.equal(slow.headers['x-rate-limit-source'], 'room')
     assert.equal((await send(doc(), { ip: '198.51.100.9' })).status, 200)
     assert.equal(door.counts.rateLimited.address, 1)
   })

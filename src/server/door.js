@@ -9,8 +9,11 @@
 //   5 the signer is let in (a rate limit) · 6 its id has not been taken (the duplicate-id record) · 7 the task runs ·
 //   8 the answer is signed, a refusal as much as a result (sign.rs).
 // A refusal is a trust-task-error document with a shared code (reject.rs); its HTTP status is the binding's table
-// (statusFor in src/shared/trusttask.js). Three answers carry no document, as upstream: 202 (the same document is
-// still running), 204 (it ran, and its answer was not kept) and 429 (slow down, with Retry-After).
+// (statusFor in src/shared/trusttask.js). Three answers carry no signed document: 202 (the same document is
+// still running), 204 (it ran, and its answer was not kept) and 429 (slow down, with Retry-After). The 429 of the
+// per-signer limit is empty, as upstream's trust task server answers it (spine.rs); the 429 of the per-address limit
+// has a small JSON body, as OpenVTC's community gives for its per-address limiter (vtc-service/src/routing/rate_limit.rs):
+// { error: 'rate_limited', limiter, message, retry_after_secs }, with the x-rate-limit-source header.
 //
 // Where the room is stricter than a task's own specification, on purpose: every document needs a proof (a ping's
 // specification asks for none; the room has no other way to know who is asking, and its rate limit is per signer),
@@ -222,7 +225,7 @@ export class Door {
 
   /**
    * One document in, one answer out: { status, body, headers? }. `raw` is the body exactly as it arrived (a Buffer);
-   * `body` is the signed answer as JSON text, or '' for the answers that carry no document (202, 204, 429).
+   * `body` is the signed answer as JSON text, '' for the answers that carry no document (202, 204, the per-signer 429), or the small JSON of the per-address 429.
    * `http`: { origin, base, host, ip, userAgent, https } for the task, and `bytes` / `cut` when the caller stopped reading
    * a body that was too large (the size is then what it counted, and "more than" that).
    */
@@ -231,11 +234,15 @@ export class Door {
     c.received++
     await this.ctx.join?.refresh?.().catch(() => {})
     const mine = this.identities(), first = mine[0]
-    const slow = (kind, seconds) => { c.rateLimited[kind]++; return { status: 429, body: '', headers: { 'retry-after': String(seconds) } } }
+    const slow = (kind, seconds) => { c.rateLimited[kind]++; return { status: 429, body: '', headers: { 'retry-after': String(seconds) } } } // the signer's: empty, as upstream
+    const slowAddress = (seconds) => { // the address's: the body and header OpenVTC's community gives; the source says 'room', a name no program is asked to match
+      c.rateLimited.address++
+      return { status: 429, body: JSON.stringify({ error: 'rate_limited', limiter: 'address', message: 'too many documents from this address; wait and send again', retry_after_secs: seconds }), headers: { 'retry-after': String(seconds), 'x-rate-limit-source': 'room' } }
+    }
 
     // before the steps, the transport's own limit: so many documents a minute from one address
     const wait = this.addresses.take(String(http.ip || 'unknown'), now)
-    if (wait) return slow('address', wait)
+    if (wait) return slowAddress(wait)
 
     // 1. size, before anything in the body is parsed. The refusal answers no document: nothing in the body was believed.
     const bytes = Math.max(raw?.length ?? 0, Number(http.bytes) || 0)

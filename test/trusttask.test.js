@@ -2,6 +2,7 @@
 // expect (OpenVTC's trust agent, community and room host; RLTP's shared-connect). See src/shared/trusttask.js.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { createServer } from 'node:http'
 import { test } from 'node:test'
 import { fromBase58btc, multibase } from '../src/shared/crypto.js'
 import { newIdentity } from '../src/shared/did.js'
@@ -148,7 +149,7 @@ test('postTask keeps Retry-After when a 429 or 503 comes with a body', async () 
   const req = signedTask(person, { type: JOIN, recipient: service.did })
   const refusal = refusalTo(req, { code: 'unavailable', message: 'slow down' }, service.did)
   const with429 = await postTask('https://vtc.example', req, { fetch: async () => new Response(JSON.stringify(refusal), { status: 429, headers: { 'retry-after': '7' } }) })
-  assert.equal(with429.kind, 'error'); assert.equal(with429.code, 'unavailable'); assert.equal(with429.retryAfter, '7')
+  assert.equal(with429.kind, 'slow-down'); assert.equal(with429.code, 'unavailable'); assert.equal(with429.retryAfter, '7')
   assert.equal((await postTask('https://vtc.example', req, { fetch: async () => new Response('busy', { status: 503, headers: { 'retry-after': '30' } }) })).retryAfter, '30', 'a body that is not JSON keeps it too')
   assert.equal((await postTask('https://vtc.example', req, { fetch: async () => new Response(null, { status: 429, headers: { 'retry-after': '5' } }) })).retryAfter, '5')
   assert.equal('retryAfter' in (await postTask('https://vtc.example', req, { fetch: async () => new Response(JSON.stringify(responseTo(req, {}, service.did)), { status: 200 }) })), false, 'nothing is added when there is no header')
@@ -197,4 +198,15 @@ test('a stated expiresAt is honoured to the second: one second past it is expire
   const code = (d, t) => { const r = checkTask(d, { me: service.did, now: t }); return r.ok ? 'ok' : r.code }
   const d = mk(), exp = Date.parse(d.expiresAt)
   assert.equal(code(d, exp + 1000), 'expired'); assert.equal(code(d, exp), 'expired'); assert.equal(code(d, exp - 1000), 'ok')
+})
+
+test('postTask: a 429 is slow-down whether or not it has a body, and keeps Retry-After', async () => {
+  const bodies = [JSON.stringify({ error: 'rate_limited', limiter: 'address', retry_after_secs: 7 }), '', 'not json at all']
+  let n = 0
+  const server = createServer((req, res) => { req.resume(); res.writeHead(429, { 'retry-after': '7', ...(bodies[n] ? { 'content-type': 'application/json' } : {}) }); res.end(bodies[n++]) })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`, req = signedTask(person, { type: JOIN, recipient: service.did })
+    for (let i = 0; i < 3; i++) { const r = await postTask(base, req); assert.equal(r.status, 429); assert.equal(r.kind, 'slow-down', String(i)); assert.equal(r.retryAfter, '7') }
+  } finally { server.close() }
 })
