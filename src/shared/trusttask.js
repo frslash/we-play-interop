@@ -74,11 +74,12 @@ export const sameDid = (a, b) => typeof a === 'string' && typeof b === 'string' 
  * recipient refuses the document). `recipient` is the DID of the service it is for: OpenVTC refuses any document
  * not addressed to it by name.
  */
-export function taskDocument ({ type, issuer, recipient, payload = {}, id = `urn:uuid:${uuid()}`, issuedAt = instant(), expiresAt, threadId, parentThreadId, ext }) {
+export function taskDocument ({ type, issuer, recipient, payload = {}, id = `urn:uuid:${uuid()}`, issuedAt = instant(), expiresAt, threadId, parentThreadId, ceremony, ext }) {
   const doc = { id, type, issuer }
   if (recipient) doc.recipient = recipient
   if (threadId) doc.threadId = threadId
   if (parentThreadId) doc.parentThreadId = parentThreadId
+  if (ceremony) doc.ceremony = ceremony
   doc.issuedAt = issuedAt
   if (expiresAt) doc.expiresAt = expiresAt
   if (ext) doc.ext = ext
@@ -168,9 +169,18 @@ const short = (v, max) => (typeof v === 'string' && v && v.length <= max ? v : u
 /** The thread a reply belongs to: the request's own thread, else the request itself. */
 const threadOf = (request) => short(request?.threadId, 200) ?? short(request?.id, 200)
 
-/** The reply to a request: its type with "#response", addressed back to whoever asked, in the request's thread. */
+/**
+ * What an answer carries forward from its request besides the thread: `parentThreadId` and `ceremony`, each only when
+ * it is a short string (nothing unchecked is copied in, so a long or odd value is left out). Upstream carries both
+ * from the request into a routed refusal so that a rejection stays inside the enactment it belonged to (Trust Tasks
+ * SPEC section 7.1; vta-service/src/trust_tasks/helpers.rs, the comment in malformed_request_response, which says an
+ * unrouted refusal has no request to carry them from and that `reject_with` copies them for routed ones).
+ */
+const carried = (request) => ({ parentThreadId: short(request?.parentThreadId, 200), ceremony: short(request?.ceremony, 200) })
+
+/** The reply to a request: its type with "#response", addressed back to whoever asked, in the request's thread (and its parent thread and ceremony). */
 export function responseTo (request, payload, issuer) {
-  return taskDocument({ type: `${request.type}#response`, issuer, recipient: request.issuer, threadId: threadOf(request), payload })
+  return taskDocument({ type: `${request.type}#response`, issuer, recipient: request.issuer, threadId: threadOf(request), ...carried(request), payload })
 }
 /**
  * A refusal document for a request (or for something that could not be read at all: then it names no recipient).
@@ -183,7 +193,7 @@ export function refusalTo (request, { code, message, details, retryable = retrya
   const d = details && typeof details === 'object' && !Array.isArray(details) && Object.keys(details).length <= 16 && canonicalize(details).length <= 4096 ? details : undefined // a refusal stays small
   const answers = short(request?.id, 200) && short(request?.type, 300) ? { typeUri: request.type, id: request.id } : null
   const payload = { code, retryable: Boolean(retryable), message: [...String(message ?? '')].slice(0, 1024).join(''), ...(retryAfter ? { retryAfter } : {}), ...(d ? { details: d } : {}), ...(answers ? { inResponseTo: answers } : {}) }
-  return taskDocument({ type: ERROR_TYPE, issuer, ...(typeof request?.issuer === 'string' && DID.test(request.issuer) ? { recipient: request.issuer } : {}), ...(threadOf(request) ? { threadId: threadOf(request) } : {}), payload })
+  return taskDocument({ type: ERROR_TYPE, issuer, ...(typeof request?.issuer === 'string' && DID.test(request.issuer) ? { recipient: request.issuer } : {}), ...(threadOf(request) ? { threadId: threadOf(request) } : {}), ...carried(request), payload })
 }
 
 /** What an answer is: { kind: 'response' | 'error' | 'next-step' | 'other', payload, code? }. Go by its type, never by the HTTP status. */

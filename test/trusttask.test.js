@@ -179,3 +179,14 @@ test('a did:scid "src" hint is not part of who someone is; a private key reads i
   assert.deepEqual([...seedFromPrivateMultibase(multibase(new Uint8Array([0x80, 0x26, ...person.seed])))], [...person.seed])
   assert.throws(() => seedFromPrivateMultibase(multibase(new Uint8Array(10))), /not an Ed25519 private key/)
 })
+
+test('an answer and a refusal carry the request\'s parentThreadId and ceremony when they are short strings, and nothing else unchecked', () => {
+  const req = taskDocument({ type: JOIN, issuer: person.did, recipient: service.did, parentThreadId: 'urn:uuid:parent', ceremony: 'urn:uuid:ceremony' })
+  for (const a of [responseTo(req, {}, service.did), refusalTo(req, { code: 'taskFailed', message: 'no' }, service.did)]) {
+    assert.equal(a.parentThreadId, 'urn:uuid:parent'); assert.equal(a.ceremony, 'urn:uuid:ceremony'); assert.equal(a.threadId, req.id)
+  }
+  const odd = { ...req, parentThreadId: 'x'.repeat(201), ceremony: { a: 1 } }
+  for (const a of [responseTo(odd, {}, service.did), refusalTo(odd, { code: 'taskFailed', message: 'no' }, service.did)]) assert.ok(!('parentThreadId' in a) && !('ceremony' in a))
+  const plain = responseTo(taskDocument({ type: JOIN, issuer: person.did, recipient: service.did }), {}, service.did)
+  assert.ok(!('parentThreadId' in plain) && !('ceremony' in plain))
+})
