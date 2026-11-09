@@ -35,7 +35,7 @@ export class Builder {
     try { const u = new URL(hook?.url ?? ''); u.hash = ''; return ROUTINE.test(u.href) } catch { return false }
   }
 
-  /** The builder a text names, if any ("Owner: Faolan's builder"). */
+  /** The builder a text names, if any ("Owner: Person A's builder"). */
   named (text) {
     const t = same(text)
     return [...this.st.participants.values()].find((p) => p.kind === 'agent' && p.name && t.includes(same(p.name)) && this.is(p.did))?.did ?? null
