@@ -21,3 +21,15 @@ export function whyNot (step, s, who, personOf, ownerName = 'its owner') {
   }
   return null
 }
+
+/**
+ * Whether a plain reply turns a step down: "no", "I can't", "not mine", "decline". Seats with no step tool can only
+ * answer in the thread, so the room reads that answer (room lines 1264-1301). Short lines only, so "no problem, here is
+ * the result" or a long answer that happens to say "can't" is not taken for a decline.
+ */
+export function declines (text) {
+  const t = String(text ?? '').trim()
+  if (!t || t.length > 300) return false
+  if (/^\W*(no|nope|nah|pass)\b(?!\s+(problem|worries|worry|issue|issues|blocker|blockers|news|result|results|objection|objections)\b)/i.test(t)) return true
+  return /\b(i|we)\s+(can['’]?t|cannot|won['’]?t|will\s+not|am\s+not\s+able\s+to|decline)\b|\bdeclin(e|ed|ing)\b|\bnot\s+(mine|my\s+(step|job|call|part)|for\s+me)\b|\b(isn['’]?t|is\s+not)\s+mine\b/i.test(t)
+}

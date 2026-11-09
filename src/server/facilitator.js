@@ -17,7 +17,7 @@
 //  - reports against each done-test about once an hour, sooner when a check moved, never when nothing did.
 // The procedure (board, timers, escalation) is code. The model only writes words and judges vagueness and
 // convergence, in the weaver's round (fromRound). Nothing here acts outside the room: a step is words in the log.
-import { exact, whyNot } from '../shared/steps.js'
+import { declines, exact, whyNot } from '../shared/steps.js'
 import { NAME_OF, STEP_STATES } from '../shared/types.js'
 import { parseJsonAnswer } from './llm.js'
 import { citedIn, resourcesFor } from './views.js'
@@ -136,8 +136,19 @@ export class Facilitator {
       const s = this.steps().find((x) => x.thread === e.document.threadId)
       if (!s || e.seq < s.seq) continue // a reply from before the step last changed is already counted in it
       if (s.waitingOn?.who && sameSide(st, e.author, s.waitingOn.who)) { await this.write(s, { waitingOn: null, lastWordAt: e.timestamp }, 'unblocked', e, { heard: true }); did.heard++; continue }
+      if (!s.owner && s.offeredTo && s.state === 'open' && sameSide(st, e.author, s.offeredTo) && declines(e.document.payload.text)) { await this.decline(s, e, did); continue } // a plain "no" to an offer: on to someone who can
       if (sameSide(st, e.author, s.owner ?? s.offeredTo) && s.chases) { await this.write(s, { chases: 0, lastWordAt: e.timestamp }, 'heard', e, { heard: true }); did.heard++ }
     }
+  }
+
+  /** The offered agent said no in the thread: the step is open again, offered on, and the one who declined isn't asked again. */
+  async decline (step, e, did) {
+    const st = this.st
+    const back = await this.write(step, { previousOwner: step.offeredTo, offeredTo: null, owner: null, state: 'open', chases: 0, lastWordAt: e.timestamp }, 'declined', e, { heard: true })
+    if (await this.offer(back, null, Date.parse(e.timestamp), [step.previousOwner])) { did.offered.push(back.id); return back } // not back to whoever went quiet before it
+    const now = st.steps.get(back.id) ?? back
+    await this.escalate(now, this.personFor(now), `who takes ${this.label(now)}: ${st.nameOf(now.previousOwner)} said no and no other agent is free`, did)
+    return back
   }
 
   /** What one line says about a step. The step tool checks the same rules before it sends, and says why. */
@@ -356,10 +367,10 @@ export class Facilitator {
   }
 
   /** Offer a step to another agent: listening now if one is, of another person than whoever had it, not already busy. */
-  async offer (step, because, now = Date.now()) {
+  async offer (step, because, now = Date.now(), also = []) {
     const st = this.st
     if (step.needs) return false // a step that needs someone's keys, account or host is never handed to a different agent
-    const before = [step.previousOwner, step.offeredTo].filter(Boolean)
+    const before = [step.previousOwner, step.offeredTo, ...also].filter(Boolean)
     const pick = this.candidates(before)[0]
     if (!pick) return false
     const next = await this.write(step, { offeredTo: pick, chases: 0, chasedAt: new Date(now).toISOString() }, 'offered', because)

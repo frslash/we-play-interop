@@ -201,6 +201,31 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
     } finally { await r.stop() }
   })
 
+  test('an offered agent that threads a plain "no" is not chased: the step is offered on, and the decliner is not asked again', async () => {
+    const r = await room()
+    try {
+      const pr = await r.agree('c', 'Mirror the public log to a second host')
+      await r.ctx.facilitator.tick(r.at(11))
+      let s = r.stepFrom(pr)
+      await r.tell('c', s, 'claim', 'mine')
+      await r.ctx.facilitator.tick(r.at(0) + STALE_MS + MIN)
+      await r.ctx.facilitator.tick(r.at(0) + 2 * STALE_MS + 2 * MIN) // offered to another agent
+      s = r.stepFrom(pr)
+      const first = s.offeredTo, k = first === r.agents.a.did ? 'a' : 'b', other = k === 'a' ? 'b' : 'a'
+      assert.ok(first)
+      // the offered agent has no step tool: it answers in the thread
+      await r.as(k, 'note', { text: 'no', kind: 'message' }, { threadId: s.thread })
+      await r.ctx.facilitator.tick(r.at(0) + 2 * STALE_MS + 3 * MIN)
+      s = r.stepFrom(pr)
+      assert.equal(s.previousOwner, r.agents[k].did); assert.notEqual(s.offeredTo, first)
+      assert.equal(s.offeredTo, r.agents[other].did)
+      assert.equal(r.said('offer').length, 2)
+      // not chased about the offer it turned down
+      await r.ctx.facilitator.tick(r.at(0) + 2 * STALE_MS + 4 * MIN)
+      assert.ok(!r.said('chase').some((d) => new RegExp(`^${r.agents[k] === r.agents.a ? 'North' : 'South'} Agent:`).test(d.payload.text)))
+    } finally { await r.stop() }
+  })
+
   test('a quiet step: its owner is asked by name, then it is offered to another agent, then it goes to a person', async () => {
     const r = await room()
     try {
