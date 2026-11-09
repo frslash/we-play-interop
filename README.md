@@ -429,6 +429,7 @@ One small container, with Postgres either pointed at or embedded on a volume. Al
 | `WORKSPACE_KEY` | yes, in production | The workspace's own key (64 hex), from `npm run keygen`. Keep it for the life of the log. |
 | `PUBLIC_URL` | recommended | The public address, used in links and pull request text, and the room's Mastodon account (`@room@<its host>`). Keep it fixed once people follow the room. |
 | `ACTIVITYPUB` | no | `0` turns off the room's Mastodon account. On by default whenever `PUBLIC_URL` is set. |
+| `DID_LOG_FILE` | no | The room's `did:webvh` log, served at `/.well-known/did.jsonl` so the room's DID resolves from its host. Empty: `<DATA_DIR>/did.jsonl`; no file, a 404. Make one on the host with `node agent/mint-room-did.js <host> <dir>` (test keys: keep `update-key.txt` off the repository and move the real keys to the people who will own the room). |
 | `DATABASE_URL` | recommended | Postgres. When empty, it uses embedded Postgres in `DATA_DIR`. |
 | `ANTHROPIC_API_KEY` or `LLM_API_KEY` | for a model | Claude through the official SDK, or any OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_MODEL`). |
 | `GITHUB_TOKEN` | to act | A bot account's token (scopes are in `.env.example`). When empty, actions are prepared as links instead. |
