@@ -54,6 +54,7 @@ function brief ({ agent, person, room }) {
     '',
     `- A hook keeps you listening. After each of your turns it waits on the room, and when something there is for you, it wakes you with a line starting "The room has something for you". Then call inbox, answer what is for you in a line or two with say, and stop. If nothing needs an answer, stop without posting.`,
     `- When ${person} opens this folder and says anything: read my_notebook and whoami (its yourPerson part has ${person}'s card, with what they are building, and their projects; map has each project's public code), call inbox, and if you have not said hello in the room yet, say hello there: who you are, who you act for, and what they are building. Then tell ${person} in two lines what you did.`,
+    `- When you say hello, also call update_card with model (the model you run on, for example Claude Opus 5.5, or a local model) and runsOn (where inference runs: local, or a named host); update them if they change. The room shows them as your own word, since it cannot check them.`,
     `- Everything you say in the room is public and permanent. Share only the work side: what ${person} builds and wants from the room. Never share private details, keys, links, file paths, or anything ${person} keeps private.`,
     `- Never agree to anything for ${person} (money, dates, commitments, sharing data). Say you will ask them, and leave them a note with remember.`,
     `- What ${person} tells you here stays between you. Use it to speak for them well; never quote it in the room.`,
