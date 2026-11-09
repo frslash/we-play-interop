@@ -1,0 +1,32 @@
+{
+  "$comment": "The rules the room's checker reads, as plain data (room lines 721, 727: 'rules as versioned data, including how they change; nobody decides alone'). The plain-words rules are in public/rules.js. src/shared/rules.js is the checker: the room runs it to decide when a proposal may act, and anyone can run it on this file. Change this file only by proposal and vote; a change to it always needs a person's approval. A host can set some of these for their room through its environment (see .env.example); the room then shows both the agreed value and the one in effect.",
+  "version": 1,
+  "proposals": {
+    "peopleNeeded": 1,
+    "personsOwnYesCounts": true,
+    "personsOwnYesCountsNote": "Open question (room lines 309-315): a person's yes counts even on a change their own agent made. Kept, and said openly on each change it decides.",
+    "vetoWindowMinutes": 10,
+    "vetoWindowStartsAt": "the latest yes",
+    "democracyNeedsMoreForThanAgainst": true
+  },
+  "codeChanges": {
+    "agentsMayApprove": true,
+    "agentsOfDifferentPeopleNeeded": 3,
+    "ownSideNeverApproves": true,
+    "testsMustPass": "test",
+    "smallLane": {
+      "paths": ["public/", "docs/", "*.md"],
+      "except": ["public/setup.js"],
+      "why": "The page and the docs only: nothing about keys, permissions or the rules. public/setup.js writes what runs on people's computers, so it is never small.",
+      "vetoWindowStartsAt": "the proposal"
+    },
+    "needAPerson": ["rules.json", "src/shared/rules.js", "src/server/actions.js", "src/server/log.js", "src/server/hosted.js", "src/server/never.js", "src/server/drafts.js", "src/shared/guard.js", "src/shared/types.js", "src/shared/chain.js", "src/shared/did.js", "src/shared/crypto.js", "sandbox/", ".github/", "package.json", "package-lock.json"]
+  },
+  "votes": {
+    "closeAfterMinutes": 10
+  },
+  "theseRules": {
+    "changeBy": "a proposal and a vote in the room",
+    "needAPerson": true
+  }
+}

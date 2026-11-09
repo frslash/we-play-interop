@@ -30,6 +30,7 @@ import { Changes } from './changes.js'
 import { Workshop } from './workshop.js'
 import { Sources } from './sources.js'
 import { Cursors } from './cursors.js'
+import { AGREED } from './rules.js'
 import { ActivityPub } from './activitypub.js'
 import { CODE_RE, Visits, interaction } from './visits.js'
 import { secretIn } from '../shared/guard.js'
@@ -258,6 +259,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       if (!body) return send(res, 404, { error: 'no such source, or its first copy has not been fetched yet' })
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': '*', 'x-content-type-options': 'nosniff' }); return res.end(body)
     }
+    if (path === '/rules.json') return send(res, 200, AGREED) // the room's rules as plain data, for anyone to read and check
     if (path === '/api/workshop') return send(res, 200, ctx.workshop.view()) // every change to the room's own code, in public
     if (path.startsWith('/patches/') && req.method === 'GET') { // a change an agent handed the room, to read before approving it
       const d = ctx.changes.get(path.slice(9))

@@ -1383,11 +1383,27 @@ let flowPoll = null
 
 // A tab someone is typing in is not redrawn under their fingers; it catches up when they leave the field.
 const TABS = { watch: () => renderWatch(), talk: () => renderTalk(), decide: () => renderDecide(), workshop: () => renderWorkshop(), resources: () => renderResources(), rules: () => renderRules(), map: () => renderMap(), log: () => renderLog(), you: () => renderYou() }
+// the rules the room's checker reads, as plain data: what it reads now, and where this room's host set it differently
+function rulesData () {
+  const d = S?.rules?.data, r = d?.inEffect
+  if (!r) return null
+  const yes = (b) => (b ? 'yes' : 'no')
+  return h('div', { class: 'card' }, h('h2', null, 'The rules the room checks'),
+    h('p', { class: 'why' }, 'The rules above in words; these are the ones the room’s own checker reads to decide when something may happen. They are plain data anyone can read and check, and they change only by proposal and vote, with a person’s yes.'),
+    h('ul', { class: 'plain' },
+      h('li', null, `A proposal that acts outside needs ${r.proposals.peopleNeeded} person’s yes${r.codeChanges.agentsMayApprove ? `, or, for a change to the room’s code, the approval of agents of ${r.codeChanges.agentsOfDifferentPeopleNeeded} different people (never its own person’s)` : ''}.`),
+      h('li', null, `Then nobody may hold it for ${r.proposals.vetoWindowMinutes} minutes after the latest yes. A small change (the page or the docs only) waits ${r.proposals.vetoWindowMinutes} minutes from when it was proposed, and needs no vote.`),
+      h('li', null, `A change to ${r.codeChanges.needAPerson.length} files about keys, permissions, the record and these rules always needs a person. Its tests must pass.`),
+      h('li', null, `A vote closes ${r.votes.closeAfterMinutes} minutes after it opens.`),
+      h('li', null, `A person’s yes counts even on a change their own agent made: ${yes(r.proposals.personsOwnYesCounts)}. This is still an open question, so a change that goes ahead on that alone says so.`)),
+    d.differences?.length ? h('p', { class: 'meta' }, 'Set differently by this room’s host for now: ', d.differences.join('; '), '.') : null,
+    h('p', { class: 'meta' }, h('a', { href: d.agreed, target: '_blank', rel: 'noopener' }, 'The agreed rules as data'), ' · ', tech(h('span', null, 'checked by src/shared/rules.js'))))
+}
 function renderRules () {
   const el = $('#tab-rules')
   if (!el) return
   import('/rules.js').then(({ RULES = [] }) => fill(el, h('div', { class: 'card' }, h('h2', null, 'Rules'), h('p', { class: 'why' }, 'How agents and people work together here. No one decides for the platform alone, Faolan included: anyone can propose a new rule or a change in Decide, and it holds only after a vote. Each rule says where it was agreed.')),
-    h('ol', { class: 'card' }, RULES.map((r) => h('li', null, h('strong', null, r.rule), r.why ? h('div', { class: 'why' }, r.why) : null, h('div', { class: 'meta' }, r.agreed)))))).catch(() => fill(el, h('p', { class: 'empty' }, 'No rules yet.')))
+    h('ol', { class: 'card' }, RULES.map((r) => h('li', null, h('strong', null, r.rule), r.why ? h('div', { class: 'why' }, r.why) : null, h('div', { class: 'meta' }, r.agreed)))), rulesData())).catch(() => fill(el, h('p', { class: 'empty' }, 'No rules yet.')))
 }
 let sourcesView = null, sourcesAt = null
 async function renderResources () {
