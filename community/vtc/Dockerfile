@@ -1,0 +1,23 @@
+# VTC (OpenVTC vtc-service, binary vtc), built from source at one full commit, hash checked.
+# TEST COMMUNITY: its keys are made at first start by entrypoint.sh, on test values, and are not for real people.
+# Features: setup and website (the join page at /members/). No keyring, no admin-ui, no tsp (no mediator wired yet).
+# The encrypted-file secret store is always compiled in (OpenVTC docs/03-vtc/non-interactive-setup.md).
+FROM rust:1.95-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082 AS build
+ARG VTI_SHA=c6964c4612131089e1add0f47575894e1bd8a565
+ARG FEATURES="setup,website"
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates pkg-config libssl-dev libdbus-1-dev clang cmake && rm -rf /var/lib/apt/lists/*
+RUN git init /src && cd /src && git remote add origin https://github.com/OpenVTC/verifiable-trust-infrastructure \
+ && git fetch --depth 1 origin "$VTI_SHA" && git checkout --detach FETCH_HEAD \
+ && [ "$(git rev-parse HEAD)" = "$VTI_SHA" ]
+WORKDIR /src
+RUN cargo build --locked --release -p vtc-service --bin vtc --no-default-features --features "$FEATURES"
+
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
+# busybox serves one public line (the setup did:key) on the private network during first start; curl and jq read the VTA.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libdbus-1-3 curl jq busybox && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --uid 10001 --home /var/lib/vtc vtc && install -d -o vtc -g vtc -m 0700 /var/lib/vtc
+COPY --from=build /src/target/release/vtc /usr/local/bin/vtc
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+ENV HOME=/var/lib/vtc
+EXPOSE 8200
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
