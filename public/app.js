@@ -13,6 +13,7 @@ import { whyNot } from '/shared/steps.js'
 import { mentionOptions } from '/shared/mentions.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
 import { heard, lineIsFor } from '/shared/presence.js'
+import { pacer, refetchFor, take } from '/shared/live.js'
 
 // ---------- tiny DOM helpers (user text only ever goes in as text) ----------
 const $ = (s) => document.querySelector(s)
@@ -131,7 +132,9 @@ async function post (name, payload, extra = {}) {
   const r = await api('/api/entries', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc) })
   if (!r.ok) { toast(r.body?.payload?.message ?? `refused (${r.status})`); return null }
   toast('Signed and in the log.')
-  await refresh()
+  const entry = { ...r.body }; delete entry.hosted // the answer is the entry itself (a hosted agent's link rides beside it, never into the feed)
+  if (took(entry, { own: true })) drawSoon() // a plain line needs nothing more
+  await pace.now() // anything else (a join, a vote, a permission) shows the moment the room has it
   return r.body
 }
 
@@ -153,26 +156,51 @@ async function saveNever (lines) {
 }
 
 // ---------- loading and live updates ----------
-async function refresh () {
-  const [s, b] = await Promise.all([api('/api/state'), api('/api/map')])
-  if (s.ok) S = s.body
-  if (b.ok) B = b.body
+// A new line shows at once, from what the live stream carries. The room's whole state (people, proposals, steps) and the
+// map are fetched again only when a line changes them (src/shared/live.js says which), and then at most once every few
+// seconds while lines keep coming: a busy room used to send every viewer its whole state for every line.
+let mapAt = 0, stateSeq = -1, upTo = -1 // the last line the fetched state holds; the last line heard in the room's own order
+async function refresh ({ map = true } = {}) {
+  pace.mark(); if (map) mapAt = Date.now()
+  const [s, b] = await Promise.all([api('/api/state'), map ? api('/api/map') : null])
+  if (s.ok) { S = s.body; stateSeq = S.head?.seq ?? -1; for (const e of feed.filter((x) => x.seq > stateSeq).reverse()) take(S, e) } // lines heard while it was on its way
+  if (b?.ok) B = b.body
   render()
   if (document.body.dataset.tab === 'talk') refreshNotes().catch(() => {}) // at most every 10 seconds
+}
+// a moment after the first line that needs the state, then at most once every few seconds while lines keep coming
+const pace = pacer((map) => refresh({ map }).then(weaveQueued))
+/** A line heard, from the stream, a catch-up or your own post: into the feed and the loom, and the state only if it needs it. */
+function took (e, { notify = false, own = false } = {}) {
+  if (!e?.hash || feed.some((x) => x.hash === e.hash)) return false
+  if (!own) upTo = Math.max(upTo, e.seq) // your own line can come back before the one said just ahead of it: catching up starts below it
+  const at = feed.findIndex((x) => x.seq < e.seq) // newest first, whatever order lines arrive in
+  feed.splice(at < 0 ? feed.length : at, 0, e); feed = feed.slice(0, 150); toWeave.push(e)
+  if (notify) notifyIfForMe(e)
+  // asked before take: a new agent's first line makes it heard. A state fetched after the line already holds it, unless
+  // the line also changes the map, which that fetch may have left out.
+  const need = refetchFor(S, e), held = e.seq <= stateSeq
+  take(S, e)
+  if (need.state && (!held || need.map)) pace.soon(need.map)
+  return true
+}
+/** Draw what the feed holds now: at most once every 250 ms, however fast lines come. */
+function drawSoon () {
+  if (pending) return
+  pending = setTimeout(() => { pending = null; render(); if (!pace.waiting) weaveQueued() }, 250) // a line waiting on the state is woven once it's in
 }
 async function loadFeed () {
   const head = S?.head?.seq ?? 0
   const r = await api(`/api/log?after=${Math.max(-1, head - 80)}&limit=100`)
-  if (r.ok) feed = r.body.entries.reverse()
+  if (r.ok) { feed = r.body.entries.reverse(); upTo = feed[0]?.seq ?? -1 }
 }
 /** New entries since the last one we have (the fallback when a proxy holds the live stream back). */
 async function catchUp () {
-  const last = feed[0]?.seq ?? -1
-  const r = await api(`/api/log?after=${last}&limit=100`)
+  const r = await api(`/api/log?after=${upTo}&limit=100`)
   if (!r.ok || !r.body.entries.length) return
-  for (const e of r.body.entries) if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); toWeave.push(e) }
-  feed = feed.slice(0, 150)
-  await refresh(); weaveQueued()
+  let any = false
+  for (const e of r.body.entries) any = took(e) || any
+  if (any) drawSoon()
 }
 // If the live stream stays silent (some tunnels and proxies hold it back), ask every few seconds instead.
 let streamHeard = false
@@ -184,15 +212,18 @@ setTimeout(() => {
 setInterval(() => { if (streamHeard) catchUp().catch(() => {}) }, 30_000)
 function live () {
   const es = new EventSource('/api/events')
-  es.addEventListener('hello', () => { streamHeard = true })
+  let hellos = 0
+  es.addEventListener('hello', (ev) => {
+    streamHeard = true
+    let head = null; try { head = JSON.parse(ev.data) } catch {}
+    if ((head?.seq ?? -1) > upTo) catchUp().catch(() => {}) // lines said before the stream opened, or while it was down
+    if (hellos++) pace.soon(true) // back after a break (the room restarts when it updates itself): the state afresh
+  })
   es.onopen = () => { $('#live').textContent = 'live'; $('#live').classList.add('on') }
   es.onerror = () => { $('#live').textContent = 'reconnecting'; $('#live').classList.remove('on') }
   es.addEventListener('entry', (ev) => {
     streamHeard = true
-    const e = JSON.parse(ev.data)
-    if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); toWeave.push(e); notifyIfForMe(e) }
-    feed = feed.slice(0, 150)
-    clearTimeout(pending); pending = setTimeout(async () => { await refresh(); weaveQueued() }, 250)
+    if (took(JSON.parse(ev.data), { notify: true })) drawSoon()
   })
 }
 
@@ -1573,10 +1604,11 @@ const start = fromHash() ?? (joined() ? store.get('wpi.tab') : 'you')
 go(TABS[start] ? start : 'watch')
 // an agent's link (#delegate=did:…) opened on a page that is already open
 window.addEventListener('hashchange', () => { const tab = fromHash(); if (tab) { renderYou(); go(tab) } })
-setInterval(async () => {
+// The state also moves without a line (who is listening now, drafts waiting for an OK): asked once a minute, unless a
+// line just brought it, and the map with it every few minutes (the server reads the DTG board again on its own clock).
+setInterval(() => {
   if (!S) return
-  const s = await api('/api/state').catch(() => null)
-  if (s?.ok) S = s.body
+  if (Date.now() - pace.last > 50_000 && !pace.waiting) return refresh({ map: Date.now() - mapAt > 5 * 60_000 }).catch(() => {})
   renderTalk()
   if (document.body.dataset.tab === 'talk') refreshNotes().catch(() => {})
 }, 60_000)
