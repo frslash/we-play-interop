@@ -42,7 +42,7 @@ describe('read_file', () => {
   test('with nothing given, the error names both parameters', async () => {
     const r = await call('read_file', {})
     assert.equal(r.error, true)
-    assert.match(r.text, /needs file: the sha256/); assert.match(r.text, /or message: the id/)
+    assert.match(r.text, /needs a parameter: file \(the sha256/); assert.match(r.text, /or message \(the id/)
   })
 
   test('file takes the sha256, sha256 is the same, and a /media/ link works too', async () => {
