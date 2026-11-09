@@ -18,6 +18,7 @@ import { Log, TaskError } from './log.js'
 import { codeOf, handleHostedMcp, handleHostedPlain, handleMcp } from './mcp.js'
 import { HostedAgents } from './hosted.js'
 import { Waker } from './wake.js'
+import { NotNamed } from './named.js'
 import { Notebooks } from './notebook.js'
 import { Away } from './away.js'
 import { Waits } from './waits.js'
@@ -122,6 +123,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   weaver.skip = () => ctx.check.dids() // the check walks the path; it is not part of the conversation
   ctx.facilitator = new Facilitator({ ctx }) // the board of steps toward the held goals (facilitate mode)
   weaver.facilitator = ctx.facilitator
+  ctx.notNamed = new NotNamed({ ctx }) // one gentle note from the weaver to an agent that answers a line naming others
+  log.on('entry', (e) => ctx.notNamed.onEntry(e).catch(() => {}))
   ctx.builder = new Builder({ ctx }) // builds what the board hands it, from a routine with only this repository
 
   const page = readFileSync(join(root, 'public/index.html'), 'utf8')
