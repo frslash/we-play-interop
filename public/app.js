@@ -1129,6 +1129,33 @@ function phoneCard () {
       h('p', { class: 'why' }, 'For a wallet that reads the room’s DID itself. The same for everyone, and it does not run out.'),
       h('img', { class: 'qr small', src: `/api/qr.svg?text=${encodeURIComponent(did)}`, alt: 'QR code of the room’s DID' }), h('p', null, h('code', null, did))))
 }
+// ---------- the community whose membership pass the room takes ----------
+// A room can name one community (COMMUNITY_DID). This card says who it is and where to join it, as the room read it
+// from the community's own DID a moment ago (/api/community, asked at most once a minute), or that none is set.
+// The room only checks a pass someone shows it: it issues none and keeps none.
+const community = { seen: null, at: 0, asking: null }
+function askCommunity () {
+  if (community.asking || Date.now() - community.at < 60_000) return
+  community.asking = api('/api/community').then((r) => { if (r.ok) community.seen = r.body }).catch(() => {}).finally(() => { community.asking = null; community.at = Date.now(); if (document.body.dataset.tab === 'you') render() })
+}
+function communityCard () {
+  const card = (...kids) => h('div', { class: 'card' }, h('h2', null, 'Membership passes'), ...kids)
+  if (!S.community?.set) return card(h('p', { class: 'why' }, S.community?.problem ?? 'No community is set for this room, so it takes no membership pass.'))
+  askCommunity()
+  const c = community.seen
+  if (!c?.set) return card(h('p', { class: 'why' }, 'Looking up the community this room takes passes from…'))
+  const name = c.name ?? 'the community it names'
+  const part = (label, ok) => `${label}: ${ok ? 'answers' : 'not answering'}`
+  return card(
+    h('p', { class: 'why' }, `This room takes membership passes from ${name}. The community decides who its members are and can take a pass back; the room only checks a pass someone shows it, and keeps nothing.`),
+    !c.resolves ? h('p', { class: 'meta' }, 'Its DID is not resolving right now, so no pass can be checked.') : null,
+    /^https:\/\//.test(c.joinPage?.url ?? '') ? h('p', null, h('a', { href: c.joinPage.url, target: '_blank', rel: 'noopener noreferrer' }, `Join ${name}`), c.joinPage.answers ? '' : ' (its join page is not answering right now)') : h('p', { class: 'meta' }, 'It names no join page.'),
+    fold('community-did', null, h('summary', null, 'Show the community’s DID code'),
+      h('p', { class: 'why' }, 'For a wallet that adds a community by scanning its DID.'),
+      h('img', { class: 'qr small', src: `/api/qr.svg?text=${encodeURIComponent(c.did)}`, alt: 'QR code of the community’s DID' }), h('p', null, h('code', null, c.did))),
+    tech(h('p', { class: 'why' }, [part('DID', c.resolves), part('profile', c.profile?.answers), part('join page', c.joinPage?.answers), part('DID code', c.didQr?.answers), part('revocation list', c.statusList?.verifies)].join(' · '),
+      `. To check a pass, its holder signs a ${c.pass?.type} document for ${c.pass?.recipient} and posts it to ${c.pass?.check}.`)))
+}
 function renderYou () {
   const el = $('#tab-you')
   const origin = S.publicUrl || location.origin // the address others can reach (PUBLIC_URL), not necessarily this one
@@ -1149,7 +1176,7 @@ function renderYou () {
         h('label', null, 'Name', name),
         h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: join }, 'Join')),
         h('details', null, h('summary', null, 'I already have a key'), h('label', null, 'Your key', seedIn), h('button', { class: 'btn', onclick: () => { try { me = identityFromSeedHex(seedIn.value); store.set('wpi.seed', me.seedHex); store.set('wpi.keySaved', me.did); toast('Key loaded.'); refresh() } catch (err) { toast(err.message) } } }, 'Use this key'))),
-      phoneCard())
+      phoneCard(), communityCard())
   }
   const mine = person(me.did)
   const myAgents = S.people.filter((p) => p.kind === 'agent' && p.principal === me.did && !p.removed)
@@ -1204,6 +1231,7 @@ function renderYou () {
       h('p', { class: 'why' }, 'anarchy: try every direction · democracy: the vote decides · weave: the one step that holds the most of what people want. Anyone can change it; the latest change stands.'),
       h('div', { class: 'seg' }, MODES.map((m) => h('button', { class: S.mode.mode === m ? 'on' : '', onclick: () => m !== S.mode.mode && post('mode', { mode: m, ...(reason.value.trim() ? { reason: reason.value.trim() } : {}) }) }, m))),
       h('label', null, 'Reason', reason)),
+    communityCard(),
     invite)
 }
 

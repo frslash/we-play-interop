@@ -3,6 +3,7 @@
 import { handleRoomDid, ensureRoomDid, growRoomDid } from './roomdid.js'
 import { JoinRoute } from './join-route.js'
 import { Door, serveRoomTasks } from './door.js'
+import { Community } from './community.js'
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -119,7 +120,7 @@ function workspaceIdentity (config) {
   return id
 }
 
-export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, apFetch, awayGatherMs, hostWelcomeMs = 3000, sources, shelf } = {}) {
+export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, apFetch, communityFetch, awayGatherMs, hostWelcomeMs = 3000, sources, shelf } = {}) {
   const identity = workspaceIdentity(config)
   const db = await openDb(config)
   const log = new Log({ db, identity, resolver, config })
@@ -154,6 +155,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   await ctx.join.refresh(true)
   // the Trust Task door (door.js): other projects' software hands the room standard signed documents here. Made early, so any part of the room made after it can add its own tasks with ctx.door.register()
   ctx.door = serveRoomTasks(new Door({ ctx }), ctx)
+  // the community whose membership pass the room takes (COMMUNITY_DID); it answers as the DID the join desk speaks as
+  ctx.community = new Community({ config, resolver, identity, room: () => ctx.join.desk.room, ...(communityFetch ? { fetch: communityFetch } : {}) })
   ctx.types = TYPES
   ctx.changes = new Changes({ ctx, dataDir: config.dataDir })
   log.on('entry', (e) => ctx.changes.onEntry(e))
@@ -301,6 +304,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       const { raw, bytes, cut } = await readDoorBody(req)
       return sendDoor(res, await ctx.door.handle(raw, { origin: baseOf(req), host: String(req.headers.host ?? ''), ip: ipOf(req), userAgent: String(req.headers['user-agent'] ?? '').slice(0, 300), https: (req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http')) === 'https', bytes, cut }))
     }
+    if (await ctx.community.handle(req, res, path, readBody, send)) return
     if (path === '/.well-known/webfinger' || path.startsWith('/ap/')) return ctx.activitypub.handle(req, res, url)
     if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
     if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), keyring: ctx.join.readiness({ oob: true }), door: ctx.door.info(baseOf(req)) }) }

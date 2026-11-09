@@ -21,6 +21,7 @@ export function info (ctx) {
     sandbox: config.sandbox || false,
     branch: config.workspaceBranch || 'main',
     fediverse: ctx.activitypub?.summary() ?? null, // the room's account on Mastodon and the fediverse: its address and how sending goes
+    community: ctx.community?.summary() ?? { set: false }, // the community whose membership pass the room takes: set or not, what answered, how checks went (counts only)
     tunnel: (() => { try { const h = new URL(config.publicUrl).hostname; return /trycloudflare\.com$/i.test(h) ? 'Cloudflare’s quick tunnel' : /ngrok/i.test(h) ? 'an ngrok tunnel' : null } catch { return null } })(),
     mode: st.mode,
     head: log.head(),
