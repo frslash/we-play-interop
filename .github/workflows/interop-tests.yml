@@ -44,3 +44,38 @@ jobs:
         run: |
           cargo build --locked --release
           cargo test --locked --no-run
+  room-export:
+    name: export inwove.org's public record and re-import it into an empty copy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: export from https://inwove.org (public log only)
+        run: node agent/export-log.js https://inwove.org > "$RUNNER_TEMP/room-export.json"
+      - name: import into an empty data folder
+        run: |
+          set -o pipefail
+          DATABASE_URL= node agent/import-log.js "$RUNNER_TEMP/room-export.json" "$RUNNER_TEMP/empty-copy" | tee "$RUNNER_TEMP/import.json"
+      - name: result (ok, entry count, head seq and hash, unchecked signatures)
+        run: |
+          node -e '
+            const fs = require("fs"), t = process.env.RUNNER_TEMP
+            const exp = JSON.parse(fs.readFileSync(t + "/room-export.json", "utf8"))
+            const imp = JSON.parse(fs.readFileSync(t + "/import.json", "utf8"))
+            const sameCount = imp.entries === exp.count
+            const sameHead = imp.head?.seq === exp.head?.seq && imp.head?.hash === exp.head?.hash
+            const lines = [
+              "ok: " + imp.ok,
+              "entries: export " + exp.count + ", import " + imp.entries + (sameCount ? " (same)" : " (DIFFERENT)"),
+              "head export: seq " + exp.head?.seq + " " + exp.head?.hash,
+              "head import: seq " + imp.head?.seq + " " + imp.head?.hash + (sameHead ? " (same)" : " (DIFFERENT)"),
+              "unchecked signatures: " + imp.signaturesNotChecked,
+            ]
+            console.log(lines.join("\n"))
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, "### Room export check\n\n```\n" + lines.join("\n") + "\n```\n")
+            if (!(imp.ok === true && sameCount && sameHead && imp.signaturesNotChecked === 0)) process.exit(1)
+          '
