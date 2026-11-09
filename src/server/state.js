@@ -147,7 +147,10 @@ export class State {
       }
       case 'approve': {
         const pr = this.proposals.get(p.proposal)
-        if (pr && !pr.approvals.has(e.author)) { pr.approvals.set(e.author, e.seq); pr.lastApprovalAt = e.timestamp }
+        if (!pr) break
+        // an approval names the commit it read; one without a sha covers the commit the proposal names
+        const sha = pr.kind === 'workspace-change' ? (p.sha ?? pr.change?.sha ?? null) : null, had = pr.approvals.get(e.author)
+        if (!had || (sha && had.sha !== sha)) { pr.approvals.set(e.author, { seq: e.seq, sha, at: e.timestamp }); pr.lastApprovalAt = e.timestamp }
         break
       }
       case 'veto': {
@@ -206,7 +209,7 @@ export class State {
     const p = e.document.payload
     this.proposals.set(e.hash, {
       hash: e.hash, seq: e.seq, at: e.timestamp, author: e.author, principal: e.onBehalfOf, byWeaver: e.author === this.workspace,
-      kind: p.kind, title: p.title, body: p.body ?? '', run: p.run, change: p.change, sources: p.sources, measure: p.measure, direction: p.direction, threadId: e.document.threadId,
+      kind: p.kind, title: p.title, body: p.body ?? '', run: p.run, change: p.change, head: p.change?.sha ?? null, sources: p.sources, measure: p.measure, direction: p.direction, threadId: e.document.threadId,
       votes: new Map(), approvals: new Map(), lastApprovalAt: null, vetoes: [], results: [], outcome: null,
     })
   }
@@ -254,11 +257,24 @@ export class State {
     return t
   }
 
+  /** The commit a code change's pull request is at now, as last read from GitHub. A new commit voids approvals of the old one. */
+  setHead (pr, sha) { if (pr?.kind === 'workspace-change' && /^[0-9a-f]{40}$/.test(sha ?? '')) pr.head = sha }
+
+  /** Whether an approval still holds: for a code change, only while the pull request is at the commit it read. */
+  covers (pr, a) { return pr.kind !== 'workspace-change' || (Boolean(a?.sha) && a.sha === pr.head) }
+
+  /** The approvers whose approval still holds, with when the latest of them came in. */
+  holding (pr) {
+    const dids = [...pr.approvals].filter(([, a]) => this.covers(pr, a)).map(([d]) => d)
+    const at = dids.map((d) => pr.approvals.get(d).at).filter(Boolean).sort().at(-1) ?? null
+    return { dids, at }
+  }
+
   /** open · vetoed · approved (waiting out the veto window) · done · prepared · failed */
   statusOf (pr) {
     if (pr.vetoes.length) return 'vetoed'
     if (pr.outcome) return pr.outcome === 'opened' || pr.outcome === 'merged' ? 'done' : pr.outcome
-    if (pr.approvals.size) return 'approved'
+    if (this.holding(pr).dids.length) return 'approved'
     return 'open'
   }
 
@@ -275,7 +291,8 @@ export class State {
       author: pr.author, authorName: this.nameOf(pr.author), principal: pr.principal, byWeaver: pr.byWeaver, threadId: pr.threadId,
       status: this.statusOf(pr), tally: this.tally(pr),
       votes: [...pr.votes].map(([principal, v]) => ({ principal, name: this.nameOf(principal), ...v })),
-      approvals: [...pr.approvals.keys()].map((did) => ({ did, name: this.nameOf(did) })),
+      head: pr.head,
+      approvals: [...pr.approvals].map(([did, a]) => ({ did, name: this.nameOf(did), sha: a.sha, at: a.at, void: !this.covers(pr, a) })),
       lastApprovalAt: pr.lastApprovalAt,
       vetoes: pr.vetoes.map((v) => ({ ...v, name: this.nameOf(v.by) })),
       results: pr.results,

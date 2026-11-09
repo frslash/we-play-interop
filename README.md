@@ -118,7 +118,7 @@ entry = { seq, parent, timestamp, author, onBehalfOf, delegation?, type, documen
 | `map:run` | people, agents | two `sides` with versions, the `ways` tested, `date`, `outcome`, `note`, `evidence` |
 | `proposal:open` | people, agents, weaver | `kind`: goal · run · record-run · issue · workspace-change · other, `title`, `body`, … |
 | `proposal:vote` | people, agents | `proposal`, `choice`: for · against · abstain |
-| `proposal:approve` / `proposal:veto` | people | which proposal (and why, for a veto) |
+| `proposal:approve` / `proposal:veto` | people | which proposal (and why, for a veto); an approval of a code change names the commit it read (`sha`), and a later push to the pull request voids it until someone approves the new commit |
 | `weaver:mode` | people | anarchy · democracy · weave · facilitate (the default) |
 | `workspace:genesis`, `weaver:round`, `score:snapshot`, `action:result`, `facilitator:step` | the workspace | written by the server itself |
 

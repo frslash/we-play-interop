@@ -94,7 +94,7 @@ export class Weaver {
         return { held: g.held.map(view), candidates: g.candidates.slice(-10).map(view) }
       })(),
       newInputs: inputs.map((e) => gist(e, st)),
-      openProposals: open.filter((pr) => pr.kind !== 'goal').map((pr) => ({ hash: pr.hash, kind: pr.kind, title: pr.title, body: clip(pr.body, 400), run: pr.run, by: st.nameOf(pr.principal), byWeaver: pr.byWeaver, tally: st.tally(pr), approvals: pr.approvals.size, status: st.statusOf(pr) })),
+      openProposals: open.filter((pr) => pr.kind !== 'goal').map((pr) => ({ hash: pr.hash, kind: pr.kind, title: pr.title, body: clip(pr.body, 400), run: pr.run, by: st.nameOf(pr.principal), byWeaver: pr.byWeaver, tally: st.tally(pr), approvals: st.holding(pr).dids.length, status: st.statusOf(pr) })),
       intentions: intentions.map((e) => ({ entry: e.hash, who: st.nameOf(e.onBehalfOf), text: clip(e.document.payload.text, 300) })),
       deepDives: diveContext(this.log),
       // the Resources tab, the slice that bears on what is being said now: specs, code and maps, with what agents found in each
