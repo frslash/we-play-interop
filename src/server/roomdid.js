@@ -5,7 +5,7 @@
 // never in the repository, the room's log or its output; growRoomDid uses it to add entries.
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { prepareDataForSigning, resolveDIDFromLog, updateDID } from 'didwebvh-ts'
+import { deriveNextKeyHash, prepareDataForSigning, resolveDIDFromLog, updateDID } from 'didwebvh-ts'
 import { mintRoomDid } from '../../agent/mint-room-did.js'
 import { ed25519Multikey, identityFromSeedHex, multikeyToEd25519, newIdentity } from '../shared/did.js'
 import { ed25519, multibase } from '../shared/crypto.js'
@@ -90,10 +90,13 @@ const readSeed = (p) => { try { return identityFromSeedHex(readFileSync(p, 'utf8
  * room's signing key and a LinkedDomains service for PUBLIC_URL, and its update key is no longer the rehearsal key.
  * The new update key is ROOM_DID_UPDATE_KEY (a public Ed25519 multikey held by the room's people) when set; otherwise
  * the host makes a fresh one and keeps it next to the log (0600), so a later entry can hand it to them.
+ * Pre-rotation: `nextKey` (ROOM_DID_NEXT_KEY, a public Ed25519 multikey made by the room's people, kept apart from every update key)
+ * is committed to the log as a hash (`nextKeyHashes`), so only that key can take the DID over next. Once a commitment is
+ * in the log the host can change only to a committed key; it never holds the recovery key, and the key never leaves them.
  * Signs only with an update key the host holds; when it holds none of the current ones it changes nothing and says so.
  * Returns { grown, versionId?, reason? }. Never throws, never logs a key.
  */
-export async function growRoomDid ({ dataDir, file = '', publicUrl, roomPublicKey, updateKey = '', log = console.log, now = () => new Date() }) {
+export async function growRoomDid ({ dataDir, file = '', publicUrl, roomPublicKey, updateKey = '', nextKey = '', log = console.log, now = () => new Date() }) {
   const path = file || join(dataDir, 'did.jsonl')
   const dir = dirname(path)
   try {
@@ -101,6 +104,12 @@ export async function growRoomDid ({ dataDir, file = '', publicUrl, roomPublicKe
     if (text === null) return { grown: false, reason: 'no log' }
     if (!publicUrl || !roomPublicKey) return { grown: false, reason: 'no PUBLIC_URL or room key' }
     if (updateKey) multikeyToEd25519(updateKey) // refuse anything but an Ed25519 multikey
+    let nextHash = ''
+    if (nextKey) {
+      multikeyToEd25519(nextKey)
+      if (nextKey === updateKey) return { grown: false, reason: 'next key must differ from the update key' }
+      nextHash = await deriveNextKeyHash(nextKey)
+    }
     const entries = text.trim().split('\n').map((l) => JSON.parse(l))
     const current = await resolveDIDFromLog(entries)
     const did = current.didDocument.id
@@ -112,8 +121,10 @@ export async function growRoomDid ({ dataDir, file = '', publicUrl, roomPublicKe
     const have = current.didDocument // as resolved: did:webvh adds its own #files and #whois services, so look for ours
     const docOk = ['verificationMethod', 'authentication', 'assertionMethod'].every((k) => sameJson(have[k], wantDoc[k])) &&
       wantDoc.service.every((s) => (have.service ?? []).some((h) => sameJson(h, s)))
+    const committed = current.didDocumentMetadata.nextKeyHashes ?? []
+    const nextOk = !nextHash || sameJson(committed, [nextHash])
     const keyOk = updateKey ? sameJson(keys, [updateKey]) : !keys.includes(rehearsalKey)
-    if (docOk && keyOk) return { grown: false, reason: 'up to date' }
+    if (docOk && keyOk && nextOk) return { grown: false, reason: 'up to date' }
 
     const held = [join(dir, 'update-key.txt'), join(dir, 'update-key.next.txt')].map(readSeed).find((id) => id && keys.includes(ed25519Multikey(id.publicKey)))
     if (!held) { log('room DID not grown: the host holds none of its update keys'); return { grown: false, reason: 'no update key here' } }
@@ -125,18 +136,22 @@ export async function growRoomDid ({ dataDir, file = '', publicUrl, roomPublicKe
       if (updateKey) nextKeys = [updateKey]
       else { fresh = newIdentity(); nextKeys = [ed25519Multikey(fresh.publicKey)] }
     }
+    if (nextHash && nextKeys.includes(nextKey)) return { grown: false, reason: 'next key must differ from the update key' }
+    if (committed.length) { // once a commitment is in the log, only a committed key may be the update key
+      for (const k of nextKeys) if (!committed.includes(await deriveNextKeyHash(k))) { log('room DID not grown: pre-rotation is on and the update key is not a committed one'); return { grown: false, reason: 'pre-rotation: not a committed key' } }
+    }
     const signer = {
       getVerificationMethodId: () => `did:key:${heldMk}#${heldMk}`,
       async sign ({ document, proof }) { return { proofValue: multibase(ed25519.sign(await prepareDataForSigning(document, proof), held.seed)) } },
     }
     const verifier = { verify: async (sig, msg, pub) => ed25519.verify(sig, msg, pub) }
-    const r = await updateDID({ log: entries, signer, verifier, didDocument: wantDoc, updateKeys: nextKeys, updated: nextVersionTime(entries.at(-1).versionTime, now()) })
+    const r = await updateDID({ log: entries, signer, verifier, didDocument: wantDoc, updateKeys: nextKeys, ...(nextHash && !sameJson(committed, [nextHash]) ? { nextKeyHashes: [nextHash] } : {}), updated: nextVersionTime(entries.at(-1).versionTime, now()) })
     const newText = r.log.map((e) => JSON.stringify(e)).join('\n') + '\n'
     // Re-resolve what we are about to write BEFORE anything touches disk (and so before any key is deleted): the whole chain must
     // verify, the update keys must be exactly what was asked, and the document must be the one wanted. Else change nothing.
     const after = await resolveDIDFromLog(r.log)
     const afterDoc = after.didDocument
-    const afterOk = sameJson(after.didDocumentMetadata.updateKeys ?? [], nextKeys) && ['verificationMethod', 'authentication', 'assertionMethod'].every((k) => sameJson(afterDoc[k], wantDoc[k]))
+    const afterOk = sameJson(after.didDocumentMetadata.updateKeys ?? [], nextKeys) && (!nextHash || sameJson(after.didDocumentMetadata.nextKeyHashes ?? [], [nextHash])) && ['verificationMethod', 'authentication', 'assertionMethod'].every((k) => sameJson(afterDoc[k], wantDoc[k]))
     if (!afterOk) { log('room DID not grown: the new log did not resolve to what was asked'); return { grown: false, reason: 'new log did not verify' } }
     // the new key first (so a crash leaves a key that can still sign), then the log, then the key takes its usual name
     if (fresh) writeFileSync(join(dir, 'update-key.next.txt'), fresh.seedHex + '\n', { mode: 0o600 })
