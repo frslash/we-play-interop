@@ -30,6 +30,11 @@ const MANIFEST_MS = 10 * 60_000
 const MANIFEST_RETRY_MS = 60_000
 const MAX_CRITERIA = 16 // what a page can show a person without a wall of text (the schema sets none)
 const MAX_DISCLOSURE_CHARS = 16_000 // the community's own statement of what its directory shows: kept whole up to a page of text, else left to the community's page
+// How many distinct issuers are remembered per DTG context name, only so the room can say how many it has met. A
+// hostile caller can show passes signed by any number of made-up keys; this keeps that from growing the room's memory
+// without end (a count that reaches it reads "1000 or more"). Only the size is ever shown, never a DID.
+const MAX_ISSUERS = 1_000
+const OLDER_CONTEXT = 'This credential uses an older DTG context address; OpenVTC communities refuse it.'
 const MAX_NAME = 120 // a community's name on the page: a line, not a paragraph
 
 const httpsOnly = (u) => { try { const x = String(u ?? '').trim(); return x && new URL(x).protocol === 'https:' ? new URL(x).href : null } catch { return null } }
@@ -54,6 +59,9 @@ export class Community {
     this.recent = [] // times of recent checks, for the cap
     // counts and reasons only: no DID, no credential, nothing a pass said
     this.counts = { asked: 0, current: 0, notCurrent: {}, refused: {} }
+    // every credential the room checks, by the DTG context address it carries (registry-v1, firstperson-wd01, trustoverip-v1, or unknown); issuers are kept in memory only to count the distinct ones
+    this.contexts = {}
+    this.issuerSets = {}
     // where a person is sent to join: COMMUNITY_JOIN_URL (https) when set, else derived from the community's own DID document
     this.joinUrl = httpsOnly(config.communityJoinUrl ?? process.env.COMMUNITY_JOIN_URL)
     this.manifestSeen = null // { at, value }: the last read of the join requirements (criteria only, nothing about members)
@@ -177,12 +185,17 @@ export class Community {
   /** The answer to a pass: is it a current member's? Every "no" says why. Reads only; changes nothing. */
   async #judge (membership, presenter) {
     const base = { community: this.did, checkedAt: instant(this.now()) }
-    const noo = (problem, reason, extra = {}) => ({ member: false, problem, reason, ...base, ...extra })
+    const noo0 = (problem, reason, extra = {}) => ({ member: false, problem, reason, ...base, ...extra })
     const vc = openCredential(membership)
-    if (!vc) return noo('shape', 'payload.membership: the membership credential (the object, its JSON, or base64url of its JSON)')
+    if (!vc) return noo0('shape', 'payload.membership: the membership credential (the object, its JSON, or base64url of its JSON)')
+    const d = describeDtg(vc)
+    const name = d.context.name ?? 'unknown'
+    this.#count(this.contexts, name)
+    // what the answer says of the address: which one, whether it is the published one, and, for an older one, that OpenVTC refuses it (the room itself does not refuse a pass for that alone)
+    const context = d.context.name ? { name, current: d.context.current, ...(d.context.current ? {} : { note: OLDER_CONTEXT }) } : undefined
+    const noo = (problem, reason, extra = {}) => noo0(problem, reason, { ...(context ? { context } : {}), ...extra })
     const bad = checkDtgCredential(vc)
     if (bad) return noo('shape', bad)
-    const d = describeDtg(vc)
     if (d.kind !== 'membership') return noo('kind', `this is ${an(d.kind === 'other' ? String(d.subtype) : d.kind + ' credential')}; a membership credential is needed here`)
     // who issued it and who it is about are settled before anything is fetched, so only the named community's key and list are ever asked for
     const issuer = issuerOf(vc), subject = vc.credentialSubject.id
@@ -190,6 +203,7 @@ export class Community {
     if (subject !== presenter) return noo('presenter', 'this pass is about someone else: the one showing it must be the one it was issued to')
     const r = await verifyDtgCredential(vc, { keyFor: this.keyFor, now: this.now(), kinds: ['membership'] })
     if (!r.ok) return noo(r.problem, r.reason)
+    if (r.checked && issuer) { const set = (this.issuerSets[name] ??= new Set()); if (set.size < MAX_ISSUERS) set.add(issuer) } // after the signature holds: an unsigned claim of an issuer is not a met issuer
     if (!r.checked) return noo('key', 'the community\'s key could not be read, so its signature was not checked')
     if (!r.claims.validUntil) return noo('dates', 'a pass says when it ends (validUntil); this one does not')
     const st = await this.lists.statusOf(r.claims.status, { issuer: this.did })
@@ -201,7 +215,7 @@ export class Community {
     const notes = [...r.notes]
     if (st.status === 'none') notes.push('it names no revocation list, so it holds until it runs out')
     if (st.lists.some((l) => l.short)) notes.push('the community\'s list is shorter than the 131,072 places the standard asks for, which makes one holder easier to tell from the rest')
-    return { member: true, ...base, subject, validFrom: r.claims.validFrom, ...about, personhood: r.claims.personhood, context: r.context.name, notes }
+    return { member: true, ...base, subject, validFrom: r.claims.validFrom, ...about, personhood: r.claims.personhood, context, notes }
   }
 
   /**
@@ -246,6 +260,7 @@ export class Community {
       answered: s ? { did: s.resolves, profile: Boolean(s.profile?.answers), joinPage: Boolean(s.joinPage?.answers), didQr: Boolean(s.didQr?.answers), statusList: Boolean(s.statusList?.verifies) } : null,
       lookedAt: s?.checkedAt ?? null,
       passes: { asked: this.counts.asked, current: this.counts.current, notCurrent: { ...this.counts.notCurrent }, refused: { ...this.counts.refused } },
+      credentials: { contexts: { ...this.contexts }, issuers: Object.fromEntries(Object.entries(this.issuerSets).map(([k, v]) => [k, v.size])) },
       statusLists: this.lists.summary(),
       join: { manifestReads: this.joinCounts.manifestReads, manifestRefused: { ...this.joinCounts.manifestRefused }, cacheHits: this.joinCounts.cacheHits },
       details: '/api/community',

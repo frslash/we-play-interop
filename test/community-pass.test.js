@@ -113,7 +113,7 @@ describe('the room takes a community\'s membership pass', () => {
     assert.deepEqual(signed, { ok: true, signer: room }, 'the answer is the room\'s own signed statement')
     const p = reply.payload
     assert.equal(p.member, true); assert.equal(p.community, c.did); assert.equal(p.subject, member.did); assert.equal(p.status, 'good')
-    assert.equal(p.personhood, true); assert.equal(p.context, 'registry-v1'); assert.equal(p.validUntil, credential.validUntil)
+    assert.equal(p.personhood, true); assert.deepEqual(p.context, { name: 'registry-v1', current: true }); assert.equal(p.validUntil, credential.validUntil)
     assert.equal(p.lists[0].purpose, 'revocation'); assert.equal(p.lists[0].cached, false)
     assert.match(p.notes.join(' '), /a proof this room cannot check \(mldsa44-jcs-2024\)/, 'the second proof is named as not checked, not passed off as checked')
     // the same pass as its JSON text and as base64url, the two forms the room host takes
