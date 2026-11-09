@@ -61,12 +61,15 @@ const REPO_FILES = (sha) => [
   ['link', '', '2'],
 ]
 
-let head, hits, sawAuth, mode, override // `override(sha, repo)`: the files the stand-in serves instead of REPO_FILES
+let head, hits, sawAuth, mode, override, compare // `override(sha, repo)`: the files the stand-in serves instead of REPO_FILES
 const fake = createServer((req, res) => {
   hits.push(req.url); if (req.headers.authorization) sawAuth = true
   if (mode === 'down') { res.writeHead(503); return res.end('down') }
   const m = /^\/repos\/([^/]+\/[^/]+)\/commits\/HEAD$/.exec(req.url)
   if (m) { if (m[1] === 'o/private') { res.writeHead(404); return res.end('Not Found') } res.writeHead(200, { 'content-type': 'application/vnd.github.sha' }); return res.end(head) }
+  if (/^\/repos\/[^/]+\/[^/]+\/compare\/[0-9a-f]{40}\.\.\.HEAD(\?|$)/.test(req.url)) { // is the commit on the default branch? `compare` is the answer to give (a string is sent as it is)
+    res.writeHead(200, { 'content-type': 'application/json', 'x-ratelimit-limit': '60', 'x-ratelimit-remaining': '56' }); return res.end(typeof compare === 'string' ? compare : JSON.stringify(compare))
+  }
   const t = /^\/([^/]+)\/([^/]+)\/tar\.gz\/([0-9a-f]{40})$/.exec(req.url)
   if (t && mode === 'redirect') { res.writeHead(302, { location: 'http://127.0.0.1:9/elsewhere.tar.gz' }); return res.end() }
   if (t && t[1] !== 'gone') {
@@ -82,7 +85,7 @@ describe('the projects shelf', () => {
   const shelf = (over = {}) => new Shelf({ dataDir: mkdtempSync(join(dir, 's-')), list: [{ repo: 'o/demo', title: 'Demo', pin: A }, { repo: 'o/pinned', title: 'Pinned', pin: PIN }], hosts: { api: base, code: base }, allowHttp: true, ...over })
   before(async () => { await new Promise((r) => fake.listen(0, '127.0.0.1', r)); base = `http://127.0.0.1:${fake.address().port}`; dir = mkdtempSync(join(tmpdir(), 'wpi-shelf-')) })
   after(() => { fake.close(); rmSync(dir, { recursive: true, force: true }) })
-  const reset = () => { head = A; hits = []; sawAuth = false; mode = 'ok'; override = null }
+  const reset = () => { head = A; hits = []; sawAuth = false; mode = 'ok'; override = null; compare = { status: 'ahead', behind_by: 0, ahead_by: 3 } }
 
   test('the list in code names the projects on the Resources page, and no address anyone typed', () => {
     assert.ok(SHELF.length >= 9)
@@ -313,6 +316,47 @@ describe('the projects shelf', () => {
     await assert.rejects(t.files('o/demo'), (e) => e.status === 502 && /did not say which commit it was cut from.*not confirmed/.test(e.message)); assert.equal(existsSync(join(t.dir, 'o__demo', A)), false)
   })
 
+  test('a pin a member chose: every answer says so, and GitHub is asked once whether the commit is on the default branch', async () => {
+    const entry = { repo: 'team/thing', title: 'Thing', from: 'added to the Resources in the room', pin: A, by: 'did:key:zMember', at: '2026-11-09T10:00:00Z' }
+    const asked = () => hits.filter((u) => u.includes('/compare/')), archives = () => hits.filter((u) => u.includes('/tar.gz/'))
+    // an ancestor of the default branch: fetched, remembered, and every answer carries who chose it
+    reset(); const dataDir = mkdtempSync(join(dir, 'k-')); let now = Date.parse('2026-11-09T12:00:00Z')
+    const s = shelf({ dataDir, now: () => now, list: [{ repo: 'o/demo', pin: A }], named: () => [entry] })
+    const f = await s.files('team/thing')
+    assert.equal(f.pinnedBy, 'did:key:zMember'); assert.match(f.memberChoice, /A member of the room chose this commit; it is not on the room's own list\. Check it is the project's own/)
+    for (const a of [await s.read('team/thing', 'README.md'), await s.search('team/thing', '8100')]) { assert.equal(a.pinnedBy, 'did:key:zMember'); assert.match(a.memberChoice, /member of the room chose/) }
+    const v = s.view().projects.find((p) => p.project === 'team/thing'); assert.equal(v.pinnedBy, 'did:key:zMember'); assert.match(v.memberChoice, /member of the room chose/)
+    assert.equal(asked().length, 1); assert.match(asked()[0], new RegExp(`^/repos/team/thing/compare/${A}\\.\\.\\.HEAD`)); assert.equal(archives().length, 1); assert.equal(sawAuth, false)
+    const line = s.logLines().find((l) => l.kind === 'compare')
+    assert.deepEqual([line.project, line.commit, line.status, line.relation, line.behindBy], ['team/thing', A, 200, 'ahead', 0]); assert.deepEqual(line.github, { 'x-ratelimit-limit': '60', 'x-ratelimit-remaining': '56' }); assert.ok(line.ms >= 0)
+    assert.deepEqual(Object.values(JSON.parse(readFileSync(join(s.dir, 'default-branch.json'), 'utf8'))).map((x) => x.ok), [true]) // the yes is kept
+    assert.equal((await s.files('o/demo')).memberChoice, undefined); assert.equal(s.view().projects.find((p) => p.project === 'o/demo').memberChoice, undefined) // the room's list is not a member's choice…
+    assert.equal(asked().length, 1) // …and is not asked about
+    const own = shelf({ own: 'o/own', list: [] }); await own.files('o/own'); assert.equal(asked().length, 1); assert.equal((await own.files('o/own')).memberChoice, undefined)
+    // a fork's commit (diverged): refused for good, remembered across a restart, and the archive is never asked for
+    for (const bad of [{ status: 'diverged', behind_by: 4 }, { status: 'behind', behind_by: 2 }, { status: 'ahead', behind_by: 1 }]) {
+      reset(); compare = bad; const d2 = mkdtempSync(join(dir, 'k-')), t = shelf({ dataDir: d2, list: [], named: () => [entry] })
+      await assert.rejects(t.files('team/thing'), (e) => e.status === 409 && /this commit \(a{12}\) is not on team\/thing's default branch, so the shelf cannot tell it is the project's own \(it may be from a fork\)/.test(e.message))
+      await assert.rejects(t.files('team/thing'), /not on team\/thing's default branch/)
+      await assert.rejects(shelf({ dataDir: d2, list: [], named: () => [entry] }).files('team/thing'), /not on team\/thing's default branch/) // after a restart
+      assert.equal(asked().length, 1); assert.equal(archives().length, 0); assert.equal(existsSync(join(t.dir, 'team__thing')), false)
+    }
+    // GitHub cannot say: refused for now, asked again after the usual wait, and then it works
+    for (const broken of ['down', 'garbage', 'no-fields']) {
+      reset(); let at = Date.parse('2026-11-09T12:00:00Z'); mode = broken === 'down' ? 'down' : 'ok'; compare = broken === 'garbage' ? 'not json at all' : broken === 'no-fields' ? { status: 'who knows' } : compare
+      const t = shelf({ now: () => at, list: [], named: () => [entry] })
+      await assert.rejects(t.files('team/thing'), (e) => e.status === 502 && /try again later/.test(e.message) && /(GitHub answered 503|could not be read)/.test(e.message)); assert.equal(archives().length, 0)
+      await assert.rejects(t.files('team/thing'), /the shelf asks GitHub again ten minutes after a failure/); assert.equal(hits.length, 1) // not asked again at once
+      assert.equal(existsSync(join(t.dir, 'default-branch.json')), false) // nothing was decided
+      at += 11 * 60 * 1000; mode = 'ok'; compare = { status: 'identical', behind_by: 0 }
+      assert.equal((await t.files('team/thing')).commit, A); assert.equal(asked().length, 2); assert.equal(archives().length, 1)
+    }
+    // the asking counts against the member's own limit
+    reset(); const many = Array.from({ length: SIGNER_FETCHES_PER_HOUR + 1 }, (_, i) => ({ ...entry, repo: `one/r${i}`, at: i })); let t3 = Date.parse('2026-11-09T12:00:00Z'); const g = shelf({ now: () => t3, list: [], named: () => many })
+    for (const e of many.slice(0, SIGNER_FETCHES_PER_HOUR)) { await g.files(e.repo); t3 += 15_000 }
+    await assert.rejects(g.files(many.at(-1).repo), (e) => e.status === 429 && /one member named/.test(e.message)); assert.equal(asked().length, SIGNER_FETCHES_PER_HOUR)
+  })
+
   test('a cap that is passed stops the unpack and discards it: no partial copy, and no second try at that commit', async () => {
     const refuseAt = async (limits, why, files = null) => {
       reset(); override = files; const s = shelf({ limits })
@@ -452,7 +496,7 @@ describe('the shelf in a running room', () => {
   let dir, ctx, base, gh
   const get = async (p) => { const r = await fetch(base + p); return { status: r.status, body: await r.json() } }
   before(async () => {
-    head = A; hits = []; sawAuth = false; mode = 'ok'
+    head = A; hits = []; sawAuth = false; mode = 'ok'; compare = { status: 'ahead', behind_by: 0 }
     await new Promise((r) => fake.listen(0, '127.0.0.1', r)); gh = `http://127.0.0.1:${fake.address().port}`
     dir = mkdtempSync(join(tmpdir(), 'wpi-shelf-app-'))
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, checkEveryMinutes: 0, githubToken: 'ghp_must_never_be_sent', workspaceRepo: 'o/demo', llm: { ...baseConfig.llm, apiKey: '', anthropicKey: '', provider: 'openai' } }

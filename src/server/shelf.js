@@ -12,6 +12,11 @@
 //     whose address names ONE COMMIT, all 40 characters. A branch or a tag is not a pin: such an entry is listed
 //     as waiting for a commit and nothing is fetched for it. A newer signed entry moves a project's pin.
 // A repository that is not on the registry is refused, and nothing is fetched for it.
+// A pin a MEMBER chose is the one place the shelf could be fooled: GitHub serves a fork's commits under the parent's
+// name, so a commit from someone's fork would read as the project's own. So (1) every answer for such a project says
+// that a member chose the commit, and who; and (2) before it is first fetched, GitHub is asked once, anonymously,
+// whether that commit is on the repository's default branch; if it is not (or GitHub cannot say), nothing is fetched.
+// The answer, yes or no, is kept on disk. The list in code and the room's own repository are not asked.
 //
 // What the room fetches for it, and what it never does:
 // - only from two of GitHub's own hosts, each address built here from the checked owner and name, never from text
@@ -103,6 +108,9 @@ const MAX_CHARS = 120_000 // one answer to an agent, as for the room's own code
 const LIST_MAX = 400 // a listing longer than this comes back as folders with counts: ask again with `under`
 const SEARCH_MS = 4000 // a search yields the server's attention; past this it answers with what it has
 const SEARCH_WAITING = 8
+const MAX_JUDGED = 2000 // answers kept about which commits are on a default branch (a few hundred KB): the oldest go first, and are asked again if their project is read again
+const MAX_ANSWER_BYTES = 8 * 1024 * 1024 // GitHub's compare answer lists files and patches; only two fields are read, so more than this is not read at all
+const MEMBER_CHOICE = 'A member of the room chose this commit; it is not on the room\'s own list. Check it is the project\'s own before relying on it.'
 const LOG_KEEP = 500
 const USE_DAYS = 30 // reads and searches are kept per day this long, and as running totals for good
 const BINARY = new Set(['png', 'jpg', 'jpeg', 'gif', 'ico', 'webp', 'bmp', 'icns', 'woff', 'woff2', 'ttf', 'otf', 'eot', 'pdf', 'wasm', 'zip', 'gz', 'tgz', 'bz2', 'xz', '7z', 'jar', 'keystore', 'der', 'p12', 'pfx', 'bin', 'exe', 'dll', 'so', 'dylib', 'a', 'o', 'class', 'mp3', 'mp4', 'mov', 'webm', 'ogg', 'wav', 'sqlite', 'db'])
@@ -282,6 +290,8 @@ export class Shelf {
     this.waitingForACommit = [] // named in the room without a commit: listed, never fetched
     this.notTaken = [] // named past MAX_NAMED_PROJECTS: listed, never fetched
     this.searching = Promise.resolve(); this.waiting = 0
+    this.judged = new Map() // `<id>@<commit>` -> { ok, at }: is that commit on the repository's default branch (member-named pins only)
+    try { for (const [k, v] of Object.entries(JSON.parse(readFileSync(join(this.dir, 'default-branch.json'), 'utf8')))) if (typeof v?.ok === 'boolean') this.judged.set(k, v) } catch {}
     this.used = new Map(); this.gone = { projects: 0, reads: 0, searches: 0, bytes: 0 }; this.usedSavedAt = 0; this.usedDirty = false
     try { const u = JSON.parse(readFileSync(join(this.dir, 'use.json'), 'utf8')); this.used = new Map(Object.entries(u.projects ?? {})); Object.assign(this.gone, u.gone ?? {}) } catch {}
   }
@@ -306,7 +316,7 @@ export class Shelf {
         if (seen.size >= MAX_NAMED_PROJECTS) { if (!left.has(idOf(p.repo))) left.set(idOf(p.repo), { project: p.repo, from: p.from ?? 'named in the room' }); continue }
         seen.add(idOf(p.repo))
       }
-      if (SHA_RE.test(p.pin ?? '')) add(p.repo, p.title, { pin: p.pin, pinnedBy: 'the signed entry that named it', from: p.from ?? 'named in the room', by: p.by ?? null })
+      if (SHA_RE.test(p.pin ?? '')) add(p.repo, p.title, { pin: p.pin, pinnedBy: 'the signed entry that named it', from: p.from ?? 'named in the room', by: p.by ?? null, member: true })
       else if (!waiting.has(idOf(p.repo))) waiting.set(idOf(p.repo), { project: p.repo, from: p.from ?? 'named in the room' })
     }
     this.waitingForACommit = [...waiting.values()].filter((w) => !out.has(idOf(w.project)))
@@ -332,6 +342,9 @@ export class Shelf {
     throw fail(`"${String(project).slice(0, 120)}" is not on the shelf, and nothing is fetched for it. The projects tool lists what is; a public github.com repository joins when someone adds it to the Resources at one commit: https://github.com/<owner>/<repository>/tree/<all 40 characters of the commit>`, 404)
   }
 
+  /** What every answer for a member-named project adds: who named the commit, and that a member chose it. Nothing for the room's list or its own repository. */
+  #chosen (p) { return p.member ? { pinnedBy: p.by ?? 'a member of the room', memberChoice: MEMBER_CHOICE } : {} }
+
   #repoDir (id) { return join(this.dir, dirOf(id)) }
   #indexOf (id) { // the copy on disk, newest first; null when there is none
     try {
@@ -354,7 +367,7 @@ export class Shelf {
         const ix = this.#indexOf(p.id), u = this.used.get(p.id), e = this.errors.get(p.id)
         return {
           project: p.repo, title: p.title, url: `https://github.com/${p.repo}`, from: p.from,
-          commit: p.pin ?? ix?.commit ?? null, ...(p.pin ? { pinned: true, why: p.pinnedBy } : { follows: 'its default branch (the room\'s own code)' }),
+          commit: p.pin ?? ix?.commit ?? null, ...this.#chosen(p), ...(p.pin ? { pinned: true, why: p.pinnedBy } : { follows: 'its default branch (the room\'s own code)' }),
           copy: ix ? { commit: ix.commit, commitConfirmed: ix.commitConfirmed === true, fetchedAt: ix.fetchedAt, files: ix.files.length, bytes: ix.bytes, licence: ix.licence ?? null, licenceFile: ix.licenceFile ?? null, leftOut: ix.skipped } : null,
           reads: u?.reads ?? 0, searches: u?.searches ?? 0, lastReadAt: u?.lastReadAt ?? null, lastError: e ? { at: e.at, why: e.why } : null,
         }
@@ -435,7 +448,10 @@ export class Shelf {
     const t0 = this.now(), out = { kind: 'copy', project: p.repo, commit, at: new Date(t0).toISOString(), status: null, bytes: 0, files: 0, leftOut: 0, ms: 0, error: null }
     const home = this.#repoDir(p.id), tmp = join(home, `${commit}.tmp`), dest = join(home, commit)
     try {
-      this.#allow(p, t0)
+      const key = `${p.id}@${commit}`
+      if (p.member && this.judged.get(key)?.ok === false) throw this.#notOnDefault(p, commit) // asked before and answered no: not asked again, and no GitHub call is made
+      this.#allow(p, t0) // one place in the limits for the whole fetch (the question about the default branch and the archive)
+      if (p.member && !this.judged.get(key)?.ok) await this.#askDefaultBranch(p, commit, key)
       rmSync(tmp, { recursive: true, force: true }); mkdirSync(join(tmp, 'files'), { recursive: true })
       const lim = this.limits, ac = new AbortController()
       const res = await this.fetch(this.#url(this.hosts.code, `/${p.repo}/tar.gz/${commit}`), { headers: { 'user-agent': 'we-play-interop (projects shelf)' }, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), ac.signal]) }) // anonymous: public code only
@@ -510,6 +526,39 @@ export class Shelf {
     } finally { out.ms = this.now() - t0; this.#log(out) }
   }
 
+  #notOnDefault (p, commit) { return fail(`this commit (${commit.slice(0, 12)}) is not on ${p.repo}'s default branch, so the shelf cannot tell it is the project's own (it may be from a fork); nothing was fetched. A member can name another commit of it in the Resources`, 409, { final: true }) }
+  #judge (key, ok) {
+    this.judged.delete(key); this.judged.set(key, { ok, at: new Date(this.now()).toISOString() })
+    while (this.judged.size > MAX_JUDGED) this.judged.delete(this.judged.keys().next().value)
+    try { const f = join(this.dir, 'default-branch.json'); writeFileSync(f + '.tmp', JSON.stringify(Object.fromEntries(this.judged))); renameSync(f + '.tmp', f) } catch (e) { console.error('shelf judged:', e.message) }
+  }
+  /**
+   * Is a member-named commit on the repository's default branch? GitHub is asked once, with no account (`compare/<commit>...HEAD`):
+   * the commit is an ancestor of the default branch only when the relation is identical or ahead and the branch is behind
+   * it by nothing. A fork's commit comes back diverged or behind. No: refused for good at that commit. GitHub unable to
+   * say (down, slow, limited, an answer that cannot be read): refused for now, and asked again after RETRY_FAILED_MS.
+   */
+  async #askDefaultBranch (p, commit, key) {
+    const t0 = this.now(), out = { kind: 'compare', project: p.repo, commit, at: new Date(t0).toISOString(), status: null, relation: null, behindBy: null, ms: 0, error: null }
+    try {
+      const res = await this.fetch(this.#url(this.hosts.api, `/repos/${p.repo}/compare/${commit}...HEAD?per_page=1`), { headers: { accept: 'application/vnd.github+json', 'user-agent': 'we-play-interop (projects shelf)' }, redirect: 'error', signal: AbortSignal.timeout(20_000) })
+      out.status = res.status; out.github = githubSaid(res)
+      if (!res.ok) { await res.body?.cancel(); throw fail(res.status === 403 || res.status === 429 ? 'GitHub is asking the room to slow down, so the shelf could not ask whether this commit is on the default branch; try again later' : `GitHub answered ${res.status} when the shelf asked whether this commit is on ${p.repo}'s default branch; try again later`, 502) }
+      let text = '', n = 0; const dec = new TextDecoder()
+      for await (const c of res.body) { n += c.length; if (n > MAX_ANSWER_BYTES) throw fail('GitHub\'s answer about this commit was too large to read; try again later', 502); text += dec.decode(c, { stream: true }) }
+      let j = null; try { j = JSON.parse(text) } catch {}
+      const rel = j?.status, behind = j?.behind_by
+      out.relation = typeof rel === 'string' ? rel.slice(0, 20) : null; out.behindBy = Number.isInteger(behind) ? behind : null
+      if (!['identical', 'ahead', 'behind', 'diverged'].includes(rel) || !Number.isInteger(behind) || behind < 0) throw fail('GitHub\'s answer about whether this commit is on the default branch could not be read; try again later', 502)
+      const ok = (rel === 'identical' || rel === 'ahead') && behind === 0
+      this.#judge(key, ok)
+      if (!ok) throw this.#notOnDefault(p, commit)
+    } catch (e) {
+      out.error = e.name === 'TimeoutError' ? 'GitHub took too long to answer' : String(e.cause?.message ?? e.message).slice(0, 200)
+      throw e.status ? e : fail(`could not ask GitHub whether this commit is on ${p.repo}'s default branch: ${out.error}; try again later`, 502)
+    } finally { out.ms = this.now() - t0; this.#log(out) }
+  }
+
   /** Past the shelf's size, the copies read longest ago go first (never the one just fetched). */
   #makeRoom (keep) {
     const held = this.all().map((p) => ({ p, ix: this.#indexOf(p.id) })).filter((x) => x.ix && x.p.id !== keep)
@@ -573,7 +622,7 @@ export class Shelf {
     const { p, ix } = await this.copy(project)
     this.#use(p.id, 'reads')
     const list = u ? ix.files.filter(([f]) => f === u || f.startsWith(u + '/')) : ix.files
-    const top = { note: p.own ? ROOM_TEXT : OUTSIDE, project: p.repo, commit: ix.commit, ...(p.pin ? { pinned: true } : {}), ...(u ? { under: u } : {}), count: list.length }
+    const top = { note: p.own ? ROOM_TEXT : OUTSIDE, project: p.repo, commit: ix.commit, ...(p.pin ? { pinned: true } : {}), ...this.#chosen(p), ...(u ? { under: u } : {}), count: list.length }
     if (u && !list.length) throw fail(`${p.repo} has no files under "${u}" at ${ix.commit.slice(0, 12)}`, 404)
     if (list.length <= LIST_MAX) return { ...top, files: list.map(([path, bytes]) => ({ path, bytes })), ...(ix.skipped.count ? { leftOut: `${ix.skipped.count} files are not on the shelf (not text, over ${MAX_FILE_BYTES / 1024 / 1024} MB, or dependencies)` } : {}) }
     const depth = u ? u.split('/').length : 0, folders = new Map(), here = []
@@ -594,7 +643,7 @@ export class Shelf {
     const a = Math.max(1, Number(from) || 1), b = Math.min(lines.length, Number(to) || lines.length)
     const part = lines.slice(a - 1, b).join('\n'), text = part.length > MAX_CHARS ? part.slice(0, MAX_CHARS) + '\n… (cut: ask for fewer lines)' : part
     this.#use(p.id, 'reads', Buffer.byteLength(text))
-    return { note: p.own ? ROOM_TEXT : OUTSIDE, project: p.repo, commit: ix.commit, path: rel, lines: lines.length, from: a, to: b, text }
+    return { note: p.own ? ROOM_TEXT : OUTSIDE, project: p.repo, commit: ix.commit, ...this.#chosen(p), path: rel, lines: lines.length, from: a, to: b, text }
   }
 
   /** Lines that contain `q` exactly as written (not a pattern; letter case ignored unless `exact`), with their file and line number. */
@@ -625,7 +674,7 @@ export class Shelf {
         if (scanned % 40 === 0) await new Promise((r) => setImmediate(r))
       }
       this.#use(p.id, 'searches')
-      return { note: p.own ? ROOM_TEXT : OUTSIDE, project: p.repo, commit: ix.commit, q: needle, ...(u ? { under: u } : {}), filesLookedAt: scanned, of: list.length, found: hits.length, hits, ...(more ? { more } : {}) }
+      return { note: p.own ? ROOM_TEXT : OUTSIDE, project: p.repo, commit: ix.commit, ...this.#chosen(p), q: needle, ...(u ? { under: u } : {}), filesLookedAt: scanned, of: list.length, found: hits.length, hits, ...(more ? { more } : {}) }
     })
     this.searching = run.catch(() => {}).finally(() => { this.waiting-- })
     return run
