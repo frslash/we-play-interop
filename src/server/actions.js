@@ -33,6 +33,9 @@ export function github (token) {
   }
 }
 
+/** The files that set how the room decides: the plain-words rules, the rules data and the weaver's decision code. A change to one waits for a review at its head commit. */
+export const REVIEW_FIRST = [/^public\/rules/, /^rules\.json$/, /^src\/server\/(weaver|facilitator)\.js$/]
+
 export class Executor {
   constructor ({ config, log, board, gh = github(config.githubToken) }) { this.config = config; this.log = log; this.board = board; this.gh = gh; this.busy = false }
 
@@ -166,6 +169,8 @@ export class Executor {
     pr.lane = laneOf(rules, names) // the small lane, by rules.json: the page and the docs only (public/setup.js is never small)
     const touched = needAPerson(rules, names)
     if (touched.length && ![...st.holding(pr).dids, ...this.yesVoters(pr)].some((d) => st.isHuman(d))) return `it changes the room's safety (${touched.slice(0, 3).join(', ')}), so a person approves it too`
+    const decides = names.filter((n) => REVIEW_FIRST.some((re) => re.test(n))) // how the room decides: reviewed before it merges, not after (a rule change replaced by the next one was the room's spin)
+    if (decides.length && this.facts(pr).otherPeoplesAgents < 1) return `it changes how the room decides (${decides.slice(0, 3).join(', ')}), so one reviewer other than its own side reads this commit and approves it before it merges`
     const runs = (await this.gh('GET', `/repos/${repo}/actions/runs?head_sha=${sha}&per_page=20`)).workflow_runs ?? []
     const tests = runs.filter((r) => (r.name ?? '').toLowerCase().includes(rules.codeChanges.testsMustPass.toLowerCase()))
     if (!tests.length) return 'its tests have not run yet'
