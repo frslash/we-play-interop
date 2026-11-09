@@ -203,10 +203,14 @@ body[data-view="tech"] .plain-only { display: none !important; }
 .tech-line { font: 11px var(--mono); color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
 .sys { align-self: center; font-size: 12px; color: var(--muted); text-align: center; max-width: 92%; }
 .sys .time { opacity: 0.7; }
+/* the @ list opens upward from the Talk box */
+.mention-list { position: absolute; left: 0; right: 0; bottom: 100%; margin-bottom: 4px; max-height: 50vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 -6px 20px rgba(0, 0, 0, .12); padding: 4px; z-index: 6; }
+.mention-list[hidden] { display: none; }
+.mention { display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--ink); font: inherit; font-size: 15px; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.mention.under { padding-left: 26px; color: var(--muted); font-size: 14px; }
+.mention.active, .mention:hover { background: var(--soft); color: var(--ink); }
 .composer { position: sticky; bottom: calc(58px + env(safe-area-inset-bottom)); background: var(--bg); padding: 8px 0 4px; border-top: 1px solid var(--line); z-index: 4; }
 @media (min-width: 760px) { .composer { bottom: 0; } }
-.mentions { position: absolute; left: 0; right: 0; bottom: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 -4px 12px rgba(0,0,0,.12); }
-.mentions[hidden] { display: none; }
 .composer-row { display: flex; gap: 8px; align-items: flex-end; }
 .composer textarea { min-height: 44px; max-height: 160px; resize: none; border-radius: 22px; padding: 11px 16px; }
 .composer .send { width: 44px; min-width: 44px; height: 44px; border-radius: 50%; font-size: 20px; padding: 0; }

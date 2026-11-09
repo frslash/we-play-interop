@@ -8,6 +8,7 @@ import { AGENT_SCOPES, DEFAULT_WAKE_ON, MODES, NAME_OF, TYPES, WAKE_ON, signedDo
 import { createGraph } from '/graph.js'
 import { neverKey, phrases, secretIn, textsOf } from '/shared/guard.js'
 import { splitLayers } from '/shared/layers.js'
+import { mentionOptions } from '/shared/mentions.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
 import { KINDS, RESOURCES } from '/resources.js'
 
@@ -488,22 +489,30 @@ function renderTalk (scrollDown) {
     talk.toggle = h('div', { class: 'seg small' })
     talk.input = keep(h('textarea', { rows: 1, maxlength: 2000, placeholder: 'Say something…' }), 'chat.text')
     talk.input.addEventListener('input', autoGrow)
-    // @mentions: type @ and a few letters to pick a person or agent; the room wakes whoever is named
-    talk.mentions = h('div', { class: 'mentions', role: 'listbox', 'aria-label': 'People and agents to name', hidden: true })
-    const mentionFor = () => { const m = /(^|\s)@([^@\n]{0,30})$/.exec(talk.input.value.slice(0, talk.input.selectionStart)); return m ? m[2].toLowerCase() : null }
-    const pickMention = (name) => { const end = talk.input.selectionStart, before = talk.input.value.slice(0, end).replace(/@([^@\n]{0,30})$/, '@' + name + ' '); talk.input.value = before + talk.input.value.slice(end); talk.input.focus(); talk.input.setSelectionRange(before.length, before.length); talk.input.dispatchEvent(new Event('input')) }
-    // the drop-up list: people first, then agents under their person ("Faolan's agent, Emrys"), up to 8
-    const mentionOptions = (q) => {
-      const live = (S?.people ?? []).filter((p) => p.name && !isCheck(p.did) && !p.removed), byDid = new Map(live.map((p) => [p.did, p]))
-      const people = live.filter((p) => p.kind !== 'agent'), agents = live.filter((p) => p.kind === 'agent')
-      const owner = (a) => byDid.get(a.principal)?.name ?? ''
-      const starts = (x) => x.toLowerCase().startsWith(q)
-      const out = people.filter((p) => starts(p.name)).map((p) => ({ name: p.name, label: '@' + p.name }))
-      const rank = (a) => { const i = people.findIndex((p) => p.did === a.principal); return i < 0 ? people.length : i }
-      for (const a of agents.filter((a) => starts(a.name) || (owner(a) && starts(owner(a)))).sort((a, b) => rank(a) - rank(b))) out.push({ name: a.name, label: owner(a) ? `${owner(a)}’s agent, ${a.name}` : `Agent ${a.name}` })
-      return out.slice(0, 8)
+    // @mentions: type @ and a few letters, and a small list opens above the box: people first, each with their
+    // agents under them, so "@F" finds a person and their agent. Tap a row, or use the arrows and Enter.
+    // The room wakes whoever a line names.
+    talk.mentions = h('div', { class: 'mention-list', role: 'listbox', id: 'mention-list', 'aria-label': 'People and agents to name', hidden: true })
+    talk.mention = { rows: [], at: 0 }
+    const mentionFor = () => { const m = /(^|\s)@([^@\n]{0,30})$/.exec(talk.input.value.slice(0, talk.input.selectionStart)); return m ? m[2] : null }
+    const closeMentions = () => { talk.mentions.hidden = true; talk.mention.rows = []; talk.input.removeAttribute('aria-activedescendant') }
+    const pickMention = (name) => { const end = talk.input.selectionStart, before = talk.input.value.slice(0, end).replace(/@([^@\n]{0,30})$/, '@' + name + ' '); talk.input.value = before + talk.input.value.slice(end); closeMentions(); talk.input.focus(); talk.input.setSelectionRange(before.length, before.length); talk.input.dispatchEvent(new Event('change')); autoGrow() } // change keeps the draft, without reopening the list
+    const drawMentions = () => {
+      const { rows, at } = talk.mention
+      fill(talk.mentions, rows.map((r, i) => h('button', { type: 'button', role: 'option', id: `mention-${i}`, class: `mention${r.under ? ' under' : ''}${i === at ? ' active' : ''}`, 'aria-selected': String(i === at), onmousedown: (ev) => ev.preventDefault(), onclick: () => pickMention(r.name) }, r.label)))
+      talk.mentions.hidden = !rows.length
+      if (rows.length) talk.input.setAttribute('aria-activedescendant', `mention-${at}`); else talk.input.removeAttribute('aria-activedescendant')
     }
-    talk.input.addEventListener('input', () => { const q = mentionFor(), opts = q == null ? [] : mentionOptions(q); talk.mentions.hidden = !opts.length; fill(talk.mentions, opts.map((o) => h('button', { class: 'btn tiny', type: 'button', role: 'option', onclick: () => pickMention(o.name) }, o.label))) })
+    talk.input.setAttribute('aria-controls', 'mention-list')
+    talk.input.addEventListener('input', () => { const q = mentionFor(); talk.mention = { rows: q == null ? [] : mentionOptions(S?.people, q, { skip: isCheck }), at: 0 }; drawMentions() })
+    talk.input.addEventListener('blur', () => setTimeout(closeMentions, 150))
+    talk.input.addEventListener('keydown', (ev) => { // while the list is open, the arrows move in it and Enter or Tab picks
+      const m = talk.mention
+      if (talk.mentions.hidden || !m.rows.length) return
+      if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); m.at = (m.at + (ev.key === 'ArrowDown' ? 1 : m.rows.length - 1)) % m.rows.length; drawMentions() }
+      else if (ev.key === 'Enter' || ev.key === 'Tab') { ev.preventDefault(); ev.stopImmediatePropagation(); pickMention(m.rows[m.at].name) }
+      else if (ev.key === 'Escape') { ev.preventDefault(); closeMentions() }
+    })
     talk.input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && matchMedia('(min-width: 760px)').matches) { ev.preventDefault(); sendChat() } })
     talk.picker = h('input', { type: 'file', accept: 'image/*,.pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv', multiple: true, hidden: true, onchange: (ev) => addPhotos([...ev.target.files]).finally(() => { ev.target.value = '' }) })
     talk.tray = h('div', { class: 'photo-tray', hidden: true })
