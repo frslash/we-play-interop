@@ -160,6 +160,14 @@ async function refresh () {
   render()
   if (document.body.dataset.tab === 'talk') refreshNotes().catch(() => {}) // at most every 10 seconds
 }
+const FEED_KEEP = 150 // the live window Talk keeps; older lines load as someone scrolls up (loadOlder)
+/** Keep the live window bounded. Lines it lets go join the history someone is reading, so their scroll-back has no gap. */
+function trimFeed () {
+  if (feed.length <= FEED_KEEP) return
+  const out = feed.slice(FEED_KEEP)
+  feed = feed.slice(0, FEED_KEEP)
+  if (talk.older?.length) for (const e of out) if (!talk.older.some((x) => x.hash === e.hash)) talk.older.push(e)
+}
 async function loadFeed () {
   const head = S?.head?.seq ?? 0
   const r = await api(`/api/log?after=${Math.max(-1, head - 80)}&limit=100`)
@@ -171,7 +179,7 @@ async function catchUp () {
   const r = await api(`/api/log?after=${last}&limit=100`)
   if (!r.ok || !r.body.entries.length) return
   for (const e of r.body.entries) if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); toWeave.push(e) }
-  feed = feed.slice(0, 150)
+  trimFeed()
   await refresh(); weaveQueued()
 }
 // If the live stream stays silent (some tunnels and proxies hold it back), ask every few seconds instead.
@@ -191,7 +199,7 @@ function live () {
     streamHeard = true
     const e = JSON.parse(ev.data)
     if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); toWeave.push(e); notifyIfForMe(e) }
-    feed = feed.slice(0, 150)
+    trimFeed()
     clearTimeout(pending); pending = setTimeout(async () => { await refresh(); weaveQueued() }, 250)
   })
 }
@@ -548,11 +556,37 @@ function holdingChat () {
   return Boolean(s && !s.isCollapsed && s.rangeCount && talk.list.contains(s.getRangeAt(0).commonAncestorContainer))
 }
 function catchUpChat () { if (talk.deferred && !holdingChat()) renderTalk() }
-function renderTalk (scrollDown) {
+const OLDER_PAGE = 200 // lines of the record per request when scrolling back (most are board bookkeeping, not chat)
+/**
+ * Scrolling back through Talk: the next older stretch of the record, until there are new lines to read or the room's
+ * first line is reached. The reader's place stays put while lines load above it.
+ */
+async function loadOlder () {
+  if (talk.loadingOlder || talk.olderDone) return
+  talk.loadingOlder = true
+  try {
+    const visible = () => talk.older.filter((e) => !checkEntry(e) && chatItem(e)).length
+    const had = visible()
+    for (let page = 0; page < 5 && visible() - had < 20 && !talk.olderDone; page++) { // a few requests at most per scroll
+      const oldest = Math.min(...[...feed, ...talk.older].map((e) => e.seq))
+      if (!Number.isFinite(oldest) || oldest <= 0) { talk.olderDone = true; break }
+      const r = await api(`/api/log?after=${Math.max(-1, oldest - OLDER_PAGE - 1)}&limit=${OLDER_PAGE}`)
+      if (!r.ok) break
+      const got = r.body.entries.filter((e) => e.seq < oldest && !talk.older.some((x) => x.hash === e.hash)).reverse()
+      talk.older.push(...got)
+      if (!got.length || got.at(-1).seq <= 0) talk.olderDone = true
+    }
+    const fromBottom = talk.list.scrollHeight - talk.list.scrollTop
+    renderTalk(false, { holdAt: fromBottom })
+  } finally { talk.loadingOlder = false }
+}
+function renderTalk (scrollDown, { holdAt = null } = {}) {
   const root = $('#tab-talk')
   if (!talk.list) {
     talk.goals = h('div', { class: 'goals-strip' })
     talk.list = h('div', { class: 'chat', 'aria-live': 'polite' })
+    talk.older = []; talk.olderDone = false
+    talk.list.addEventListener('scroll', () => { if (talk.list.scrollTop < 300 && talk.scrolled) loadOlder().catch(() => {}) }, { passive: true })
     talk.list.addEventListener('pointerdown', (ev) => { if (!ev.target.closest('button,a')) talk.dragging = true })
     document.addEventListener('pointerup', () => { if (talk.dragging) { talk.dragging = false; setTimeout(catchUpChat, 0) } })
     document.addEventListener('selectionchange', catchUpChat)
@@ -616,13 +650,17 @@ function renderTalk (scrollDown) {
   if (talk.deferredScroll) { scrollDown = true; talk.deferredScroll = false }
   talk.deferred = false
   const nearBottom = talk.list.scrollHeight - talk.list.scrollTop - talk.list.clientHeight < 80
-  const shown = feed.slice(0, 150).reverse(), oldest = shown[0]?.timestamp ?? ''
+  if (nearBottom && holdAt == null && talk.older.length > 2 * OLDER_PAGE && !talk.loadingOlder) { talk.older.sort((a, b) => b.seq - a.seq); talk.older = talk.older.slice(0, 2 * OLDER_PAGE); talk.olderDone = false } // back at the newest: what was read further back is let go, and reloads if they scroll up again
+  const seen = new Set(), shown = [...[...talk.older].reverse(), ...feed.slice(0, FEED_KEEP).reverse()].filter((e) => !seen.has(e.hash) && seen.add(e.hash)).sort((a, b) => a.seq - b.seq), oldest = shown[0]?.timestamp ?? ''
   const rows = shown.filter((e) => !checkEntry(e)).map((e) => ({ at: e.timestamp, el: chatItem(e) })).filter((x) => x.el)
   for (const n of talk.notes) if (n.at >= oldest) rows.push({ at: n.at, el: noteBubble(n) })
   for (const d of talk.drafts ?? []) rows.push({ at: d.at, el: draftBubble(d) })
   rows.sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : 0))
-  fill(talk.list, rows.length ? rows.map((x) => x.el) : h('p', { class: 'empty' }, 'Quiet so far. Say hello.'))
-  if (scrollDown || nearBottom || !talk.scrolled) { talk.list.scrollTop = talk.list.scrollHeight; talk.scrolled = true }
+  const top = talk.older.length || talk.loadingOlder ? h('p', { class: 'sys' }, talk.olderDone ? 'The start of the room.' : 'Scroll up for earlier lines.') : null
+  fill(talk.list, rows.length ? [top, ...rows.map((x) => x.el)].filter(Boolean) : h('p', { class: 'empty' }, 'Quiet so far. Say hello.'))
+  if (holdAt != null) talk.list.scrollTop = talk.list.scrollHeight - holdAt // lines loaded above: the reader's place stays put
+  else if (scrollDown || nearBottom || !talk.scrolled) { talk.list.scrollTop = talk.list.scrollHeight; talk.scrolled = true }
+  if (!talk.olderDone && !talk.loadingOlder && talk.list.clientHeight > 0 && talk.list.scrollHeight <= talk.list.clientHeight + 300) setTimeout(() => loadOlder().catch(() => {}), 0) // too few lines to scroll: bring in earlier ones
 }
 
 // ---------- Decide: what the room is deciding, next door to the chat ----------
