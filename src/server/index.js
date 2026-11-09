@@ -33,7 +33,7 @@ import { Sources } from './sources.js'
 import { Cursors } from './cursors.js'
 import { AGREED } from './rules.js'
 import { ActivityPub } from './activitypub.js'
-import { CODE_RE, Visits, interaction } from './visits.js'
+import { CODE_RE, Visits, interaction, joinUrl } from './visits.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { createResolver } from './resolver.js'
@@ -208,7 +208,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (path.startsWith('/api/participants/')) { const p = views.participant(ctx, decodeURIComponent(path.slice(18))); return p ? send(res, 200, p) : send(res, 404, { error: 'not in the workspace yet' }) }
     if (path === '/api/qr.svg') {
       const t = String(q.text ?? '')
-      if (!t || t.length > 600) return send(res, 400, 'text: 1 to 600 characters')
+      if (!t || t.length > 1200) return send(res, 400, 'text: 1 to 1200 characters') // room enough for a join link with its invitation in _oob
       return send(res, 200, await QRCode.toString(t, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' }), { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=3600' })
     }
     if (path === '/api/visit') { // a join link for this visit (POST), or how the links have been used (GET)
@@ -216,7 +216,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' })
       const v = ctx.visits.make(ipOf(req))
       if (!v) return send(res, 429, { error: 'too many join links from this address; try again in a minute' }, { 'retry-after': '60' })
-      return send(res, 201, { url: `${baseOf(req)}/j/${v.code}?iuv=1`, expiresAt: new Date(v.expiresAt).toISOString() }, { 'cache-control': 'no-store' })
+      return send(res, 201, { url: joinUrl({ base: baseOf(req), did: identity.did, name: config.workspaceName, visit: v }), expiresAt: new Date(v.expiresAt).toISOString() }, { 'cache-control': 'no-store' })
     }
     if (path.startsWith('/j/') && (req.method === 'GET' || req.method === 'HEAD')) return openVisit(req, res, path.slice(3))
     if (path === '/api/events') {

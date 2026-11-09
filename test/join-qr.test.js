@@ -64,7 +64,7 @@ describe('join QR over HTTP', () => {
 
   test('the page gets a short link for this visit, with when it runs out', async () => {
     const { url, expiresAt } = await newLink()
-    assert.match(url, /^https:\/\/interop\.example\/j\/[0-9a-hjkmnp-tv-z]{8}\?iuv=1$/)
+    assert.match(url, /^https:\/\/interop\.example\/j\/[0-9a-hjkmnp-tv-z]{8}\?_oob=[A-Za-z0-9_-]+&iuv=1$/)
     const left = Date.parse(expiresAt) - Date.now()
     assert.ok(left > VISIT_MS - 5000 && left <= VISIT_MS, 'about ten minutes')
     const qr = await fetch(`${base}/api/qr.svg?text=${encodeURIComponent(url)}`)

@@ -89,6 +89,14 @@ export const invitation = ({ id, from, name }) => ({ type: OOB_TYPE, id, from, b
 /** The invitation as a URL: the room's page, with the invitation's whitespace-free JSON base64url-encoded in `_oob`. */
 export const oobUrl = (base, inv) => `${base}/?_oob=${Buffer.from(JSON.stringify(inv)).toString('base64url')}`
 
+/** The link the page shows as a QR code: /j/<code> with the visit's invitation in `_oob`, the form a DIDComm
+ * wallet (Keyring) reads straight off a scanned URL. `iuv=1` stays for a VCALM wallet, which asks the link
+ * for JSON instead; a phone camera just opens it into the join flow. */
+export const joinUrl = ({ base, did, name, visit }) => {
+  const inv = invitation({ id: visit.invitation, from: did, name })
+  return `${base}/j/${visit.code}?_oob=${Buffer.from(JSON.stringify(inv)).toString('base64url')}&iuv=1`
+}
+
 /** What a wallet gets for a link: the VCALM interaction answer (`protocols`), plus the room's DID and the invitation itself. */
 export function interaction ({ base, did, name, visit }) {
   const inv = invitation({ id: visit.invitation, from: did, name })
