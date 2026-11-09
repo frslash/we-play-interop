@@ -7,7 +7,8 @@
 //   workspace-change  merge one pull request of this workspace's repo, pinned to the approved commit
 //                     (an approval names the commit it read; a later push voids it until someone approves the new one);
 //                     once merged, it closes the pull requests the proposal names in change.replaces, each with
-//                     the comment "Replaced by #n". It only closes them: it never deletes a branch.
+//                     the comment "Replaced by #n". It only closes them: it never deletes a branch. A change merged
+//                     without votes (the small lane) closes only pull requests opened by the same author as its own.
 // It never edits another project's files. Without GITHUB_TOKEN it prepares the
 // step (a link a person can open) and says so in the log.
 import { EXTERNAL_KINDS, MAX_REPLACES, checkBoardRun } from '../shared/types.js'
@@ -190,7 +191,7 @@ export class Executor {
     // the commit status branch protection can require, so code merges only through this loop
     try { await this.gh('POST', `/repos/${repo}/statuses/${sha}`, { state: 'success', context: 'we-play-interop/approval', description: 'Approved in the workspace log', target_url: this.config.publicUrl ? `${this.config.publicUrl}/api/log/${pr.hash}` : undefined }) } catch (err) { console.warn('approval mark not set:', err.message) } // a token without commit-status rights still merges, unless the branch rules require the mark
     const merged = await this.gh('PUT', `/repos/${repo}/pulls/${number}/merge`, { sha, merge_method: 'squash', commit_title: `${pull.title} (#${number})`, commit_message: this.provenance(pr) })
-    const replaced = await this.closeReplaced(pr)
+    const replaced = await this.closeReplaced(pr, { author: pull.user?.login })
     const said = [replaced.closed.length ? `closed as replaced: ${replaced.closed.map((n) => `#${n}`).join(', ')}` : null, ...replaced.skipped.map((s) => `left #${s.pr} open: ${s.why}`)].filter(Boolean)
     return { status: 'merged', url, detail: `merged as ${merged.sha}${said.length ? `; ${said.join('; ')}` : ''}`.slice(0, 500), sha: merged.sha, ...(replaced.closed.length || replaced.skipped.length ? { replaced } : {}) }
   }
@@ -201,8 +202,10 @@ export class Executor {
    * so nothing closes on one agent's say-so: only what a merged, approved proposal names. It only sets the pull
    * request's state to closed (anyone can reopen it); it never deletes a branch. A pull request already closed or
    * merged is left as it is. One close that fails never undoes the merge; it is reported.
+   * A change merged without votes (the small lane: nobody else agreed to it) closes only pull requests from its
+   * own side, that is, opened by the same GitHub author as the merged one; another person's stays open.
    */
-  async closeReplaced (pr) {
+  async closeReplaced (pr, { author } = {}) {
     const repo = this.config.workspaceRepo, number = pr.change?.pr, out = { closed: [], skipped: [] }
     const named = Array.isArray(pr.change?.replaces) ? [...new Set(pr.change.replaces)].filter((n) => Number.isInteger(n) && n >= 1 && n !== number) : []
     for (const n of named.slice(MAX_REPLACES)) out.skipped.push({ pr: n, why: `one merge closes at most ${MAX_REPLACES}` })
@@ -211,6 +214,7 @@ export class Executor {
         const pull = await this.gh('GET', `/repos/${repo}/pulls/${n}`)
         if (pull.merged_at || pull.merged) { out.skipped.push({ pr: n, why: 'it was already merged' }); continue }
         if (pull.state !== 'open') { out.skipped.push({ pr: n, why: `it is already ${pull.state}` }); continue }
+        if (pr.lane === 'small' && (!author || pull.user?.login !== author)) { out.skipped.push({ pr: n, why: 'this change merged without votes, and that pull request is not from its own side' }); continue }
         await this.gh('POST', `/repos/${repo}/issues/${n}/comments`, { body: `Replaced by #${number}` })
         await this.gh('PATCH', `/repos/${repo}/pulls/${n}`, { state: 'closed' }) // closes only; the branch stays
         out.closed.push(n)
