@@ -747,6 +747,33 @@ function cardPanel (mine) {
         if (await post('card', { goals: g, workingOn: working.value.trim(), lookingFor: looking.value.trim() })) forget('card.goals', 'card.working', 'card.looking')
       } }, 'Save')))
 }
+// ---------- join on your phone: a short link for this visit only, as a QR code ----------
+// The room makes the link (POST /api/visit); it opens once and runs out after ten minutes. A phone camera
+// opens it into this page's join flow; a wallet reads the room's DID and a DIDComm invitation behind it.
+const visit = { url: null, until: 0, asking: null, timer: null, img: null, failed: 0 }
+const visitFresh = () => visit.url && visit.until - (Date.now() + serverOffset) > 30_000
+function askVisit (again) {
+  if ((visitFresh() && !again) || visit.asking || Date.now() - visit.failed < 60_000) return // refused: wait a minute, not every redraw
+  visit.asking = api('/api/visit', { method: 'POST' }).then((r) => {
+    if (!r.ok) { visit.failed = Date.now(); return }
+    visit.url = r.body.url; visit.until = Date.parse(r.body.expiresAt)
+    if (visit.img?.isConnected) visit.img.src = `/api/qr.svg?text=${encodeURIComponent(visit.url)}`
+    clearTimeout(visit.timer) // a fresh code shortly before this one runs out, while the page is still showing it
+    visit.timer = setTimeout(() => { if (visit.img?.isConnected && !joined()) askVisit(true) }, Math.max(5_000, visit.until - (Date.now() + serverOffset) - 30_000))
+  }).catch(() => {}).finally(() => { visit.asking = null })
+}
+function phoneCard () {
+  if (window.matchMedia?.('(hover: none) and (pointer: coarse)').matches) return null // already on a phone: nothing to scan
+  visit.img = h('img', { class: 'qr small', alt: 'QR code: scan it to join on your phone', src: visitFresh() ? `/api/qr.svg?text=${encodeURIComponent(visit.url)}` : null })
+  askVisit()
+  const did = S.workspace
+  return h('div', { class: 'card join-qr' },
+    h('p', { class: 'why' }, 'Scan to join on your phone.'), visit.img,
+    h('div', { class: 'row' }, h('span', { class: 'meta grow' }, 'For this visit only.'), h('button', { class: 'btn tiny', onclick: () => askVisit(true) }, 'New code')),
+    fold('join-did', null, h('summary', null, 'Show the plain DID code'),
+      h('p', { class: 'why' }, 'For a wallet that reads the room’s DID itself. The same for everyone, and it does not run out.'),
+      h('img', { class: 'qr small', src: `/api/qr.svg?text=${encodeURIComponent(did)}`, alt: 'QR code of the room’s DID' }), h('p', null, h('code', null, did))))
+}
 function renderYou () {
   const el = $('#tab-you')
   const origin = S.publicUrl || location.origin // the address others can reach (PUBLIC_URL), not necessarily this one
@@ -767,7 +794,7 @@ function renderYou () {
         h('label', null, 'Name', name),
         h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: join }, 'Join')),
         h('details', null, h('summary', null, 'I already have a key'), h('label', null, 'Your key', seedIn), h('button', { class: 'btn', onclick: () => { try { me = identityFromSeedHex(seedIn.value); store.set('wpi.seed', me.seedHex); toast('Key loaded.'); refresh() } catch (err) { toast(err.message) } } }, 'Use this key'))),
-      invite)
+      phoneCard())
   }
   const mine = person(me.did)
   const myAgents = S.people.filter((p) => p.kind === 'agent' && p.principal === me.did && !p.removed)

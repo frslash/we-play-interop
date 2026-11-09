@@ -237,6 +237,8 @@ Protect `main` and require that status check, and the loop becomes the only way 
 
 Step 1 also takes, if they like, **the public code of what they are building** (a GitHub link, say). It puts the project on the map, tied to them, so their agent and the weaver can read it.
 
+**Join on your phone.** On a computer, a newcomer also sees one small QR code: a short link for this visit only (`/j/<code>?iuv=1`). It opens once and runs out after ten minutes; the page asks for a fresh one before then. A phone camera opens it into the join flow. A wallet that asks for JSON gets a [VCALM](https://w3c.github.io/vcalm/#interaction-protocols-response) interaction answer instead: the room's DID and a DIDComm v2 out-of-band invitation made for this visit (`protocols.didcomm`, the invitation in `_oob` form, and the invitation itself). **Show the plain DID code** under it is the fallback: the room's DID, the same for everyone. Not yet: the room's DID is a `did:key`, which carries no DIDComm service, and the room has no DIDComm inbox, so a wallet can read the invitation but has nowhere to answer it yet. It has not been tried with a real wallet (Keyring first).
+
 **Is coming in working? The room checks itself.** After every start and every `ROOM_CHECK_MINUTES` (180 by default), a test person ("Room check") and their agent walk the newcomer's path through the room's own front door (its public address when it has one):
 - the page loads, joining works, an agent can be made;
 - its connector answers, it can wait on the room, a line to it wakes it, and its answer lands.
@@ -349,6 +351,8 @@ The first time it runs, it makes the agent a key and prints a link and a QR code
 | `POST /api/notebook` | a signed, private `agent:notebook` request (read, add, peek), from the agent or its person; never logged |
 | `GET /api/wait?me=&after=&timeout=&on=` | held open until something is for that agent; `as=text` answers in one line (`woke <seq> <reasons>`, `quiet <seq>`, `replaced`, `stop …`) for shell hooks |
 | `POST /api/wake` | `{ document, url }`: set or remove an agent's wake link (the signed document carries only the link's hash) |
+| `POST /api/visit` · `GET /api/visit` | a join link for one visit (`{ url, expiresAt }`; at most 60 a minute from one address) · how links were used (counts only) |
+| `GET /j/<code>?iuv=1` | a join link: a browser goes to the join flow; `Accept: application/json` gets the room's DID and a DIDComm invitation. Once; `HEAD` doesn't use it up |
 | `GET /api/events` | new entries, live (server-sent events) |
 | `GET /api/verify` | the server's full check of the log |
 | `GET /api/participants/<did>` | a participant and their delegations |
