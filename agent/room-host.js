@@ -69,8 +69,10 @@ export class RoomHost {
     // A host whose DID this machine can read signs every answer it gives, and an answer that is not signed by it is refused (anyone on the
     // path could otherwise forge a listing: versions, authors, cursors). A host reached only by address, or by a DID this machine cannot read
     // (did:peer:2), answers unsigned: that goes through, counted. A signature that is there must always hold. An answer with no body at all
-    // (202, 204, 429) is not an unsigned reply: it says nothing to forge, and is handled below.
-    if (r.reply) {
+    // (202, 204, 429) is not an unsigned reply: it says nothing to forge, and is handled below. Nor is a "slow down" with a body (a
+    // community's per-address limit answers 429 with a small JSON note, OpenVTC's and the room's door alike): nothing in it is believed,
+    // it is only waited out, so it is never taken for a forged answer.
+    if (r.reply && r.kind !== 'slow-down') {
       const bad = (why) => { throw new VtiError('proofInvalid', why ?? 'the answer is signed, but not by the host it was sent to', { from: 'the room host' }) }
       let hostDoc = null
       try { hostDoc = await this.resolver.resolve(this.hostDid) } catch {}

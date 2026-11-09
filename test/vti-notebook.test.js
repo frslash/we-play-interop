@@ -361,6 +361,12 @@ describe('an unsigned answer from a host whose DID can be read', () => {
       // 429 carries no body: it is waited out as before, not counted as an unsigned reply
       w.fake.slowDown('host', 1)
       assert.equal((await host.info(w.room)).visibility, 'attributed'); assert.equal(host.counts.slowDowns, 1); assert.equal(host.counts.unsignedRefused, 1)
+      // a 429 with a JSON body (a per-address limit in front of the host): slow down, never "unsigned"
+      const real = host.fetch
+      host.fetch = async () => new Response(JSON.stringify({ error: 'rate_limited', limiter: 'address', message: 'wait', retry_after_secs: 3600 }), { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '3600' } })
+      await assert.rejects(host.info(w.room), (e) => e instanceof VtiError && e.code === 'unavailable')
+      assert.equal(host.counts.unsignedRefused, 1, 'a slow-down with a body is not counted as an unsigned answer')
+      host.fetch = real
       // a host whose DID this machine cannot read (did:peer:2) or one reached only by address: unsigned answers keep going through, counted
       w.fake.host.signs = false
       const blind = w.device().host
