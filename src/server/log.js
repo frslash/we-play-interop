@@ -142,6 +142,9 @@ export class Log extends EventEmitter {
       if (name !== 'join' && st.participants.get(doc.issuer)?.left) throw new TaskError('permissionDenied', 'you left this room; join again to take part', { status: 403 })
       if (st.participants.get(doc.issuer)?.replacedBy) throw new TaskError('permissionDenied', `this account was replaced by ${st.nameOf(st.participants.get(doc.issuer).replacedBy)}'s new key; use that one`, { status: 403 })
     }
+    // paused by the room's vote: no new lines, except in the threads of the checks to come back, where they show they meet them
+    const pause = st.pauseOf(doc.issuer, principal)
+    if (pause && !(name === 'note' && pause.threads.has(doc.threadId))) throw new TaskError('permissionDenied', `paused by the room’s vote: ${pause.why} To come back: ${pause.comeBack.map((c, i) => `(${i + 1}) ${c}`).join(' ')} Show it in the threads of those checks (the Steps tab).`, { status: 403 })
     if (name === 'card' && (doc.payload.model !== undefined || doc.payload.runsOn !== undefined) && !(doc.onBehalfOf && st.isAgent(doc.issuer))) throw new TaskError('permissionDenied', 'model and runsOn are an agent\'s own word about itself: only the agent sets them', { status: 403 })
     if (name === 'delegate' && doc.payload.credential !== undefined) await this.#checkCredential(doc)
     this.#checkContext(name, doc, principal)
@@ -230,6 +233,12 @@ export class Log extends EventEmitter {
         break
       }
       case 'propose':
+        if (p.kind === 'pause') {
+          const who = st.participants.get(p.target)
+          if (!who || who.kind === 'workspace' || who.left || who.removed) throw new TaskError('malformedRequest', 'target: someone in this room (a person or an agent)')
+          if (st.pauseOf(p.target)) throw new TaskError('malformedRequest', `${st.nameOf(p.target)} is paused already`)
+          if ([...st.proposals.values()].some((x) => x.kind === 'pause' && x.target === p.target && ['open', 'approved'].includes(st.statusOf(x)))) throw new TaskError('malformedRequest', `a vote to pause ${st.nameOf(p.target)} is open already: vote on that one`)
+        }
         if (p.kind === 'record-run') {
           const mine = st.participants.get(principal)?.projects ?? []
           if (!mine.length) throw new TaskError('permissionDenied', 'the board takes a run from one of its two sides: join with your project (projects in member/join) to record runs', { status: 403 })

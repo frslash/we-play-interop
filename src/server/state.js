@@ -35,6 +35,7 @@ export class State {
     this.scoreHistory = [] // compact score history from every snapshot
     this.mapProjects = new Map() // slug -> project the workspace added or extended
     this.links = new Map() // hash -> a request to link an old name to a new key: { hash, from, old, why, at, vouches: Map(person -> { at, hash }), replacedAt }
+    this.pauses = new Map() // pause proposal hash -> { hash, target, why, comeBack, since, checked: Set(check n), threads: Set(thread), liftedAt, liftSaid }: who the room paused by vote, and how they come back
     this.mapWays = new Map() // id -> a way of doing interop, defined in the workspace
     this.mapRuns = [] // runs recorded in the workspace
     this.resources = new Map() // resourceKey(url) -> a source someone added to the Resources tab, and the notes on it
@@ -58,6 +59,12 @@ export class State {
     this.doers = new Map() // agent -> { took, results, checks, code: { took, results, checks }, at }
     this.counts = {}
     this.seq = -1
+  }
+
+  /** The pause in force on whoever writes: their own, or their person's (a paused person's agents are paused too). */
+  pauseOf (issuer, principal = issuer) {
+    for (const p of this.pauses.values()) if (!p.liftedAt && (p.target === issuer || p.target === principal)) return p
+    return null
   }
 
   membersOf (slug) { return [...this.participants.values()].filter((p) => p.kind === 'human' && p.projects?.includes(slug)) }
@@ -207,6 +214,7 @@ export class State {
       case 'result': {
         const pr = this.proposals.get(p.proposal)
         if (pr) { pr.results.push({ ...p, hash: e.hash, at: e.timestamp }); pr.outcome = p.status }
+        if (pr?.kind === 'pause' && p.status === 'agreed' && !this.pauses.has(pr.hash)) this.pauses.set(pr.hash, { hash: pr.hash, target: pr.target, why: pr.why, comeBack: pr.comeBack, since: e.timestamp, checked: new Set(), threads: new Set(), liftedAt: null, liftSaid: false })
         break
       }
     }
@@ -216,7 +224,7 @@ export class State {
     const p = e.document.payload
     this.proposals.set(e.hash, {
       hash: e.hash, seq: e.seq, at: e.timestamp, author: e.author, principal: e.onBehalfOf, byWeaver: e.author === this.workspace,
-      kind: p.kind, title: p.title, body: p.body ?? '', run: p.run, change: p.change, head: p.change?.sha ?? null, sources: p.sources, measure: p.measure, direction: p.direction, threadId: e.document.threadId,
+      kind: p.kind, title: p.title, body: p.body ?? '', run: p.run, change: p.change, ...(p.kind === 'pause' ? { target: p.target, why: p.why, comeBack: p.comeBack } : {}), head: p.change?.sha ?? null, sources: p.sources, measure: p.measure, direction: p.direction, threadId: e.document.threadId,
       votes: new Map(), approvals: new Map(), lastApprovalAt: null, vetoes: [], results: [], outcome: null,
     })
   }
@@ -241,6 +249,8 @@ export class State {
     for (const h of [p.from, ...(p.sources ?? [])].filter(Boolean)) { this.stepOf.delete(h); this.stepOf.set(h, id) }
     while (this.stepOf.size > 5000) this.stepOf.delete(this.stepOf.keys().next().value)
     this.stepsDone = this.stepsDone.filter((x) => x.id !== id)
+    const pause = s.test?.goal ? this.pauses.get(s.test.goal) : null // a check to come back from a pause
+    if (pause) { pause.threads.add(s.thread); if (s.state === 'checked') pause.checked.add(s.test.n); if (!pause.liftedAt && pause.checked.size >= pause.comeBack.length) pause.liftedAt = e.timestamp }
     if (s.state === 'checked' || s.aside) { this.steps.delete(id); this.stepsDone.push(s); if (this.stepsDone.length > 30) this.stepsDone.shift() } else this.steps.set(id, s)
   }
 
@@ -250,6 +260,7 @@ export class State {
     if (f.pressed) { this.pressed.add(f.pressed); if (this.pressed.size > 200) this.pressed.delete(this.pressed.values().next().value) }
     if (f.what === 'ask test') for (const g of f.goals ?? []) this.testAsked.set(g, Date.parse(e.timestamp))
     if (f.what === 'report') this.lastReport = { at: e.timestamp, seq: e.seq }
+    if (f.what === 'back' && f.pause && this.pauses.has(f.pause)) this.pauses.get(f.pause).liftSaid = true
     if (f.what === 'noted' && f.agent) { if (f.clear) this.notFor.delete(f.agent); else this.notFor.set(f.agent, { kinds: f.notFor ?? [], onlyFor: f.onlyFor ?? null, at: e.timestamp, because: f.because ?? null }) }
   }
 
@@ -296,7 +307,7 @@ export class State {
 
   proposalView (pr) {
     return {
-      hash: pr.hash, seq: pr.seq, at: pr.at, kind: pr.kind, title: pr.title, body: pr.body, run: pr.run, change: pr.change, measure: pr.measure, direction: pr.direction,
+      hash: pr.hash, seq: pr.seq, at: pr.at, kind: pr.kind, title: pr.title, body: pr.body, run: pr.run, change: pr.change, measure: pr.measure, direction: pr.direction, ...(pr.kind === 'pause' ? { target: pr.target, targetName: this.nameOf(pr.target), why: pr.why, comeBack: pr.comeBack } : {}),
       author: pr.author, authorName: this.nameOf(pr.author), principal: pr.principal, byWeaver: pr.byWeaver, threadId: pr.threadId,
       status: this.statusOf(pr), tally: this.tally(pr),
       votes: [...pr.votes].map(([principal, v]) => ({ principal, name: this.nameOf(principal), ...v })),

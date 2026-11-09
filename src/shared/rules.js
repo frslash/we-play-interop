@@ -22,6 +22,9 @@ export function problems (r) {
   need(typeof c.testsMustPass === 'string' && c.testsMustPass.length > 0, 'codeChanges.testsMustPass: the name the test checks carry')
   need(paths(s.paths) && paths(s.except ?? []), 'codeChanges.smallLane.paths and except: lists of paths')
   need(paths(c.needAPerson), 'codeChanges.needAPerson: a list of paths')
+  const pa = r.pauses ?? {}
+  need(isInt(pa.sidesNeeded) && pa.sidesNeeded >= 1, 'pauses.sidesNeeded: at least 1 (sides that vote to pause someone)')
+  need(isInt(pa.openHours) && pa.openHours >= 1, 'pauses.openHours: at least 1 (how long a pause vote stays open, so the person affected can answer)')
   need(['rules.json', 'src/shared/rules.js'].every((f) => matches(c.needAPerson ?? [], f)), 'codeChanges.needAPerson: must include rules.json and src/shared/rules.js, so the rules never change without a person')
   need(isInt(r.votes?.closeAfterMinutes) && r.votes.closeAfterMinutes >= 1, 'votes.closeAfterMinutes: at least 1')
   return out

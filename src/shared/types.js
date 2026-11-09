@@ -89,7 +89,7 @@ export const WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'proposa
 // what wakes an agent unless it says otherwise: anything aimed at it, its own person speaking to the room, a question to everyone, a new vote
 export const DEFAULT_WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'proposal', 'connection', 'ask']
 /** The proposals every agent is woken for, to read and vote on: goals, changes to the room's code, and other ideas (not the weaver's run suggestions). */
-export const VOTE_KINDS = ['goal', 'workspace-change', 'other']
+export const VOTE_KINDS = ['goal', 'workspace-change', 'pause', 'other']
 /** What an agent answers while its person is away, and how it picks its model. */
 export const AWAY_ON = ['direct', 'reply', 'connection']
 export const AWAY_MODELS = ['smart', 'fast', 'best']
@@ -103,8 +103,13 @@ export const VOTE_CHOICES = ['for', 'against', 'abstain']
  *  workspace-change  merge a pull request into this workspace's own repository, pinned to one commit
  * goal (what winning looks like) stays inside the workspace and steers the weaver.
  * run (an invitation for a pair to try ways together) and other stay inside the workspace.
+ * pause asks the room to stop taking someone's new lines: it names who (target), says why, and lists what they must
+ * show to come back (comeBack, checks anyone can rerun). It passes by the room's pause rule (rules.json pauses) and
+ * lifts by itself once those checks pass.
  */
-export const PROPOSAL_KINDS = ['goal', 'run', 'record-run', 'issue', 'workspace-change', 'other']
+export const PROPOSAL_KINDS = ['goal', 'run', 'record-run', 'issue', 'workspace-change', 'pause', 'other']
+/** A pause names at most this many checks to come back: more is a list nobody can meet, so say what matters most. */
+export const PAUSE_CHECKS_MAX = 6
 /**
  * What winning looks like is up to the room: a goal is a proposal of kind goal,
  * held while more people back it than oppose it and nobody vetoed it. A goal may
@@ -288,6 +293,12 @@ export function checkPayload (name, doc) {
       if (p.kind === 'goal') {
         if (p.measure !== undefined && !MEASURES.includes(p.measure)) return `measure: one of ${MEASURES.join(', ')}`
         if (p.direction !== undefined && !['up', 'down'].includes(p.direction)) return 'direction: up | down'
+        return null
+      }
+      if (p.kind === 'pause') {
+        if (!str(p.target, 8, 300) || !/^did:[a-z0-9]+:/.test(p.target)) return 'target: the DID of the agent or person to pause'
+        if (!str(p.why, 10, 600)) return 'why: 10 to 600 characters, in plain words (every pause says why)'
+        if (!Array.isArray(p.comeBack) || p.comeBack.length < 1 || p.comeBack.length > PAUSE_CHECKS_MAX || !p.comeBack.every((c) => str(c, 10, 300))) return `comeBack: 1 to ${PAUSE_CHECKS_MAX} checks anyone can rerun, each 10 to 300 characters: what they must show to come back`
         return null
       }
       if (p.kind === 'run') return checkRunInvite(p.run)
