@@ -10,6 +10,7 @@ import { createGraph } from '/graph.js'
 import { neverKey, phrases, secretIn, textsOf } from '/shared/guard.js'
 import { splitLayers } from '/shared/layers.js'
 import { whyNot } from '/shared/steps.js'
+import { RENEW_DAYS, renewal, renewed } from '/shared/seats.js'
 import { mentionOptions } from '/shared/mentions.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
 import { heard, lineIsFor } from '/shared/presence.js'
@@ -869,7 +870,10 @@ function modeChoice (a) {
   }
   const regrant = async () => { const t = new Date(); await post('delegate', { delegate: a.did, scope: AGENT_SCOPES, ask: a.ask ?? [], label: a.name }, { issuedAt: t.toISOString(), expiresAt: a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString() }) }
   const missing = AGENT_SCOPES.filter((x) => !(a.scope ?? []).includes(x))
+  const due = renewal(a)
+  const renew = async () => { const r = renewed(a, AGENT_SCOPES); if (await post('delegate', r.payload, { issuedAt: r.issuedAt, expiresAt: r.expiresAt })) toast(`${a.name} may act for you until ${new Date(r.expiresAt).toLocaleDateString([], { day: 'numeric', month: 'short' })}.`) }
   return h('div', { class: 'mode' },
+    due ? h('div', { class: 'row' }, h('span', { class: 'grow meta' }, `Its permission ends ${due.days <= 1 ? 'within a day' : `in ${due.days} days`}. After that it can’t act for you until you sign it again. Renewing keeps what it may do and what it asks you first.`), h('button', { class: 'btn small primary', onclick: renew }, `Renew for ${RENEW_DAYS} days`)) : null,
     missing.includes('change') ? h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'It can’t hand the room changes to its code yet: its permission is from before that existed.'), h('button', { class: 'btn small primary', onclick: regrant }, 'Let it hand in code changes')) : null,
     h('label', { class: 'row', title: 'When off, its votes wait for your OK, like any line it asks you about.' }, h('input', { type: 'checkbox', checked: !(a.ask ?? []).includes('vote'), disabled: !(a.scope ?? []).includes('vote'), onchange: setVoting }), h('span', { class: 'grow meta' }, 'It votes for you by its own judgment (it says when it does; your own vote always outweighs it)')),
     h('div', { class: 'seg small' }, Object.entries(MODES_OF).map(([k, [label]]) => h('button', { class: now === k ? 'on' : '', title: MODES_OF[k][1], onclick: () => set(k) }, label))),
