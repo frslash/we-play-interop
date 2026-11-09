@@ -2,6 +2,7 @@
 // Trust Task document, verified and appended to the hash-chained log.
 import { handleRoomDid, ensureRoomDid, growRoomDid } from './roomdid.js'
 import { JoinRoute } from './join-route.js'
+import { Door, serveRoomTasks } from './door.js'
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -39,6 +40,7 @@ import { ActivityPub } from './activitypub.js'
 import { CODE_RE, Visits, interaction, visitLocation } from './visits.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
+import { MAX_DOCUMENT_BYTES } from '../shared/trusttask.js'
 import { createResolver } from './resolver.js'
 import * as views from './views.js'
 import { Weaver } from './weaver.js'
@@ -48,6 +50,8 @@ import { Builder } from './builder.js'
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const MAX_BODY = 64 * 1024
 const MAX_HOSTED = 5 // a person's own assistants, not a crowd of puppets
+const DOOR_PATHS = new Set(['/trust-tasks', '/v1/trust-tasks']) // the Trust Task door; some clients put /v1 after a bare origin, and both are the one door
+const DOOR_READ_MAX = 1024 * 1024 // a body past the door's 64 KiB is refused whatever its size: counting stops here, so the refusal can go out while a huge upload is still arriving
 /** A wait's answer as one line: "woke <seq> <reasons>", "quiet <seq>", "replaced <seq>", "busy <seq>" or "stop <why>". */
 function waitLine (a) {
   const seq = a.head?.seq ?? -1
@@ -144,6 +148,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.visits = new Visits() // join links for one visit each, in memory
   ctx.join = new JoinRoute({ identity, config, resolver }) // the join desk at /didcomm, for the test community only
   await ctx.join.refresh(true)
+  // the Trust Task door (door.js): other projects' software hands the room standard signed documents here. Made early, so any part of the room made after it can add its own tasks with ctx.door.register()
+  ctx.door = serveRoomTasks(new Door({ ctx }), ctx)
   ctx.types = TYPES
   ctx.changes = new Changes({ ctx, dataDir: config.dataDir })
   log.on('entry', (e) => ctx.changes.onEntry(e))
@@ -164,6 +170,37 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   log.on('entry', (e) => ctx.notNamed.onEntry(e).catch(() => {}))
   ctx.builder = new Builder({ ctx }) // builds what the board hands it, from a routine with only this repository
 
+  /**
+   * A signed line for the log, and what the room does besides appending it (a hosted agent made, what it held for
+   * someone who leaves deleted). POST /api/entries and the Trust Task door both come here, so they check, refuse and
+   * act alike. Returns { entry, duplicate, hosted? } or throws a TaskError.
+   */
+  ctx.acceptEntry = async (doc, { ip = '', origin = config.publicUrl } = {}) => {
+    if (NAME_OF[doc?.type] === 'wake') throw new TaskError('malformedRequest', 'send wake settings to /api/wake, with the link')
+    const isHost = NAME_OF[doc?.type] === 'host'
+    if (isHost && hosted.liveFor(doc.issuer, log.state) >= MAX_HOSTED) throw new TaskError('permissionDenied', `you already have ${MAX_HOSTED} hosted agents; stop one first`, { status: 403 })
+    const { entry, duplicate } = await log.accept(doc, { ip })
+    if (isHost && !duplicate) {
+      // the workspace makes and holds the agent's key, and says so in the log
+      const agent = await hosted.create(entry.author, doc.payload.label)
+      await log.appendAsWorkspace('hosted', { agent: agent.did, for: entry.author, label: doc.payload.label, request: entry.hash })
+      return { entry, duplicate, hosted: { did: agent.did, connector: `${origin}/mcp/a/${agent.token}` } }
+    }
+    if (NAME_OF[doc.type] === 'leave' && !duplicate) {
+      // leaving deletes what the room holds privately for the person and their agents; the public record stays
+      for (const a of [...log.state.participants.values()].filter((p) => p.kind === 'agent' && p.principal === entry.author)) {
+        await hosted.delete(a.did); await ctx.notebooks.delete(a.did); await waker.set(a.did, null)
+        for (const d of ctx.drafts.list(a.did)) await ctx.drafts.drop(a.did, d.id)
+      }
+      await ctx.never.set(entry.author, [])
+    }
+    if (NAME_OF[doc.type] === 'remove' && !duplicate) {
+      // removing an agent deletes what the room holds for it: its key, its notebook, its wake link
+      await hosted.delete(doc.payload.agent); await ctx.notebooks.delete(doc.payload.agent); await waker.set(doc.payload.agent, null)
+    }
+    return { entry, duplicate }
+  }
+
   const release = releaseOf(STATIC.map(([, dir]) => dir))
   const page = versioned(readFileSync(join(root, 'public/index.html'), 'utf8'), release, readdirSync(join(root, 'public')).filter((n) => n.endsWith('.js')).sort())
   const importMap = /<script type="importmap">([\s\S]*?)<\/script>/.exec(page)?.[1] ?? ''
@@ -183,6 +220,23 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
     req.on('error', reject)
   })
+  /** A document for the door: its bytes as they arrived. One chunk past the cap is kept at most (enough for the door to say "too large" in a signed refusal), the rest is counted and thrown away. */
+  const readDoorBody = (req) => new Promise((resolve, reject) => {
+    let bytes = 0, kept = 0; const chunks = []
+    const done = (cut) => resolve({ raw: Buffer.concat(chunks), bytes, cut })
+    req.on('data', (c) => {
+      bytes += c.length
+      if (kept <= MAX_DOCUMENT_BYTES) { chunks.push(c); kept += c.length }
+      if (bytes > DOOR_READ_MAX) { req.removeAllListeners('data'); req.resume(); done(true) }
+    })
+    req.on('end', () => done(false))
+    req.on('error', reject)
+  })
+  /** The door's answer: a signed document as JSON, or nothing at all for 202, 204 and 429. Open to any origin, like the room's other public routes. */
+  const sendDoor = (res, out) => {
+    res.writeHead(out.status, { 'access-control-allow-origin': '*', 'cache-control': 'no-store', ...(out.body ? { 'content-type': 'application/json' } : {}), ...out.headers })
+    res.end(out.body)
+  }
   const ipOf = (req) => String(req.headers['fly-client-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim()
   const baseOf = (req) => config.publicUrl || `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
@@ -215,6 +269,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     const path = url.pathname, q = Object.fromEntries(url.searchParams)
     if (req.method === 'OPTIONS') return send(res, 204, '', { 'access-control-allow-methods': 'GET, POST', 'access-control-allow-headers': 'content-type, accept, mcp-protocol-version' })
     // the room is updating itself: say so the standard way (503 with Retry-After), so callers try again soon instead of failing
+    if (ctx.waits.stopping && DOOR_PATHS.has(path) && req.method === 'POST') return sendDoor(res, ctx.door.busy(ctx.waits.restarting().retryAfter))
     if (ctx.waits.stopping) { const a = ctx.waits.restarting(); return send(res, 503, path === '/api/wait' && q.as === 'text' ? waitLine(a) : { error: a.reason, retryAfter: a.retryAfter }, { 'retry-after': String(a.retryAfter) }) }
 
     if (path.startsWith('/mcp/a/')) {
@@ -237,9 +292,14 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     }
     if (handleRoomDid(req, res, path, { dataDir: config.dataDir, file: config.didLogFile })) return
     if (await ctx.join.handle(req, res, path, readBody, send)) return
+    if (DOOR_PATHS.has(path)) { // the Trust Task door: a signed standard document in, a signed answer out
+      if (req.method !== 'POST') return send(res, 405, { error: 'POST a signed Trust Task document here (application/json). /api/info says what this door serves and which DID to address.' }, { allow: 'POST' })
+      const { raw, bytes, cut } = await readDoorBody(req)
+      return sendDoor(res, await ctx.door.handle(raw, { origin: baseOf(req), host: String(req.headers.host ?? ''), ip: ipOf(req), userAgent: String(req.headers['user-agent'] ?? '').slice(0, 300), https: (req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http')) === 'https', bytes, cut }))
+    }
     if (path === '/.well-known/webfinger' || path.startsWith('/ap/')) return ctx.activitypub.handle(req, res, url)
     if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
-    if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), keyring: ctx.join.readiness({ oob: true }) }) }
+    if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), keyring: ctx.join.readiness({ oob: true }), door: ctx.door.info(baseOf(req)) }) }
     if (path === '/api/state') return send(res, 200, views.state(ctx))
     if (path === '/api/steps') return send(res, 200, ctx.facilitator.view())
     if (path === '/api/map' || path === '/api/board') return send(res, 200, views.mapView(ctx))
@@ -417,30 +477,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       let doc
       try {
         doc = JSON.parse(await readBody(req))
-        if (NAME_OF[doc?.type] === 'wake') throw new TaskError('malformedRequest', 'send wake settings to /api/wake, with the link')
-        const isHost = NAME_OF[doc?.type] === 'host'
-        if (isHost && hosted.liveFor(doc.issuer, log.state) >= MAX_HOSTED) throw new TaskError('permissionDenied', `you already have ${MAX_HOSTED} hosted agents; stop one first`, { status: 403 })
-        const { entry, duplicate } = await log.accept(doc, { ip: ipOf(req) })
-        if (isHost && !duplicate) {
-          // the workspace makes and holds the agent's key, and says so in the log
-          const agent = await hosted.create(entry.author, doc.payload.label)
-          await log.appendAsWorkspace('hosted', { agent: agent.did, for: entry.author, label: doc.payload.label, request: entry.hash })
-          const base = config.publicUrl || `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`
-          return send(res, 201, { ...entry, hosted: { did: agent.did, connector: `${base}/mcp/a/${agent.token}` } })
-        }
-        if (NAME_OF[doc.type] === 'leave' && !duplicate) {
-          // leaving deletes what the room holds privately for the person and their agents; the public record stays
-          for (const a of [...log.state.participants.values()].filter((p) => p.kind === 'agent' && p.principal === entry.author)) {
-            await hosted.delete(a.did); await ctx.notebooks.delete(a.did); await waker.set(a.did, null)
-            for (const d of ctx.drafts.list(a.did)) await ctx.drafts.drop(a.did, d.id)
-          }
-          await ctx.never.set(entry.author, [])
-        }
-        if (NAME_OF[doc.type] === 'remove' && !duplicate) {
-          // removing an agent deletes what the room holds for it: its key, its notebook, its wake link
-          await hosted.delete(doc.payload.agent); await ctx.notebooks.delete(doc.payload.agent); await waker.set(doc.payload.agent, null)
-        }
-        return send(res, duplicate ? 200 : 201, entry)
+        const { entry, duplicate, hosted: made } = await ctx.acceptEntry(doc, { ip: ipOf(req), origin: baseOf(req) })
+        return send(res, duplicate ? 200 : 201, made ? { ...entry, hosted: made } : entry)
       } catch (err) { return refuse(res, err, doc) }
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method not allowed' })

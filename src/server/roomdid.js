@@ -9,6 +9,7 @@ import { deriveNextKeyHash, prepareDataForSigning, resolveDIDFromLog, updateDID 
 import { mintRoomDid } from '../../agent/mint-room-did.js'
 import { ed25519Multikey, identityFromSeedHex, multikeyToEd25519, newIdentity } from '../shared/did.js'
 import { ed25519, multibase } from '../shared/crypto.js'
+import { HTTPS_SERVICE, serviceEndpoint } from '../shared/trusttask.js'
 
 const MAX_LOG_BYTES = 256 * 1024 // a rehearsal log is a few KB; this tripwire stands for "this is a DID log, not a data dump"
 
@@ -72,7 +73,17 @@ export function didcommEndpoint (publicUrl) {
   try { return publicUrl ? new URL(publicUrl).origin + '/didcomm' : '' } catch { return '' }
 }
 
-/** The document the room's DID should have: the room's signing key, a service pointing at the room's site, and its DIDComm inbox. */
+/**
+ * Where the room takes standard Trust Task documents, for PUBLIC_URL: the base its DID names. The door is this +
+ * "/trust-tasks" (src/server/door.js): the https binding makes the service's endpoint the base and has every sender
+ * add the path (OpenVTC writes and checks it so: vtc-service/src/member_portal/oob.rs, vti-common trust_task_push).
+ * '' when there is no PUBLIC_URL.
+ */
+export function trustTaskBase (publicUrl) {
+  try { return publicUrl ? new URL(publicUrl).origin : '' } catch { return '' }
+}
+
+/** The document the room's DID should have: the room's signing key, a service pointing at the room's site, its DIDComm inbox and its Trust Task door. */
 export function roomDidDocument ({ did, roomPublicKey, publicUrl }) {
   const vm = `${did}#room`
   return {
@@ -84,23 +95,27 @@ export function roomDidDocument ({ did, roomPublicKey, publicUrl }) {
     service: [
       { id: `${did}#room-site`, type: 'LinkedDomains', serviceEndpoint: new URL(publicUrl).origin + '/' },
       { id: `${did}#didcomm`, type: 'DIDCommMessaging', serviceEndpoint: { uri: didcommEndpoint(publicUrl), accept: ['didcomm/v2'] } },
+      { id: `${did}#trust-tasks`, type: HTTPS_SERVICE, serviceEndpoint: trustTaskBase(publicUrl) }, // found by its type, never by this #id
     ],
   }
 }
 
 /**
  * What the room's DID says right now, read from the same log /.well-known/did.jsonl serves (so it is what a wallet
- * resolves): its id and its DIDComm endpoint, or nulls when there is no log or it does not verify. Never throws.
+ * resolves): its id, its DIDComm endpoint, the base of its Trust Task door, and the key it lists as #room for
+ * authentication (the room can answer as this DID only when that is its own key). Nulls when there is no log or it
+ * does not verify. Never throws.
  */
 export async function roomDidStatus ({ dataDir, file = '' }) {
+  const none = { did: null, didcomm: null, trustTasks: null, roomKey: null }
   try {
     const text = readRoomDidLog({ dataDir, file })
-    if (text === null) return { did: null, didcomm: null }
-    const r = await resolveDIDFromLog(text.trim().split('\n').map((l) => JSON.parse(l)))
-    const s = (r.didDocument.service ?? []).find((x) => x.type === 'DIDCommMessaging')
-    const uri = typeof s?.serviceEndpoint === 'string' ? s.serviceEndpoint : s?.serviceEndpoint?.uri ?? (Array.isArray(s?.serviceEndpoint) ? s.serviceEndpoint[0]?.uri : null)
-    return { did: r.didDocument.id ?? null, didcomm: uri ?? null }
-  } catch { return { did: null, didcomm: null } }
+    if (text === null) return none
+    const doc = (await resolveDIDFromLog(text.trim().split('\n').map((l) => JSON.parse(l)))).didDocument
+    const room = `${doc.id}#room`
+    const key = (doc.authentication ?? []).includes(room) ? (doc.verificationMethod ?? []).find((m) => m.id === room)?.publicKeyMultibase : null
+    return { did: doc.id ?? null, didcomm: serviceEndpoint(doc, 'DIDCommMessaging'), trustTasks: serviceEndpoint(doc, HTTPS_SERVICE), roomKey: key ?? null }
+  } catch { return none }
 }
 
 /** did:webvh times are whole seconds and must rise: now, or one second after the last entry if that is later. */
@@ -110,7 +125,9 @@ const readSeed = (p) => { try { return identityFromSeedHex(readFileSync(p, 'utf8
 
 /**
  * Bring the room's DID up to date with a new signed log entry (never rewriting old ones): its document carries the
- * room's signing key and a LinkedDomains service for PUBLIC_URL, and its update key is no longer the rehearsal key.
+ * room's signing key and its services for PUBLIC_URL (the site, the DIDComm inbox, the Trust Task door), and its update
+ * key is no longer the rehearsal key. A service the document lacks (one this code learned to name since the last entry)
+ * is reason enough for a new entry.
  * The new update key is ROOM_DID_UPDATE_KEY (a public Ed25519 multikey held by the room's people) when set; otherwise
  * the host makes a fresh one and keeps it next to the log (0600), so a later entry can hand it to them.
  * Pre-rotation: `nextKey` (ROOM_DID_NEXT_KEY, a public Ed25519 multikey made by the room's people, kept apart from every update key)
@@ -174,7 +191,7 @@ export async function growRoomDid ({ dataDir, file = '', publicUrl, roomPublicKe
     // verify, the update keys must be exactly what was asked, and the document must be the one wanted. Else change nothing.
     const after = await resolveDIDFromLog(r.log)
     const afterDoc = after.didDocument
-    const afterOk = sameJson(after.didDocumentMetadata.updateKeys ?? [], nextKeys) && (!nextHash || sameJson(after.didDocumentMetadata.nextKeyHashes ?? [], [nextHash])) && ['verificationMethod', 'authentication', 'assertionMethod'].every((k) => sameJson(afterDoc[k], wantDoc[k]))
+    const afterOk = sameJson(after.didDocumentMetadata.updateKeys ?? [], nextKeys) && (!nextHash || sameJson(after.didDocumentMetadata.nextKeyHashes ?? [], [nextHash])) && ['verificationMethod', 'authentication', 'assertionMethod'].every((k) => sameJson(afterDoc[k], wantDoc[k])) && wantDoc.service.every((s) => (afterDoc.service ?? []).some((h) => sameJson(h, s)))
     if (!afterOk) { log('room DID not grown: the new log did not resolve to what was asked'); return { grown: false, reason: 'new log did not verify' } }
     // the new key first (so a crash leaves a key that can still sign), then the log, then the key takes its usual name
     if (fresh) writeFileSync(join(dir, 'update-key.next.txt'), fresh.seedHex + '\n', { mode: 0o600 })
