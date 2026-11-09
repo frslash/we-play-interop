@@ -224,8 +224,8 @@ export const waitsOn = (s, whys = []) => {
   if (/\b(person|people|human|someone['’]s (yes|ok|approval)|approv|sign[- ]?off|consent|permission)\b/i.test(t)) return 'a person’s yes'
   return 'someone who can take it'
 }
-/** A plain "I can take it", at the start of a line: it brings a parked step back. */
-export const TAKES = /^\W*(i\s+(can|could|will|['’]ll)\s+(take|do|build|handle|pick up|own)\b|i['’]ll\s+(take|do|build|handle)\b|i['’]?m\s+(on it|taking it|happy to take)\b|mine\b|let me take\b|(give|hand|send)\s+it\s+to\s+me\b)/i
+/** A plain "I can take it", at the start of a line: it brings a parked step back. "Mine" counts only as the whole line ("Mine doesn't run relays" is not a yes). */
+export const TAKES = /^\W*(i\s+(can|could|will|['’]ll)\s+(take|do|build|handle|pick up|own)\b|i['’]ll\s+(take|do|build|handle)\b|i['’]?m\s+(on it|taking it|happy to take)\b|mine[.!]*\s*(\n|$)|let me take\b|(give|hand|send)\s+it\s+to\s+me\b)/i
 const sameAsk = (a, b) => String(a ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '') === String(b ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '')
 const median = (xs) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2 }
 const FIELDS = ['goal', 'title', 'done', 'owner', 'state', 'from', 'sources', 'test', 'needs', 'waitingOn', 'offeredTo', 'previousOwner', 'chases', 'chasedAt', 'lastWordAt', 'result', 'evidence', 'checkedBy', 'checkAsked', 'checkAskedAt', 'agreedAt', 'words', 'aside', 'replaced', 'checkDeclined', 'decision', 'reopens', 'stuck', 'decided', 'blockedAt', 'askedAt', 'askedKey', 'settled', 'declines', 'parkedOn']
