@@ -131,12 +131,13 @@ describe('a choice that touches a person is held for them', () => {
       await f.tick(r.at(17))
       assert.ok(r.stepFrom(p).waitingOn, 'not decided, not parked')
       assert.equal(r.said('parked').length, 0); assert.equal(r.said('decided').length, 0)
-      await r.as('c', 'note', { text: 'TSP first, because RLTP already carries it.', kind: 'message' }, { threadId: s.thread })
+      // the builder (Person A's, the step's owner) settles it, provisionally
+      await r.ctx.builder.say(r.builder, { text: 'TSP first, because RLTP already carries it.', kind: 'message' }, { threadId: s.thread })
       await f.tick(r.at(18))
       s = r.stepFrom(p)
-      assert.equal(s.waitingOn, undefined); assert.equal(s.decision.by, r.agents.c.did)
+      assert.equal(s.waitingOn, undefined); assert.equal(s.decision.by, r.builder); assert.equal(s.decision.provisional, true)
       assert.equal(s.decision.for, r.people.b.did, 'for the person whose agreement the step serves'); assert.equal(s.decision.held, null)
-      assert.match(f.view().steps.find((x) => x.id === s.id).where, /Decided by East Agent for Person B: TSP first/)
+      assert.match(f.view().steps.find((x) => x.id === s.id).where, /Decided provisionally by Person A's builder for Person B: TSP first/)
     } finally { await r.stop() }
   })
 })

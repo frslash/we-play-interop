@@ -256,6 +256,9 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       assert.equal(r.said('decide').length, 1, 'five re-posts in a minute: one question')
       s = r.stepFrom(pr)
       await r.as('c', 'note', { text: 'Use the Railway host for now.', kind: 'message' }, { threadId: s.thread })
+      await r.ctx.facilitator.tick(r.at(13))
+      assert.ok(r.stepFrom(pr).waitingOn, 'an agent of another person alone only suggests')
+      await r.as('b', 'note', { text: 'Use the Railway host for now.', kind: 'message' }, { threadId: s.thread }) // the step's own agent: provisionally
       await r.ctx.facilitator.tick(r.at(13)); s = r.stepFrom(pr)
       assert.equal(s.waitingOn, undefined, 'the answer clears the wait')
       assert.match(s.decided.text, /Railway/, 'and stays as the step’s decision')
