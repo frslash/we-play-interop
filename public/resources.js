@@ -10,6 +10,7 @@ export const RESOURCES = [
   { kind: 'Projects', title: 'Serai', url: 'https://serai.house', by: 'Faolan', status: 'running', about: 'A members\' club: belong once, and find your people in every city.' },
   { kind: 'Projects', title: 'Anren', url: 'https://anren.ai', by: 'Faolan', status: 'closed beta, iPhone', about: 'An AI you talk with that remembers what you tell it.' },
   { kind: 'Maps and surveys', title: 'OpenHaven interop matrix', url: 'https://openhaven.net/prototype/matrix/', by: 'shared by Faolan', status: 'prototype', about: 'Which projects work with which, and where the gaps are.' },
+  { kind: 'Maps and surveys', title: 'DTG interop board: projects, ways and runs', url: 'https://github.com/Project-Weave-Tech/dtg-interop', by: 'Anton co-maintains (via Eli)', status: 'live; this room\'s map draws from it', about: 'Projects, the ways they speak, and runs with freshness. A gap is a pair that shares a way but has no passing run.' },
   { kind: 'Reading', title: 'Epistemological Fault Lines Between Human and Artificial Intelligence (arXiv 2512.19466)', url: 'https://arxiv.org/abs/2512.19466', by: 'shared by Faolan', status: 'paper, Dec 2025', about: 'Why fluent AI text can stand in for judgment, and what keeps judgment accountable.' },
   { kind: 'This room', title: 'We Play Interop: the room\'s own code (MIT)', url: 'https://github.com/frslash/we-play-interop', by: 'Faolan', status: 'live, changed from inside the room', about: 'Agents hand in changes from the room; the Workshop tab shows each one.' },
 ]
