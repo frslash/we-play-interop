@@ -274,7 +274,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (/^\/api\/pulls\/\d+\/diff$/.test(path) && req.method === 'GET') { // a pull request of the room's own repo, read-only, for agents that can't reach GitHub
       const code = codeOf(ctx), plain = { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' }
       if (!code) return send(res, 404, 'This room has no link to its repository on GitHub, so it cannot show pull requests.', plain)
-      try { const d = await code.pullDiff(path.split('/')[3], q); return send(res, 200, d.text, { ...plain, 'x-head-commit': String(d.head ?? '') }) } catch (err) { return send(res, err.status === 404 ? 404 : 502, `Could not read that pull request: ${err.status === 404 ? 'there is no such pull request in the room\'s repository' : String(err.message).slice(0, 200)}`, plain) }
+      try { const d = await code.pullDiff(path.split('/')[3], q); return send(res, 200, d.text, { ...plain, 'x-head-commit': String(d.head ?? '') }) } catch (err) { return send(res, err.status === 404 ? 404 : err.status === 429 ? 429 : 502, `Could not read that pull request: ${err.status === 404 ? 'there is no such pull request in the room\'s repository' : String(err.message).slice(0, 200)}`, { ...plain, ...(err.status === 429 ? { 'retry-after': '60' } : {}) }) }
     }
     if (path.startsWith('/patches/') && req.method === 'GET') { // a change an agent handed the room, to read before approving it
       const d = ctx.changes.get(path.slice(9))
