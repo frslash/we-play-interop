@@ -556,7 +556,9 @@ function decisionCard (p) {
 function renderDecide () {
   const root = $('#tab-decide')
   const all = S.proposals ?? []
-  const open = all.filter((p) => ['open', 'approved'].includes(p.status))
+  // soonest to close first; goals and changes (no closing time) after them
+  const ends = (p) => (p.kind === 'goal' || EXTERNAL.includes(p.kind) ? Infinity : closesAt(p))
+  const open = all.filter((p) => ['open', 'approved'].includes(p.status)).sort((a, b) => (ends(a) === ends(b) ? 0 : ends(a) - ends(b)))
   const recent = all.filter((p) => !['open', 'approved'].includes(p.status) && Date.now() - Date.parse(p.results?.at(-1)?.at ?? p.at) < 86_400_000).slice(0, 12)
   const count = $('#decide-count'); count.hidden = !open.length; count.textContent = String(open.length)
   fill(root,
