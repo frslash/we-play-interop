@@ -8,6 +8,7 @@ RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY src ./src
 COPY public ./public
 COPY agent ./agent
+COPY rules.json ./rules.json
 RUN mkdir -p /data && chown node:node /data
 USER node
 EXPOSE 3000

@@ -1,6 +1,8 @@
 // Read views shared by the HTTP API and the MCP server: everything is public.
 import { proofConfig, signingInputHex } from '../shared/proof.js'
 import { buildDocument, checkPayload, NAME_OF, TYPES } from '../shared/types.js'
+import { differences, inEffect } from '../shared/rules.js'
+import { AGREED } from './rules.js'
 import { gist } from './weaver.js'
 
 export function info (ctx) {
@@ -18,7 +20,7 @@ export function info (ctx) {
     mode: st.mode,
     head: log.head(),
     weaver: { model: llm.configured ? (llm.model ?? 'chosen at first round') : null, configured: llm.configured, endpoint: llm.endpoint ?? config.llm.baseUrl, nextRoundAt: new Date(weaver.nextRoundAt()).toISOString(), rounds: st.roundCount, lastError: weaver.lastError, lastSilent: weaver.lastSilent ?? null, speaksAfterQuietMinutes: config.weaverQuietMinutes, atMostEveryMinutes: config.weaverIntervalMinutes },
-    rules: { voteMinutes: config.voteMinutes, agentApprovers: config.agentApprovals ? config.agentApprovers : null, vetoWindowMinutes: config.vetoWindowMinutes, approvalsRequired: config.approvalsRequired, freshDays: config.freshDays, actsOutside: config.githubToken ? 'opens pull requests and issues itself' : 'prepares links for a person to open (no GitHub token set)' },
+    rules: { voteMinutes: config.voteMinutes, agentApprovers: config.agentApprovals ? config.agentApprovers : null, vetoWindowMinutes: config.vetoWindowMinutes, approvalsRequired: config.approvalsRequired, freshDays: config.freshDays, actsOutside: config.githubToken ? 'opens pull requests and issues itself' : 'prepares links for a person to open (no GitHub token set)' , data: { agreed: '/rules.json', inEffect: inEffect(AGREED, config), differences: differences(AGREED, inEffect(AGREED, config)) } },
     types: TYPES,
   }
 }

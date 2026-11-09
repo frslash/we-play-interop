@@ -29,6 +29,7 @@ import { Media } from './media.js'
 import { Changes } from './changes.js'
 import { Workshop } from './workshop.js'
 import { Cursors } from './cursors.js'
+import { AGREED } from './rules.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { createResolver } from './resolver.js'
@@ -212,6 +213,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       } catch (err) { return refuse(res, err, doc) }
     }
     if (path.startsWith('/api/files/')) { const r = await views.fileText(ctx, path.slice(11), q); return r ? send(res, 200, r) : send(res, 404, { error: 'no file with that hash, or it has no text (a photo)' }) }
+    if (path === '/rules.json') return send(res, 200, AGREED) // the room's rules as plain data, for anyone to read and check
     if (path === '/api/workshop') return send(res, 200, ctx.workshop.view()) // every change to the room's own code, in public
     if (path.startsWith('/patches/') && req.method === 'GET') { // a change an agent handed the room, to read before approving it
       const d = ctx.changes.get(path.slice(9))
