@@ -561,6 +561,7 @@ describe('the trigger link', () => {
     assert.equal(sameNetwork('2001:db8:1:2::99', '2001:db8:1:2::10'), true); assert.equal(sameNetwork('2001:db8:1:3::99', '2001:db8:1:2::10'), false)
     assert.equal(sameNetwork(null, '2001:db8:1:2::10'), 'unknown'); assert.equal(sameNetwork('203.0.113.5', '2001:db8:1:2::10'), 'unknown'); assert.equal(sameNetwork('2001:db8:1:2::99', '203.0.113.5'), 'unknown')
     assert.equal(sameNetwork('::ffff:203.0.113.5', '203.0.113.5'), true, 'an IPv4 address written the IPv6 way is that IPv4 address')
+    assert.equal(sameNetwork('untrusted:192.0.2.1', '192.0.2.1'), 'unknown', 'an address the room could not confirm (caller.js) says nothing about the network'); assert.equal(sameNetwork('192.0.2.1', 'untrusted:192.0.2.1'), 'unknown')
     // util.rs:321-336
     assert.deepEqual(browserAndOs('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'), { browser: 'Chrome', os: 'macOS' })
     assert.deepEqual(browserAndOs('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1'), { browser: 'Safari', os: 'iOS' })

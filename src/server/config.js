@@ -8,6 +8,8 @@ export const config = {
   port: int(env.PORT, 3000),
   production: env.NODE_ENV === 'production',
   publicUrl: (env.PUBLIC_URL || '').replace(/\/$/, ''),
+  onFly: Boolean(env.FLY_APP_NAME), // set by Fly's platform: the room is behind Fly's proxy, which writes fly-client-ip and x-forwarded-proto itself (see caller.js)
+  trustedClientIpHeader: (env.TRUSTED_CLIENT_IP_HEADER || '').trim().toLowerCase(), // the one request header a proxy in front of the room sets to the caller's address (e.g. cf-connecting-ip); empty: the socket's address is used. Read only by caller.js
   activitypub: env.ACTIVITYPUB !== '0', // the room's public lines, followable from Mastodon as @room@<the host of PUBLIC_URL>; 0 turns it off
   workspaceName: env.WORKSPACE_NAME || 'InWove',
   workspaceKey: env.WORKSPACE_KEY || '',
