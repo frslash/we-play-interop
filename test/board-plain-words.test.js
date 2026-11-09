@@ -59,11 +59,15 @@ describe('the board hears plain words', () => {
     try {
       const g = await r.goal2()
       const five = () => r.ctx.facilitator.testOf(g).find((x) => x.test.n === 5)
-      assert.equal(five().waitingOn.who, null, 'the agents decide, not a person')
+      // (5) costs money, so it is held for the goal's own person, not put to the agents (personal.js)
+      assert.equal(five().waitingOn.who, r.people.a.did, 'held for the person it touches'); assert.deepEqual(five().waitingOn.personal, ['money'])
       await r.send(r.people.b, 'note', { text: 'the permanent domain should be inwove.org', kind: 'message' })
       await r.ctx.facilitator.tick()
       assert.ok(five().waitingOn, 'talk elsewhere is not the answer')
       await r.say('c', 'inwove.org: it is bought and already reaches the room.', { threadId: five().thread })
+      await r.ctx.facilitator.tick()
+      assert.ok(five().waitingOn, 'an agent does not decide it')
+      await r.send(r.people.a, 'note', { text: 'inwove.org: I bought it and it already reaches the room.', kind: 'message' }, { threadId: five().thread })
       await r.ctx.facilitator.tick()
       assert.equal(five().waitingOn, undefined); assert.equal(five().change, 'answered')
       // an older step that still waits on a person: after a restart it goes to the agents, in one line that wakes them
@@ -83,7 +87,7 @@ describe('the board hears plain words', () => {
     try {
       const g = await q.goal2()
       const f = q.ctx.facilitator, five = f.testOf(g).find((x) => x.test.n === 5)
-      const answer = (await q.say('b', 'decided: inwove.org', { threadId: five.thread })).body
+      const answer = (await q.send(q.people.a, 'note', { text: 'decided: inwove.org', kind: 'message' }, { threadId: five.thread })).body
       f.heard = answer.seq // as if an older board had read past it without knowing
       await f.tick()
       assert.ok(f.testOf(g).find((x) => x.test.n === 5).waitingOn, 'not heard yet')
@@ -127,7 +131,7 @@ describe('the board hears plain words', () => {
       const p1 = await r.agree('b', 'Write up the carrier test', 'c')
       await r.ctx.facilitator.tick(r.at(11))
       const s1 = r.stepFrom(p1), five = r.ctx.facilitator.testOf(g).find((x) => x.test.n === 5)
-      const decided = (await r.say('a', 'Settled: we use the one I bought tonight.')).body.hash
+      const decided = (await r.send(r.people.a, 'note', { text: 'Settled: we use the one I bought tonight.', kind: 'message' })).body.hash // (5) costs money: its own person answers
       const passOn = (await r.say('b', 'This one is really East Agent’s area, they wrote the carrier.')).body.hash
       const stranger = (await r.say('c', 'Give check 5 to me.')).body.hash
       const moves = [{ entry: decided, step: five.id, kind: 'answered' }, { entry: passOn, step: s1.id, kind: 'declined', to: r.agents.c.did }, { entry: stranger, step: five.id, kind: 'handTo', to: r.agents.c.did }, { entry: 'f'.repeat(64), step: s1.id, kind: 'declined' }]

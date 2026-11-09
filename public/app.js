@@ -667,6 +667,8 @@ setInterval(() => { if (document.body.dataset.tab === 'decide' && S) renderDecid
 // ---------- Steps: the weaver's board in facilitate mode (each step: its goal, what done looks like, its owner, where it stands) ----------
 const sideOf = (did) => person(did)?.principal ?? did
 const minutesText = (m) => (m < 90 ? `${m} min` : `${Math.round(m / 6) / 10} h`)
+/** What a waiting step waits on: a choice held for a person (it touches their keys, money, time or name), or the agents' choice. */
+const waitLabel = (s) => (!s.waitingOn ? null : s.waitingOn.personal ? `held for ${s.waitingOn.name ?? 'a person'}: it touches their ${s.waitingOn.personal.join(', ')}` : 'waiting on a choice')
 function stepRow (s) {
   const can = (say) => me && !whyNot(s, { say }, me.did, sideOf, s.ownerName ?? 'its owner')
   const act = (say, text, extra = {}) => post('note', { text, kind: 'message', step: { of: s.id, say, ...extra } }, { threadId: s.thread })
@@ -680,7 +682,7 @@ function stepRow (s) {
     can('release') ? h('button', { class: 'btn small', onclick: () => act('release', `I’m giving back ${label}.`) }, 'Give it back') : null,
   ].filter(Boolean)
   return h('div', { class: 'step-row' + (s.waitingOn ? ' waiting' : '') + (s.state === 'checked' ? ' done' : '') },
-    h('span', { class: 'mark st-' + (s.waitingOn ? 'waiting' : s.state.replace(' ', '-')), title: s.waitingOn ? 'waiting on a person' : s.state, 'aria-label': s.waitingOn ? 'waiting on a person' : s.state }),
+    h('span', { class: 'mark st-' + (s.waitingOn ? 'waiting' : s.state.replace(' ', '-')), title: waitLabel(s) ?? s.state, 'aria-label': waitLabel(s) ?? s.state }),
     h('div', { class: 'grow' },
       h('div', null, s.test ? `(${s.test.n}) ` : '', h('strong', null, s.title), s.test?.later ? h('span', { class: 'badge' }, 'later') : null),
       s.done && s.done !== s.title ? h('div', { class: 'why' }, 'Done when: ', s.done) : null,
