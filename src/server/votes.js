@@ -5,6 +5,7 @@
 // a line wakes that agent, so the work does not wait for someone to notice.
 import { EXTERNAL_KINDS } from '../shared/types.js'
 import { mentions } from './views.js'
+import { decide } from './decisions.js'
 
 /** Who has to act on a proposal: everyone it names (people bring their agents along), and its proposer. */
 export function partiesOf (st, pr, skip = []) {
@@ -26,7 +27,8 @@ export async function closeVotes (ctx, now = Date.now(), { max = 1 } = {}) {
     if (now - Date.parse(pr.at) < minutes * 60_000) continue
     const t = st.tally(pr), agreed = t.for > t.against, threadId = ctx.log.byHash.get(pr.hash)?.document.id
     const count = `${t.for} yes, ${t.against} no${t.abstain ? `, ${t.abstain} abstaining` : ''}`
-    await ctx.log.appendAsWorkspace('result', { proposal: pr.hash, kind: pr.kind, status: agreed ? 'agreed' : 'not agreed', detail: `${count}, after ${minutes} minutes` }, { threadId })
+    const result = await ctx.log.appendAsWorkspace('result', { proposal: pr.hash, kind: pr.kind, status: agreed ? 'agreed' : 'not agreed', detail: `${count}, after ${minutes} minutes` }, { threadId })
+    await decide(ctx.log, { for: ['the room'], what: `Closed the vote on “${pr.title.slice(0, 200)}”: ${agreed ? 'agreed' : 'not agreed'}`, why: `Its ${minutes} minutes were up and it had ${count}; a proposal is agreed when more say yes than no.`, rests: [pr.hash, result.hash], about: { kind: 'proposal', ref: pr.hash } }, { threadId })
     const names = partiesOf(st, pr, ctx.check?.dids() ?? []).map((d) => st.nameOf(d))
     const text = agreed
       ? `Agreed (${count}): ${pr.title}${names.length ? ` ${names.join(', ')}: this is yours to take on now. Say here when it is done, or what stands in the way.` : ''}`

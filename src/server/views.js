@@ -1,4 +1,5 @@
 // Read views shared by the HTTP API and the MCP server: everything is public.
+import { decisionsView } from './decisions.js'
 import { proofConfig, signingInputHex } from '../shared/proof.js'
 import { buildDocument, checkPayload, NAME_OF, resourceKey, TYPES, VOTE_KINDS } from '../shared/types.js'
 import { heard } from '../shared/presence.js'
@@ -57,6 +58,7 @@ export function state (ctx) {
     rounds: [...st.rounds].reverse(),
     score: board.score(),
     board: { fetchedAt: board.fetchedAt, error: board.error },
+    decisions: decisionsView(st), // the weaver's decisions, newest first: each one signed line, and whether a person reversed it
     steps: ctx.facilitator?.view() ?? null, // the facilitator's board: goals with their done-tests, the steps in work, last night
     counts: st.counts,
   }

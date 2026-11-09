@@ -23,6 +23,7 @@ import { parseJsonAnswer } from './llm.js'
 import { citedIn, resourcesFor } from './views.js'
 import { isCodeStep } from './state.js'
 import { partiesOf } from './votes.js'
+import { decide, personOf } from './decisions.js'
 
 const clip = (s, n) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s }
 export const STALE_MS = 30 * 60_000 // about half an hour without a word from a step's owner, and it asks
@@ -350,11 +351,11 @@ export class Facilitator {
       const name = NAME_OF[e.type], p = e.document.payload
       if (name === 'result' && p.status === 'agreed' && !st.stepOf.has(p.proposal)) {
         const pr = st.proposals.get(p.proposal)
-        if (pr && pr.kind !== 'goal') due.push({ id: pr.hash, kind: 'proposal', pr, agreedAt: e.timestamp, title: pr.title, body: clip(pr.body, 1200), thread: this.threadText(this.log.byHash.get(pr.hash)?.document.id) })
+        if (pr && pr.kind !== 'goal') due.push({ id: pr.hash, kind: 'proposal', pr, line: e.hash, agreedAt: e.timestamp, title: pr.title, body: clip(pr.body, 1200), thread: this.threadText(this.log.byHash.get(pr.hash)?.document.id) })
       }
       if (name === 'note' && p.dive?.of && p.dive.outcome === 'agreed' && !st.stepOf.has(p.dive.of)) {
         const d = st.dives?.get(p.dive.of)
-        if (d && !d.proposal) due.push({ id: d.hash, kind: 'dive', dive: d, agreedAt: e.timestamp, title: d.question, body: clip(p.text, 1200), thread: this.threadText(d.thread) })
+        if (d && !d.proposal) due.push({ id: d.hash, kind: 'dive', dive: d, line: e.hash, agreedAt: e.timestamp, title: d.question, body: clip(p.text, 1200), thread: this.threadText(d.thread) })
       }
     }
     if (!due.length) return
@@ -366,6 +367,7 @@ export class Facilitator {
       const owner = this.ownerFor(a)
       const step = await this.write(null, { goal: this.goalFor(`${a.title} ${a.body}`), title: w.step || clip(a.title, 300), done: w.done || 'Post the result in this step’s thread: the link, the command and what it printed, or the test value. Someone of another side checks it.', owner, state: 'open', from: a.id, agreedAt: a.agreedAt, words: words.by }, 'opened', this.log.byHash.get(a.id))
       opened.push(step)
+      await decide(this.log, { for: ['the room', owner], what: `Opened the next step ${this.label(step)}${owner ? ` and offered it to ${st.nameOf(owner)}` : ''}`, why: `${a.kind === 'proposal' ? 'The proposal' : 'The closer look'} “${clip(a.title, 160)}” was agreed, and every agreement gets a next step with an owner and a check (room lines 1078-1079).`, rests: [a.id, a.line], about: { kind: 'step', ref: step.id } }, { threadId: step.thread })
     }
     did.opened.push(...opened.map((x) => x.id))
     const line = (s) => `${this.label(s)}: ${s.owner ? `${st.nameOf(s.owner)}, it’s yours if you take it` : 'who takes it?'}. Done when: ${clip(s.done, 300)}`
@@ -643,11 +645,12 @@ export class Facilitator {
       const s = this.find(m.step), e = this.log.byHash.get(m.entry)
       if (!s || !e || s.state === 'checked' || e.seq < s.seq) continue
       const asked = s.owner ?? s.offeredTo, from = s.from && st.proposals.get(s.from), goal = s.goal && st.proposals.get(s.goal)
-      if (m.kind === 'answered' && s.waitingOn && (!s.waitingOn.who || sameSide(st, e.author, s.waitingOn.who))) { await this.write(s, { waitingOn: null, decided: decidedBy(e, s), lastWordAt: e.timestamp }, 'answered', e); moved.push(m) }
-      if (m.kind === 'declined' && asked && sameSide(st, e.author, asked) && ['open', 'claimed'].includes(s.state)) { await this.decline(s, e, m.to ?? this.ctx.builder?.named(e.document.payload.text) ?? null, Date.now()); moved.push(m) }
+      const decided = (what, why, forWhom) => decide(this.log, { for: forWhom, what, why, rests: [m.entry, s.id], about: { kind: 'step', ref: s.id } }, { threadId: s.thread })
+      if (m.kind === 'answered' && s.waitingOn && (!s.waitingOn.who || sameSide(st, e.author, s.waitingOn.who))) { await this.write(s, { waitingOn: null, decided: decidedBy(e, s), lastWordAt: e.timestamp }, 'answered', e); moved.push(m); await decided(`Marked the decision ${this.label(s)} waited on as answered`, `The weaver read ${st.nameOf(e.author)}’s line as the answer to “${clip(s.waitingOn.decision, 160)}”.`, [personOf(st, s.waitingOn.who ?? e.author), ...(s.owner ? [s.owner] : [])]) }
+      if (m.kind === 'declined' && asked && sameSide(st, e.author, asked) && ['open', 'claimed'].includes(s.state)) { const to = m.to ?? this.ctx.builder?.named(e.document.payload.text) ?? null; await this.decline(s, e, to, Date.now()); moved.push(m); await decided(`Took ${this.label(s)} off ${st.nameOf(asked)}${to ? ` and handed it to ${st.nameOf(to)}` : ' and offered it on'}`, `The weaver read ${st.nameOf(e.author)}’s line as saying no to it.`, [personOf(st, asked), ...(to ? [to] : [])]) }
       // who may hand a step on: whoever has it, the person it waits on, or the person whose goal or agreement it serves
       const mayHand = [asked, s.waitingOn?.who, goal?.principal, from?.principal].some((d) => d && sameSide(st, e.author, d))
-      if (m.kind === 'handTo' && m.to && mayHand && m.to !== asked && s.state !== 'result posted') { await this.handTo(s, m.to, e); moved.push(m) }
+      if (m.kind === 'handTo' && m.to && mayHand && m.to !== asked && s.state !== 'result posted') { await this.handTo(s, m.to, e); moved.push(m); await decided(`Handed ${this.label(s)} to ${st.nameOf(m.to)}`, `The weaver read ${st.nameOf(e.author)}’s line as asking for it to go to ${st.nameOf(m.to)}.`, [m.to, ...(asked ? [personOf(st, asked)] : [])]) }
     }
     if (judged?.revisedTest && await this.revise(judged.revisedTest)) moved.push({ kind: 'revisedTest', goal: judged.revisedTest.goal })
     for (const x of judged?.prefs ?? []) { // only what an agent (or its person) says about itself
@@ -660,6 +663,7 @@ export class Facilitator {
       const lines = c.entries.map((h) => this.log.byHash.get(h)).sort((a, b) => b.seq - a.seq)
       const owner = this.ctx.builder?.named(`${c.step} ${c.done} ${lines.map((e) => e.document.payload.text).join(' ')}`) ?? lines.map((e) => e.author).find((d) => st.isAgent(d) && st.activeDelegation(d)) ?? lines[0].author
       const step = await this.write(null, { goal: this.goalFor(`${c.step} ${lines.map((e) => e.document.payload.text).join(' ')}`), title: c.step, done: c.done || 'Post the result in this step’s thread: the link, the command and what it printed, or the test value.', owner, state: 'open', from: lines[0].hash, sources: c.entries, agreedAt: lines[0].timestamp, words: model ?? { builtIn: true } }, 'opened', lines[0])
+      await decide(this.log, { by: [st.workspace, ...lines.map((e) => e.author)], for: ['the room', owner], what: `Opened the next step ${this.label(step)} and offered it to ${st.nameOf(owner)}`, why: `The weaver read these lines, from ${new Set(lines.map((e) => person(st, e.author))).size} people's sides, as agreeing on it.`, rests: c.entries, about: { kind: 'step', ref: step.id } }, { threadId: step.thread })
       await this.speak(`${lines.map((e) => st.nameOf(e.author)).filter((n, i, a) => a.indexOf(n) === i).join(', ')} agree, so here is the next step: ${this.label(step)} ${st.nameOf(owner)}, it’s yours if you take it (the step tool, say claim). Done when: ${clip(step.done, 300)}`, 'open', [step], { thread: step.thread })
       opened.push(step.id)
     }
@@ -680,6 +684,7 @@ export class Facilitator {
     }
     for (const s of old) if (!kept.has(s.id) && s.state !== 'checked') await this.write(s, { aside: true, replaced: true }, 'replaced', because)
     const now = this.testOf(goal)
+    await decide(this.log, { for: [g.principal], what: `Revised the done-test of “${clip(g.title, 160)}” to ${now.length} checks`, why: `The weaver read ${st.nameOf(g.principal)}’s side as asking for, or agreeing to, the new wording or order.`, rests: [goal, ...entries], about: { kind: 'goal', ref: goal } })
     await this.speak([`“${clip(g.title, 140)}”: its done-test is revised as ${st.nameOf(g.principal)}'s side agreed. ${now.length} checks:`, ...now.map((s) => `${this.label(s)}. ${this.where(s)}`)].join('\n'), 'revised', now, { goal })
     return true
   }
