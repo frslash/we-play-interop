@@ -283,7 +283,7 @@ export class Log extends EventEmitter {
   /** Re-verify the whole chain (cached until the next append). */
   async verify () {
     if (this.verified?.head?.hash === this.head()?.hash) return this.verified
-    this.verified = { ...(await verifyChain(this.entries, { keyFor: (d, vm, pp) => this.resolver.keyFor(d, vm, pp) })), verifiedAt: new Date().toISOString() }
+    this.verified = { ...(await verifyChain(this.entries, { keyFor: (d, vm, pp) => this.resolver.keyFor(d, vm, pp), agentsMayApprove: Boolean(this.config.sandbox || this.config.agentApprovals) })), verifiedAt: new Date().toISOString() }
     return this.verified
   }
 }

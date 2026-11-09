@@ -12,6 +12,9 @@ import { createServer } from 'node:http'
 import { join } from 'node:path'
 import { verifyChain } from '../src/shared/chain.js'
 import { createResolver } from '../src/server/resolver.js'
+import { config } from '../src/server/config.js'
+// Whether agents may approve: AGENT_APPROVALS / SANDBOX as for a room, else the agreed rule in rules.json.
+const agentsMayApprove = Boolean(config.sandbox || config.agentApprovals)
 
 const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d }
 const room = (args.find((a) => /^https?:\/\//.test(a)) || process.env.WPI_URL || '').replace(/\/$/, '')
@@ -26,7 +29,7 @@ const save = () => writeFileSync(STATUS, JSON.stringify(status, null, 2))
 const say = (s) => console.log(`${new Date().toISOString()} ${s}`)
 
 async function check () {
-  status.report = await verifyChain(entries, { keyFor: (did, vm, purpose) => resolver.keyFor(did, vm, purpose) })
+  status.report = await verifyChain(entries, { keyFor: (did, vm, purpose) => resolver.keyFor(did, vm, purpose), agentsMayApprove })
   status.report.at = new Date().toISOString()
 }
 
