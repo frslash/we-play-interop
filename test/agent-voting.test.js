@@ -18,8 +18,8 @@ describe('agents vote for their people, and say when it is their judgment', () =
   before(async () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-vote-'))
     ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } }, { awayGatherMs: 0, hostWelcomeMs: null })
-    await new Promise((r) => ctx.server.listen(0, r))
-    base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${ctx.server.address().port}`
   })
   after(async () => { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) })
   const voteOf = async (hash) => (await (await fetch(`${base}/api/state`)).json()).proposals.find((p) => p.hash === hash).votes

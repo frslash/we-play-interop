@@ -314,8 +314,8 @@ describe('the bridge with the three settings', () => {
     const board = { generated: new Date().toISOString().slice(0, 10), projects: [], credentialProfiles: { profiles: {} }, runs: [] }
     ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(board)), llm: { ...baseConfig.llm, apiKey: '', anthropicKey: '', provider: 'openai' } })
     ctx.server.prependListener('request', (req) => hits.push(`${req.method} ${req.url}`)) // every request the room's server is sent
-    await new Promise((r) => ctx.server.listen(0, r))
-    base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${ctx.server.address().port}`
     assert.equal((await post('/api/entries', person, TYPES.join, { name: 'Person N' })).status, 201)
     assert.equal((await post('/api/entries', person, TYPES.delegate, { delegate: agent.did, scope: AGENT_SCOPES, label: 'Notebook agent' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })).status, 201)
   })

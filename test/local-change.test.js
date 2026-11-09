@@ -33,8 +33,8 @@ describe('a change from a local agent', () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-local-change-'))
     const board = { generated: new Date().toISOString().slice(0, 10), projects: [], credentialProfiles: { profiles: {} }, runs: [] }
     ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(board)), llm: { ...baseConfig.llm, apiKey: '', anthropicKey: '', provider: 'openai' } })
-    await new Promise((r) => ctx.server.listen(0, r))
-    base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${ctx.server.address().port}`
     assert.equal((await send(person, 'join', { name: 'Person K' })).status, 201)
     assert.equal((await send(stranger, 'join', { name: 'Person S' })).status, 201)
     const d = await send(person, 'delegate', { delegate: agent.did, scope: AGENT_SCOPES, label: 'Local agent' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })

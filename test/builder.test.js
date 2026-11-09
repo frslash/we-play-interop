@@ -26,8 +26,8 @@ async function room () {
   const gh = async (method, path) => { if (method === 'GET') reads.push(path); if (method === 'GET' && path.includes('/pulls?state=closed')) return closedPulls; if (method === 'GET' && path.includes('/pulls?')) return pulls; return {} }
   const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, voteMinutes: 10, workspaceRepo: 'example/room', publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }
   const ctx = await createApp(config, { resolver: createResolver(), hostWelcomeMs: null, wakeFetch, gh })
-  await new Promise((r) => ctx.server.listen(0, r))
-  const base = `http://localhost:${ctx.server.address().port}`
+  await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+  const base = `http://127.0.0.1:${ctx.server.address().port}`
   await ctx.board.refresh()
   const postDoc = async (doc) => { const r = await fetch(`${base}/api/entries`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc) }); return { status: r.status, body: await r.json() } }
   const send = (id, name, payload, extra) => postDoc(signedDocument(id, { type: TYPES[name], payload, ...extra }))

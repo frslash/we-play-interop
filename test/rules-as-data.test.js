@@ -71,8 +71,8 @@ describe('the rules as data', () => {
       dir = mkdtempSync(join(tmpdir(), 'wpi-rules-'))
       const board = { generated: new Date().toISOString().slice(0, 10), projects: [], credentialProfiles: { profiles: {} }, runs: [] }
       ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', vetoWindowMinutes: 3, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(board)), llm: { ...baseConfig.llm, apiKey: '' } }, { awayGatherMs: 0, hostWelcomeMs: null })
-      await new Promise((r) => ctx.server.listen(0, r))
-      base = `http://localhost:${ctx.server.address().port}`
+      await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+      base = `http://127.0.0.1:${ctx.server.address().port}`
     })
     after(async () => { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) })
 

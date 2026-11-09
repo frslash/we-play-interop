@@ -31,8 +31,8 @@ describe('the weaver reads the Resources', () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-reading-'))
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, voteMinutes: 10, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }
     ctx = await createApp(config, { resolver: createResolver(), hostWelcomeMs: null })
-    await new Promise((r) => ctx.server.listen(0, r))
-    base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${ctx.server.address().port}`
     await ctx.board.refresh()
     await send(person, 'join', { name: 'Person A' }); await send(other, 'join', { name: 'Person B' })
     del = (await send(person, 'delegate', { delegate: agent.did, scope: ['note', 'propose', 'vote'], label: 'North Agent' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })).body.hash

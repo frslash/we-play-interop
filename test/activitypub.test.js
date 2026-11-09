@@ -30,8 +30,8 @@ async function fakeRemote () {
       res.writeHead(404); res.end()
     })
   })
-  await new Promise((r) => server.listen(0, r))
-  const base = `http://localhost:${server.address().port}`, actor = `${base}/users/fan`
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const base = `http://127.0.0.1:${server.address().port}`, actor = `${base}/users/fan`
   const remote = {
     server, got, fetched, actor, privateKey,
     actorDoc: { '@context': ['https://www.w3.org/ns/activitystreams', 'https://w3id.org/security/v1'], id: actor, type: 'Person', preferredUsername: 'fan', inbox: `${actor}/inbox`, publicKey: { id: `${actor}#main-key`, owner: actor, publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }) } },
@@ -68,8 +68,8 @@ describe('the room on the fediverse (ActivityPub, read only)', () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-ap-'))
     config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', ratePerMinute: 1000, boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify({ projects: [] })), llm: { ...baseConfig.llm, apiKey: '' } }
     ctx = await createApp(config, { apFetch: fetch, hostWelcomeMs: null }) // apFetch: the plain fetch, so the room can reach the local pretend server
-    await new Promise((r) => ctx.server.listen(0, r))
-    base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${ctx.server.address().port}`
     config.publicUrl = base // the room's public address, as PUBLIC_URL gives it
     remote = await fakeRemote()
     assert.equal(await post(signedDocument(personA, { type: TYPES.join, payload: { name: 'Person A' } })), 201)
