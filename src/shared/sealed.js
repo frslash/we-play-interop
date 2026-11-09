@@ -7,6 +7,7 @@
 import { canonicalize, ed25519, fromHex, randomBytes, sha256, toHex, utf8, fromUtf8 } from './crypto.js'
 import { newIdentity, resolveDidKey, multikeyToEd25519 } from './did.js'
 import { sign, verifySignature } from './proof.js'
+import { DTG_CONTEXT } from './dtg-context.js'
 
 export const MAX_NOTE_BYTES = 34 * 1024 // Security P2.8; the host's own cap is 64 KiB
 export const AGENT_MAX_TTL_MS = 7 * 24 * 3600e3 // Security P2.4: a delegation lives 7 days at most
@@ -45,7 +46,7 @@ export function issueCredential (room, { subject, role, scopes, notBefore = new 
   if (role === 'member' && scopes.some((s) => !MEMBER_SCOPES.includes(s))) throw new Error('unknown scope')
   const id = toHex(randomBytes(16))
   const doc = {
-    '@context': ['https://www.w3.org/ns/credentials/v2'],
+    '@context': ['https://www.w3.org/ns/credentials/v2', DTG_CONTEXT], // the registry's DTG context: the one the room writes
     type: ['VerifiableCredential', role === 'agent' ? 'WpiAgentDelegation' : 'WpiMemberCredential'],
     id: `urn:wpi:cred:${id}`, issuer: room.did,
     validFrom: notBefore.toISOString(), validUntil: new Date(notBefore.getTime() + ttlMs).toISOString(),

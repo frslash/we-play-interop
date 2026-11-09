@@ -11,10 +11,13 @@
 // a revoke line (delegation/revoke), removing the agent, or the person leaving.
 // There is no separate status list (no credentialStatus): the log is the status.
 // Terms beyond VC 2.0's own fall under the v2 context's issuer-dependent vocabulary.
+// @context: the room writes [VC 2.0, the registry's DTG context]; it reads any of the three DTG context
+// addresses in use (dtg-context.js), or none (credentials signed before this change).
 // Shared by the page, the server and anyone verifying the log: no Node-only APIs.
 import { canonicalize } from './crypto.js'
 import { CRYPTOSUITE, sign, verifySignature } from './proof.js'
 import { AGENT_SCOPES, DID_RE, RFC3339, uuid } from './types.js'
+import { DTG_CONTEXT, dtgContextOf, dtgContextProblem } from './dtg-context.js'
 
 export const VC_V2 = 'https://www.w3.org/ns/credentials/v2'
 export const PERMISSION_TYPE = 'AgentPermissionCredential'
@@ -26,7 +29,7 @@ const sameSet = (a, b) => { const A = new Set(a), B = new Set(b); return A.size 
 /** The unsigned credential for one permission. */
 export function permissionCredential ({ person, agent, room, scope, ask = [], validFrom, validUntil }) {
   return {
-    '@context': [VC_V2], id: 'urn:uuid:' + uuid(), type: ['VerifiableCredential', PERMISSION_TYPE],
+    '@context': [VC_V2, DTG_CONTEXT], id: 'urn:uuid:' + uuid(), type: ['VerifiableCredential', PERMISSION_TYPE],
     issuer: person, validFrom, validUntil, credentialSubject: { id: agent, room, scope: [...scope], askFirst: [...ask] },
   }
 }
@@ -44,6 +47,8 @@ export function checkPermissionCredential (c) {
   if (extra) return `unknown field ${extra}`
   const ctx = c['@context']
   if (!Array.isArray(ctx) || ctx[0] !== VC_V2 || ctx.length > 4 || !ctx.every((x) => typeof x === 'string')) return `@context: a list that starts with ${VC_V2}`
+  const dtgBad = dtgContextProblem(ctx)
+  if (dtgBad) return dtgBad
   if (c.id !== undefined && (typeof c.id !== 'string' || !c.id.length || c.id.length > 200)) return 'id: a URI'
   if (!Array.isArray(c.type) || !c.type.includes('VerifiableCredential') || !c.type.includes(PERMISSION_TYPE)) return `type: VerifiableCredential and ${PERMISSION_TYPE}`
   if (typeof c.issuer !== 'string' || !DID_RE.test(c.issuer)) return 'issuer: the person\'s DID'
@@ -67,7 +72,7 @@ export function checkPermissionCredential (c) {
 
 /** What a checked credential says: the room keeps this (a copy, never the log's own arrays) next to the grant. */
 export const claimsOf = (c) => ({
-  id: c.id ?? null, issuer: c.issuer, agent: c.credentialSubject.id, room: c.credentialSubject.room,
+  id: c.id ?? null, context: dtgContextOf(c['@context'])?.name ?? null, issuer: c.issuer, agent: c.credentialSubject.id, room: c.credentialSubject.room,
   scope: [...c.credentialSubject.scope], askFirst: [...c.credentialSubject.askFirst], validFrom: c.validFrom, validUntil: c.validUntil,
 })
 
