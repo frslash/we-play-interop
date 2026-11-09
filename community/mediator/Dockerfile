@@ -17,7 +17,7 @@ RUN cargo build --locked --release -p affinidi-messaging-mediator --no-default-f
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libdbus-1-3 && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home /var/lib/mediator mediator && install -d -o mediator -g mediator -m 0700 /var/lib/mediator
-COPY --from=build /src/target/release/affinidi-messaging-mediator /usr/local/bin/mediator
+COPY --from=build /src/target/release/mediator /usr/local/bin/mediator
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 USER mediator
 ENV HOME=/var/lib/mediator
