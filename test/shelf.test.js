@@ -61,7 +61,7 @@ const REPO_FILES = (sha) => [
   ['link', '', '2'],
 ]
 
-let head, hits, sawAuth, mode
+let head, hits, sawAuth, mode, override // `override(sha, repo)`: the files the stand-in serves instead of REPO_FILES
 const fake = createServer((req, res) => {
   hits.push(req.url); if (req.headers.authorization) sawAuth = true
   if (mode === 'down') { res.writeHead(503); return res.end('down') }
@@ -70,7 +70,7 @@ const fake = createServer((req, res) => {
   const t = /^\/([^/]+)\/([^/]+)\/tar\.gz\/([0-9a-f]{40})$/.exec(req.url)
   if (t && mode === 'redirect') { res.writeHead(302, { location: 'http://127.0.0.1:9/elsewhere.tar.gz' }); return res.end() }
   if (t && t[1] !== 'gone') {
-    const files = t[2] === 'nolicence' ? REPO_FILES(t[3]).filter(([p]) => p !== 'LICENSE') : REPO_FILES(t[3])
+    const files = override ? override(t[3], t[2]) : t[2] === 'nolicence' ? REPO_FILES(t[3]).filter(([p]) => p !== 'LICENSE') : REPO_FILES(t[3])
     res.writeHead(200, { 'content-type': 'application/x-gzip', 'x-ratelimit-limit': '60', 'x-ratelimit-remaining': '57', 'x-ratelimit-reset': '1794000000' })
     return res.end(tarGz(`${t[2]}-${t[3]}`, files, mode === 'wrong-commit' ? D : t[3]))
   }
@@ -82,7 +82,7 @@ describe('the projects shelf', () => {
   const shelf = (over = {}) => new Shelf({ dataDir: mkdtempSync(join(dir, 's-')), list: [{ repo: 'o/demo', title: 'Demo', pin: A }, { repo: 'o/pinned', title: 'Pinned', pin: PIN }], hosts: { api: base, code: base }, allowHttp: true, ...over })
   before(async () => { await new Promise((r) => fake.listen(0, '127.0.0.1', r)); base = `http://127.0.0.1:${fake.address().port}`; dir = mkdtempSync(join(tmpdir(), 'wpi-shelf-')) })
   after(() => { fake.close(); rmSync(dir, { recursive: true, force: true }) })
-  const reset = () => { head = A; hits = []; sawAuth = false; mode = 'ok' }
+  const reset = () => { head = A; hits = []; sawAuth = false; mode = 'ok'; override = null }
 
   test('the list in code names the projects on the Resources page, and no address anyone typed', () => {
     assert.ok(SHELF.length >= 9)
@@ -226,6 +226,24 @@ describe('the projects shelf', () => {
     await assert.rejects(s.files('o/nolicence'), (e) => e.status === 409 && /states no licence at its top level/.test(e.message))
     await assert.rejects(s.files('o/nolicence'), /states no licence/) // and it is not asked for again at that commit
     assert.equal(hits.filter((u) => u.includes('/nolicence/')).length, 1); assert.equal(existsSync(join(s.dir, 'o__nolicence', A)), false)
+  })
+
+  test('a cap that is passed stops the unpack and discards it: no partial copy, and no second try at that commit', async () => {
+    const refuseAt = async (limits, why, files = null) => {
+      reset(); override = files; const s = shelf({ limits })
+      await assert.rejects(s.files('o/demo'), (e) => e.status === 413 && why.test(e.message) && /no copy was kept/.test(e.message))
+      assert.equal(existsSync(join(s.dir, 'o__demo', A)), false); assert.equal(existsSync(join(s.dir, 'o__demo', `${A}.tmp`)), false) // nothing left on disk
+      await assert.rejects(s.files('o/demo'), /no copy was kept/); assert.equal(hits.filter((u) => u.includes('/tar.gz/')).length, 1) // a refusal that cannot change is not asked for again
+      assert.equal(s.logLines().find((l) => l.kind === 'copy').error.includes('no copy'), true)
+      return s
+    }
+    await refuseAt({ bytes: 100 }, /more than 100 bytes of text/)
+    await refuseAt({ files: 2 }, /more than 2 files/)
+    await refuseAt({ depth: 1 }, /more than 1 folders deep/)
+    await refuseAt({ download: 200 }, /download of more than 200 bytes/) // the compressed bytes are counted as they arrive
+    await refuseAt({ unpacked: 1_000_000 }, /more than 1000000 bytes once unpacked/, () => [['LICENSE', 'MIT License\n'], ['junk.bin', Buffer.alloc(5_000_000)]]) // a few KB that inflate to 5 MB, none of it kept
+    reset(); assert.equal((await shelf().files('o/demo')).commit, A) // the real limits let an ordinary project through
+    assert.equal('partial' in shelf().view().projects[0], false)
   })
 
   test('a failed fetch waits ten minutes; one minute and one member each have their own limit', async () => {

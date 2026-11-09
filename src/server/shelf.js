@@ -61,6 +61,16 @@ export const MAX_FILE_BYTES = 2 * 1024 * 1024
 // One project may not fill the shelf by itself: the largest here today keeps about 70 MB of text.
 export const MAX_PROJECT_BYTES = 200 * 1024 * 1024
 export const MAX_PROJECT_FILES = 40_000
+// The most folders one path may sit in. Real projects stay far under it; a path this deep is made to exhaust the
+// disk's directory handling or the readers that walk it, not written by a person.
+export const MAX_PATH_DEPTH = 40
+// What one download may cost the room's data folder and the host's memory, whatever the archive claims about
+// itself: the compressed bytes that arrive are counted and the request is stopped at the cap (MAX_PROJECT_BYTES: an
+// archive bigger than the text the shelf keeps of one whole project is not that project's code). The unpacked bytes
+// (everything the tar reader sees, the files kept and the files skipped alike) stop at twice the same number, so a
+// small archive that inflates to a huge one (a zip bomb) is stopped before it fills the disk or the heap.
+export const MAX_DOWNLOAD_BYTES = MAX_PROJECT_BYTES
+export const MAX_UNPACKED_BYTES = 2 * MAX_PROJECT_BYTES
 // The shelf shares the room's data disk with its record. Past this, the copies read longest ago are dropped (and
 // fetched again when someone asks). SHELF_MAX_MB sets it.
 export const DEFAULT_MAX_BYTES = 300 * 1024 * 1024
@@ -217,11 +227,12 @@ export class Shelf {
   /**
    * `named()` returns the repositories the room's people named by signed entries: [{ repo, title?, from?, pin?, by?, at? }]
    * (see namedRepos). `pins`: { vti, mediator } from pinsFromCommunity. `own`: the room's own repository. `hosts`,
-   * `fetch` and `allowHttp` exist so tests can play GitHub from a local server; the app passes none of them.
+   * `fetch`, `allowHttp` and `limits` exist so tests can play GitHub from a local server; the app passes none of them.
    */
-  constructor ({ dataDir, list = SHELF, named = () => [], pins = {}, own = '', maxBytes = DEFAULT_MAX_BYTES, fetch: f = globalThis.fetch, hosts = { api: 'https://api.github.com', code: 'https://codeload.github.com' }, allowHttp = false, now = () => Date.now() }) {
+  constructor ({ dataDir, list = SHELF, named = () => [], pins = {}, own = '', maxBytes = DEFAULT_MAX_BYTES, fetch: f = globalThis.fetch, hosts = { api: 'https://api.github.com', code: 'https://codeload.github.com' }, allowHttp = false, now = () => Date.now(), limits = {} }) {
     this.dir = join(dataDir, 'shelf'); mkdirSync(this.dir, { recursive: true })
     Object.assign(this, { list, named, pins, own, maxBytes, fetch: f, hosts, allowHttp, now })
+    this.limits = { download: MAX_DOWNLOAD_BYTES, unpacked: MAX_UNPACKED_BYTES, bytes: MAX_PROJECT_BYTES, files: MAX_PROJECT_FILES, depth: MAX_PATH_DEPTH, ...limits } // `limits` exists so tests can lower them
     this.busy = new Map() // id -> the fetch under way
     this.heads = new Map() // id -> { commit, at }: the room's own repository only
     this.errors = new Map() // id -> { at, why, commit, status, final }
@@ -294,12 +305,12 @@ export class Shelf {
         return {
           project: p.repo, title: p.title, url: `https://github.com/${p.repo}`, from: p.from,
           commit: p.pin ?? ix?.commit ?? null, ...(p.pin ? { pinned: true, why: p.pinnedBy } : { follows: 'its default branch (the room\'s own code)' }),
-          copy: ix ? { commit: ix.commit, fetchedAt: ix.fetchedAt, files: ix.files.length, bytes: ix.bytes, licence: ix.licence ?? null, leftOut: ix.skipped, ...(ix.partial ? { partial: 'the project is larger than the shelf keeps of one project; the first files were kept' } : {}) } : null,
+          copy: ix ? { commit: ix.commit, fetchedAt: ix.fetchedAt, files: ix.files.length, bytes: ix.bytes, licence: ix.licence ?? null, leftOut: ix.skipped } : null,
           reads: u?.reads ?? 0, searches: u?.searches ?? 0, lastReadAt: u?.lastReadAt ?? null, lastError: e ? { at: e.at, why: e.why } : null,
         }
       }),
       waitingForACommit: this.waitingForACommit.map((w) => ({ ...w, how: `add it to the Resources at one commit: https://github.com/${w.project}/tree/<all 40 characters of the commit>` })),
-      limits: { fileBytes: MAX_FILE_BYTES, projectBytes: MAX_PROJECT_BYTES, shelfBytes: this.maxBytes, holds: this.#total(), fetchesAnHour: FETCHES_PER_HOUR, fetchesAMinute: FETCHES_PER_MINUTE, fetchesAnHourForOneMembersEntries: SIGNER_FETCHES_PER_HOUR, fetchedThisHour: hour.length },
+      limits: { fileBytes: MAX_FILE_BYTES, projectBytes: this.limits.bytes, projectFiles: this.limits.files, pathDepth: this.limits.depth, downloadBytes: this.limits.download, unpackedBytes: this.limits.unpacked, shelfBytes: this.maxBytes, holds: this.#total(), fetchesAnHour: FETCHES_PER_HOUR, fetchesAMinute: FETCHES_PER_MINUTE, fetchesAnHourForOneMembersEntries: SIGNER_FETCHES_PER_HOUR, fetchedThisHour: hour.length },
       lately: this.logLines().slice(-20), // what GitHub was asked, without content
     }
   }
@@ -372,35 +383,56 @@ export class Shelf {
     try {
       this.#allow(p, t0)
       rmSync(tmp, { recursive: true, force: true }); mkdirSync(join(tmp, 'files'), { recursive: true })
-      const res = await this.fetch(this.#url(this.hosts.code, `/${p.repo}/tar.gz/${commit}`), { headers: { 'user-agent': 'we-play-interop (projects shelf)' }, redirect: 'error', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }) // anonymous: public code only
+      const lim = this.limits, ac = new AbortController()
+      const res = await this.fetch(this.#url(this.hosts.code, `/${p.repo}/tar.gz/${commit}`), { headers: { 'user-agent': 'we-play-interop (projects shelf)' }, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), ac.signal]) }) // anonymous: public code only
       out.status = res.status; out.github = githubSaid(res)
       if (!res.ok) { await res.body?.cancel(); throw fail(res.status === 404 ? `GitHub has no public copy of ${p.repo} at ${commit.slice(0, 12)}` : `GitHub answered ${res.status}`, res.status === 404 ? 404 : 502) }
       const files = [], skipped = { count: 0, bytes: 0 }, refused = { paths: 0, secrets: 0 }
-      let kept = 0, partial = false, cutFrom = null, licence = null
+      const mb = (n) => (n >= 1024 * 1024 ? `${Math.round(n / 1024 / 1024)} MB` : `${n} bytes`)
+      // a cap that is passed stops the unpack and the download, and the half-made copy is discarded (the catch below): a cut copy would read as the whole project
+      const over = (what) => fail(`${p.repo} at ${commit.slice(0, 12)} is over the shelf's limit for one project (${what}), so no copy was kept`, 413, { final: true })
+      let kept = 0, cutFrom = null, licence = null, broke = null, unpacked = 0
       const reader = tarReader((path, size, body) => {
         const rel = cleanPath(path.split('/').slice(1).join('/')) // GitHub wraps everything in one folder: <repo>-<commit>/
         const ext = rel.includes('.') ? rel.slice(rel.lastIndexOf('.') + 1).toLowerCase() : ''
         const bad = !rel || path.startsWith('/') || rel.split('/').some((s) => s === '..' || s === '.' || s === '') || /[\0\\]/.test(rel) || rel.length > 400
         if (bad) { refused.paths++; return } // never a path that starts at the root or could leave the project's folder
+        if (rel.split('/').length - 1 > lim.depth) throw over(`a path more than ${lim.depth} folders deep`)
         if (secretPath(rel)) { refused.secrets++; return }
-        if (partial || body === null || SKIP_DIRS.test(`${rel}/`.replace(/[^/]+\/$/, '')) || SKIP_DIRS.test(rel) || BINARY.has(ext) || body.subarray(0, 8000).includes(0)) { skipped.count++; skipped.bytes += size; return }
-        if (kept + body.length > MAX_PROJECT_BYTES || files.length >= MAX_PROJECT_FILES) { partial = true; skipped.count++; skipped.bytes += size; return }
+        if (body === null || SKIP_DIRS.test(`${rel}/`.replace(/[^/]+\/$/, '')) || SKIP_DIRS.test(rel) || BINARY.has(ext) || body.subarray(0, 8000).includes(0)) { skipped.count++; skipped.bytes += size; return }
+        if (kept + body.length > lim.bytes) throw over(`more than ${mb(lim.bytes)} of text`)
+        if (files.length >= lim.files) throw over(`more than ${lim.files} files`)
         const to = join(tmp, 'files', rel)
         mkdirSync(dirname(to), { recursive: true }); writeFileSync(to, body)
         files.push([rel, body.length]); kept += body.length
         if (!licence && !rel.includes('/') && LICENCE_NAME.test(rel)) licence = rel
       }, { onGlobal: (r) => { if (typeof r.comment === 'string') cutFrom = r.comment.trim().slice(0, 64) } })
       const gunzip = createGunzip()
-      const done = new Promise((resolve, reject) => { gunzip.on('data', (c) => { try { reader.write(c) } catch (e) { reject(e) } }); gunzip.on('end', resolve); gunzip.on('error', reject) })
-      for await (const c of res.body) { out.bytes += c.length; if (!gunzip.write(c)) await new Promise((r) => gunzip.once('drain', r)) }
-      gunzip.end(); await done
+      gunzip.on('error', (e) => { broke ??= e })
+      gunzip.on('data', (c) => {
+        if (broke) return
+        unpacked += c.length
+        try { if (unpacked > lim.unpacked) throw over(`more than ${mb(lim.unpacked)} once unpacked`); reader.write(c) } catch (e) { broke = e; ac.abort() }
+      })
+      const ended = new Promise((r) => { gunzip.once('end', r); gunzip.once('close', r) })
+      try {
+        for await (const c of res.body) {
+          if (broke) break
+          out.bytes += c.length
+          if (out.bytes > lim.download) { broke = over(`a download of more than ${mb(lim.download)}`); break }
+          if (!gunzip.write(c)) await new Promise((r) => { gunzip.once('drain', r); gunzip.once('close', r) })
+        }
+      } catch (e) { broke ??= e }
+      if (broke) { ac.abort(); gunzip.destroy(); throw broke }
+      gunzip.end(); await ended
+      if (broke) throw broke
       out.refused = refused
       // the archive says which commit it was cut from: a pin means that commit and no other
       if (cutFrom !== null && cutFrom !== commit) throw fail(`GitHub answered with a different commit than the one ${p.repo} is pinned at; nothing was kept`, 502)
       if (!files.length) throw fail(`${p.repo} at ${commit.slice(0, 12)} holds no text files the shelf keeps`, 502, { final: true })
       if (!licence) throw fail(`${p.repo} at ${commit.slice(0, 12)} states no licence at its top level (a LICENSE or COPYING file), so the shelf does not keep a copy: it shows files on the room's public address, and keeps only code whose owners said how it may be shared. Read it at https://github.com/${p.repo}`, 409, { final: true })
       files.sort((a, b) => (a[0] < b[0] ? -1 : 1))
-      const ix = { repo: p.repo, commit, commitConfirmed: cutFrom === commit, fetchedAt: out.at, checkedAt: out.at, bytes: kept, files, skipped, refused, licence, partial }
+      const ix = { repo: p.repo, commit, commitConfirmed: cutFrom === commit, fetchedAt: out.at, checkedAt: out.at, bytes: kept, files, skipped, refused, licence }
       writeFileSync(join(tmp, 'index.json'), JSON.stringify(ix))
       rmSync(dest, { recursive: true, force: true }); renameSync(tmp, dest)
       for (const n of readdirSync(home)) if (n !== commit) rmSync(join(home, n), { recursive: true, force: true }) // one copy per project
