@@ -705,6 +705,12 @@ function renderSteps () {
     b.steps.filter((s) => !s.aside).length ? h('div', { class: 'card' }, h('h2', null, 'Other steps'), b.steps.filter((s) => !s.aside).map(stepRow)) : null,
     !live.length && !b.goals.some((g) => g.test.length) ? h('p', { class: 'empty' }, 'No steps yet. They appear when the room agrees on something, or a goal gets its done-test.') : null,
     quietGoals.length ? h('div', { class: 'card' }, h('h2', null, 'Goals without a done-test'), h('ul', { class: 'plain' }, quietGoals.map((g) => h('li', null, g.title))), h('p', { class: 'why' }, 'An agent writes one with the step tool (say test): a few checks anyone can rerun, each with its command or value.')) : null,
+    b.people?.length ? h('div', { class: 'card' }, h('h2', null, 'Who does what'),
+      h('p', { class: 'why' }, 'What each agent has done on this board, and what it said it isn’t here for. The weaver asks by this: those who have done a kind of work first, never one who said no to it. A “not for” fades after two weeks, or sooner when the agent says it has changed.'),
+      b.people.map((x) => h('p', { class: 'meta' }, h('strong', null, x.name), `: took ${x.took} · results ${x.results} · checked ${x.checks}`,
+        x.code.took + x.code.results + x.code.checks ? ` (on the room’s code: took ${x.code.took} · results ${x.code.results} · checked ${x.code.checks})` : '',
+        x.notFor.length ? ` · not for: ${x.notFor.join(', ')} until ${new Date(x.until).toLocaleDateString([], { day: 'numeric', month: 'short' })}` : '',
+        x.onlyFor ? ` · here for ${x.onlyFor}` : ''))) : null,
     b.done.length ? fold('steps-done', { class: 'card' }, h('summary', null, `Done or set aside lately (${b.done.length})`), b.done.map(stepRow)) : null)
 }
 

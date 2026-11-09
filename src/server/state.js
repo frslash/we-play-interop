@@ -16,6 +16,9 @@ function credentialOf (doc, room) {
   return grantMismatch(claims, doc, room) ? null : claims
 }
 
+/** Whether a step is about the room's own code: its result is a pull request, or its words say so. */
+export const isCodeStep = (s) => (s?.evidence ?? []).some((x) => /\/pull\/\d+|\/api\/pulls\/\d+/.test(x?.url ?? '')) || /\b(pull request|the room['’]s (own )?code|room code)\b/i.test(`${s?.title ?? ''} ${s?.done ?? ''}`)
+
 export class State {
   constructor () {
     this.workspace = null // the workspace DID (author of the genesis)
@@ -49,6 +52,10 @@ export class State {
     this.pressed = new Set() // lines the facilitator asked to be made exact (the latest 200)
     this.testAsked = new Map() // goal -> when the facilitator last asked for its done-test
     this.lastReport = null // { at, seq } of the facilitator's latest report
+    // the weaver's memory of who does what (one record per agent, so it stays as small as the room): what each agent said it
+    // is not here for (it fades, see facilitator.js), and the steps it took, the results it posted and the checks it made
+    this.notFor = new Map() // agent -> { kinds, onlyFor, at, because }
+    this.doers = new Map() // agent -> { took, results, checks, code: { took, results, checks }, at }
     this.counts = {}
     this.seq = -1
   }
@@ -226,9 +233,10 @@ export class State {
     s.waitingSince = p.waitingOn ? (prev?.waitingOn && prev.waitingOn.who === p.waitingOn.who && prev.waitingOn.decision === p.waitingOn.decision ? prev.waitingSince ?? prev.seq : e.seq) : null
     if (!prev) t.opened++
     this.stepsSince ??= e.timestamp
-    if (!s.claimedAt && s.owner && ['claimed', 'in progress', 'result posted', 'checked'].includes(s.state)) { s.claimedAt = e.timestamp; t.claimed++ }
-    if (!s.resultAt && ['result posted', 'checked'].includes(s.state)) { s.resultAt = e.timestamp; t.resulted++; if (s.agreedAt) t.toResultMs.push(Date.parse(e.timestamp) - Date.parse(s.agreedAt)) }
-    if (s.state === 'checked' && prev?.state !== 'checked') { s.checkedAt = e.timestamp; t.checked++ }
+    const did = (who, what) => { if (!who) return; const d = this.doers.get(who) ?? { took: 0, results: 0, checks: 0, code: { took: 0, results: 0, checks: 0 }, at: null }; d[what]++; if (isCodeStep(s)) d.code[what]++; d.at = e.timestamp; this.doers.set(who, d) }
+    if (!s.claimedAt && s.owner && ['claimed', 'in progress', 'result posted', 'checked'].includes(s.state)) { s.claimedAt = e.timestamp; t.claimed++; did(s.owner, 'took') }
+    if (!s.resultAt && ['result posted', 'checked'].includes(s.state)) { s.resultAt = e.timestamp; t.resulted++; did(s.owner, 'results'); if (s.agreedAt) t.toResultMs.push(Date.parse(e.timestamp) - Date.parse(s.agreedAt)) }
+    if (s.state === 'checked' && prev?.state !== 'checked') { s.checkedAt = e.timestamp; t.checked++; did(s.checkedBy, 'checks') }
     if (Number.isInteger(p.heardSeq) && p.heardSeq > this.stepsHeard) this.stepsHeard = p.heardSeq
     for (const h of [p.from, ...(p.sources ?? [])].filter(Boolean)) { this.stepOf.delete(h); this.stepOf.set(h, id) }
     while (this.stepOf.size > 5000) this.stepOf.delete(this.stepOf.keys().next().value)
@@ -242,6 +250,7 @@ export class State {
     if (f.pressed) { this.pressed.add(f.pressed); if (this.pressed.size > 200) this.pressed.delete(this.pressed.values().next().value) }
     if (f.what === 'ask test') for (const g of f.goals ?? []) this.testAsked.set(g, Date.parse(e.timestamp))
     if (f.what === 'report') this.lastReport = { at: e.timestamp, seq: e.seq }
+    if (f.what === 'noted' && f.agent) { if (f.clear) this.notFor.delete(f.agent); else this.notFor.set(f.agent, { kinds: f.notFor ?? [], onlyFor: f.onlyFor ?? null, at: e.timestamp, because: f.because ?? null }) }
   }
 
   /** A closer look (dives.js) opens with one line of the weaver's and ends with another in its thread; both carry its record. */
