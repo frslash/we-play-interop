@@ -1,0 +1,97 @@
+name: community-stack
+# Builds the room's test host (community/) from the pinned OpenVTC and mediator sources, then boots the trust agent
+# and the community together on the runner and has the room's own code talk to them (community/smoke.mjs).
+# This is where "does it actually build and start" is answered, on every change to community/, before a deploy.
+# Read-only by construction: no secrets, no environments, no id-token, no push or pull_request_target triggers.
+# The keys it makes are throwaway and die with the runner. Edits to this file go to a person (.github/ always does).
+on:
+  pull_request:
+    paths: ['community/**', '.github/workflows/community-stack.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: community-stack-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: build ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 170   # a cold Rust release build of one service takes 25 to 60 minutes on a hosted runner
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [vta, vtc, mediator]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: room for the build (a release build of these workspaces needs tens of GB)
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+      - name: build the image from the pinned source
+        run: docker build --progress=plain -t wpi-${{ matrix.service }}:ci community/${{ matrix.service }}
+      - name: the binaries are there and answer
+        run: |
+          set -eu
+          case "${{ matrix.service }}" in
+            vta) docker run --rm --entrypoint vta wpi-vta:ci --version; docker run --rm --entrypoint vta wpi-vta:ci setup --help >/dev/null ;;
+            vtc) docker run --rm --entrypoint vtc wpi-vtc:ci --version; docker run --rm --entrypoint vtc wpi-vtc:ci setup --help >/dev/null ;;
+            mediator) docker run --rm --entrypoint mediator-setup wpi-mediator:ci --help >/dev/null; docker run --rm --entrypoint mediator wpi-mediator:ci --help >/dev/null ;;
+          esac
+      - name: the mediator's first-boot recipe is one its setup tool accepts
+        if: matrix.service == 'mediator'
+        run: |
+          set -eu
+          # The server itself cannot start here (its did:webvh names a host that only exists once deployed), so this
+          # checks the first-boot half: the recipe parses, the config and DID log are written, the two settings are set.
+          docker run --rm -e DATABASE_URL=redis://127.0.0.1:6379/ -e MEDIATOR_PUBLIC_URL=https://mediator.example.test --entrypoint sh wpi-mediator:ci -c '
+            timeout 120 /usr/local/bin/entrypoint.sh >/tmp/out 2>&1 || true
+            test -s /var/lib/mediator/mediator.toml || { echo "no config written"; cat /tmp/out; exit 1; }
+            test -s /var/lib/mediator/did.jsonl || { echo "no DID log written"; cat /tmp/out; exit 1; }
+            grep -q "^local_endpoints = " /var/lib/mediator/mediator.toml && grep -q "^did_web_self_hosted = " /var/lib/mediator/mediator.toml && test -f /var/lib/mediator/atm-functions.lua
+            echo "first boot wrote: $(ls /var/lib/mediator | tr "\n" " ")"'
+      - name: keep the image for the boot job
+        if: matrix.service != 'mediator'
+        run: docker save wpi-${{ matrix.service }}:ci | gzip > /tmp/${{ matrix.service }}.tar.gz
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.service != 'mediator'
+        with:
+          name: image-${{ matrix.service }}
+          path: /tmp/${{ matrix.service }}.tar.gz
+          retention-days: 1
+  boot:
+    name: boot the agent and the community, and talk to them
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: /tmp/images
+      - name: load the images
+        run: for s in vta vtc; do gunzip -c /tmp/images/image-$s/$s.tar.gz | docker load; done
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: the entrypoints keep a planted passphrase out of every output and off the volume
+        run: sudo sh community/test-entrypoints.sh
+      - name: boot (throwaway passphrases, made here)
+        run: |
+          set -eu
+          export VTA_SEED_PASSPHRASE="$(openssl rand -base64 48 | tr -d '\n=+/' | cut -c1-48)" VTC_SECRETS_PASSPHRASE="$(openssl rand -base64 48 | tr -d '\n=+/' | cut -c1-48)"
+          docker compose -f community/compose.ci.yml up -d
+          for i in $(seq 1 90); do curl -fsS http://127.0.0.1:8200/health >/dev/null 2>&1 && break; sleep 5; done
+          curl -fsS http://127.0.0.1:8100/health && echo
+          curl -fsS http://127.0.0.1:8200/health && echo
+      - name: the room's code talks to the community
+        run: node community/smoke.mjs http://127.0.0.1:8200
+      - name: what each service said, when something failed (throwaway keys; the entrypoints withhold setup output)
+        if: failure()
+        run: docker compose -f community/compose.ci.yml logs --no-color --tail 200 || true
+      - name: tear down
+        if: always()
+        run: docker compose -f community/compose.ci.yml down -v || true

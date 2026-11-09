@@ -1,0 +1,34 @@
+# The trust agent and the community together on one machine, for the check in
+# .github/workflows/community-stack.yml (and for anyone who wants to try the test host on a laptop with Docker).
+# This is the openvti starter kit's "local mode": loopback DIDs, REST only, no mediator and no proxy. The
+# community shares the agent's network so that both reach each other, and their loopback DIDs, on localhost.
+# THROWAWAY KEYS ONLY: the passphrases come from the environment of whoever runs it and die with the volumes.
+services:
+  vta:
+    image: ${VTA_IMAGE:-wpi-vta:ci}
+    environment:
+      VTA_SEED_PASSPHRASE: "${VTA_SEED_PASSPHRASE:?set a throwaway passphrase}"
+      VTA_PUBLIC_URL: "http://localhost:8100"
+      VTA_REST_URL: "http://localhost:8100"
+      VTA_ALLOW_PRIVATE_ENDPOINTS: "1"
+      MEDIATOR_INTERNAL_URL: ""
+      VTC_HANDOFF_URL: "http://localhost:8201/setup-did"
+      BIND_HOST: "0.0.0.0"
+    ports: ["127.0.0.1:8100:8100", "127.0.0.1:8200:8200"]
+    volumes: ["vta-data:/var/lib/vta"]
+  vtc:
+    image: ${VTC_IMAGE:-wpi-vtc:ci}
+    network_mode: "service:vta"
+    depends_on: [vta]
+    environment:
+      VTC_SECRETS_PASSPHRASE: "${VTC_SECRETS_PASSPHRASE:?set a throwaway passphrase}"
+      VTC_PUBLIC_URL: "http://localhost:8200"
+      VTA_INTERNAL_URL: "http://localhost:8100"
+      VTA_ALLOW_PRIVATE_ENDPOINTS: "1"
+      MEDIATOR_INTERNAL_URL: ""
+      VTC_CORS_ORIGINS: ""
+      BIND_HOST: "0.0.0.0"
+    volumes: ["vtc-data:/var/lib/vtc"]
+volumes:
+  vta-data:
+  vtc-data:

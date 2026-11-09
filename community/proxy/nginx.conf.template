@@ -1,5 +1,10 @@
-# Default-deny. Only exact paths and methods below are forwarded; everything else is 404, /admin included.
+# Default-deny. Only the paths and methods below are forwarded; everything else is a 404, the console included.
 # Refusals are logged by reason only: no body, no query string, no headers.
+# Each path was read from the code these services are built from (the projects shelf names the commits):
+#   community: vtc-service/src/server.rs and routes/ (the document door is POST /v1/trust-tasks: every join, pass
+#              and room call is a signed document sent there; there is no /v1/join-requests route);
+#   agent:     vta-service/src/routes/self_hosted_did.rs (its DID log; its own door stays on the private network);
+#   mediator:  crates/affinidi-messaging-mediator/src (everything under /mediator/v1/, plus its DID log).
 resolver [fd12::10] valid=10s ipv6=on;   # Railway's private-network DNS
 
 limit_req_zone  $binary_remote_addr zone=perip:10m rate=10r/s;
@@ -14,23 +19,39 @@ server {
   return 404;
 }
 
-# ---- vtc.inwove.org ----
+# ---- vtc.inwove.org: the community ----
 server {
   listen 8080;
   server_name vtc.inwove.org;
   include /etc/nginx/conf.d/common.inc;
   set $upstream ${VTC_UPSTREAM};
 
+  # its DID, and the DIDs of the rooms and groups it hosts
   location = /.well-known/did.jsonl         { limit_except GET { deny all; } proxy_pass http://$upstream; }
-  location = /.well-known/did-witness.json  { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  location ^~ /room-dids/                   { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  location ^~ /group-dids/                  { limit_except GET { deny all; } proxy_pass http://$upstream; }
   location = /health                        { limit_except GET { deny all; } proxy_pass http://$upstream; }
-  location = /members/                      { limit_except GET { deny all; } proxy_pass http://$upstream; }
-  location ^~ /members/static/              { limit_except GET { deny all; } proxy_pass http://$upstream; }
-  location = /v1/join-requests              { limit_except POST { deny all; } proxy_pass http://$upstream; }
+  # the door: every signed document (join, pass, room, sign-in) comes in here
+  location = /v1/trust-tasks                { limit_except POST { deny all; } proxy_pass http://$upstream; }
+  # what anyone may read: who the community is, its DID as a QR, and which passes it has withdrawn
+  location = /v1/community/public-profile   { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  location = /v1/community/did-qr.svg       { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  location ^~ /v1/status-lists/             { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  # the join page and member portal (files to read, and the portal's own session calls)
+  location = /                              { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  location = /tokens.css                    { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  location = /site.css                      { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  location = /fonts.css                     { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  location = /site.js                       { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  location = /theme.js                      { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  location ^~ /fonts/                       { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  location = /members                       { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  location ^~ /members/                     { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  location ^~ /v1/member/                   { limit_except GET POST { deny all; } proxy_pass http://$upstream; }
   location / { access_log /dev/stdout refusal; return 404; }
 }
 
-# ---- vta.inwove.org: its DID files only ----
+# ---- vta.inwove.org: the trust agent's DID log only ----
 server {
   listen 8080;
   server_name vta.inwove.org;
@@ -38,19 +59,31 @@ server {
   set $upstream ${VTA_UPSTREAM};
 
   location = /.well-known/did.jsonl         { limit_except GET { deny all; } proxy_pass http://$upstream; }
-  location = /.well-known/did-witness.json  { limit_except GET { deny all; } proxy_pass http://$upstream; }
   location / { access_log /dev/stdout refusal; return 404; }
 }
 
-# ---- mediator.inwove.org: its DID and the TSP/DIDComm endpoint ----
+# ---- mediator.inwove.org: its DID and its messaging endpoints ----
 server {
   listen 8080;
   server_name mediator.inwove.org;
   include /etc/nginx/conf.d/common.inc;
+  # One mediator message may be up to 1 MiB (its own limit, and what a room's Welcome or a file chunk can need):
+  # the 64 KB cap of the other two hosts would cut those off.
+  client_max_body_size 1m;
   set $upstream ${MEDIATOR_UPSTREAM};
 
-  location = /.well-known/did.jsonl         { limit_except GET { deny all; } proxy_pass http://$upstream; }
-  location = /mediator/v1/ws                { proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; proxy_read_timeout 300s; proxy_pass http://$upstream; }
-  location = /mediator/v1/inbound           { limit_except POST { deny all; } proxy_pass http://$upstream; }
+  location = /.well-known/did.jsonl             { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  location = /.well-known/did.json              { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  location = /mediator/v1/ws                    { limit_except GET { deny all; } proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; proxy_read_timeout 300s; proxy_pass http://$upstream; }
+  location = /mediator/v1/authenticate/challenge { limit_except POST { deny all; } proxy_pass http://$upstream; }
+  location = /mediator/v1/authenticate          { limit_except POST { deny all; } proxy_pass http://$upstream; }
+  location = /mediator/v1/authenticate/refresh  { limit_except POST { deny all; } proxy_pass http://$upstream; }
+  location = /mediator/v1/tsp/authenticate      { limit_except POST { deny all; } proxy_pass http://$upstream; }
+  location = /mediator/v1/inbound               { limit_except POST { deny all; } proxy_pass http://$upstream; }
+  location = /mediator/v1/outbound              { limit_except POST { deny all; } proxy_pass http://$upstream; }
+  location = /mediator/v1/fetch                 { limit_except POST { deny all; } proxy_pass http://$upstream; }
+  location = /mediator/v1/delete                { limit_except DELETE { deny all; } proxy_pass http://$upstream; }
+  location ^~ /mediator/v1/list/                { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  location = /mediator/v1/livez                 { limit_except GET { deny all; } proxy_pass http://$upstream; }
   location / { access_log /dev/stdout refusal; return 404; }
 }
