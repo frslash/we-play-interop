@@ -72,7 +72,7 @@ const fake = createServer((req, res) => {
   if (t && t[1] !== 'gone') {
     const files = override ? override(t[3], t[2]) : t[2] === 'nolicence' ? REPO_FILES(t[3]).filter(([p]) => p !== 'LICENSE') : REPO_FILES(t[3])
     res.writeHead(200, { 'content-type': 'application/x-gzip', 'x-ratelimit-limit': '60', 'x-ratelimit-remaining': '57', 'x-ratelimit-reset': '1794000000' })
-    return res.end(tarGz(`${t[2]}-${t[3]}`, files, mode === 'wrong-commit' ? D : t[3]))
+    return res.end(tarGz(`${t[2]}-${t[3]}`, files, mode === 'wrong-commit' ? D : mode === 'no-record' ? null : t[3]))
   }
   res.writeHead(404); res.end('Not Found')
 })
@@ -299,6 +299,20 @@ describe('the projects shelf', () => {
     assert.equal(shelf({ list: [], named: () => named.slice(0, 3) }).view().notTaken, undefined) // under the cap, nothing to say
   })
 
+  test('shelf leftovers: a name like x/.. is no repository, a path that comes twice is one row, an archive must say its commit, and the view says whether it did', async () => {
+    for (const no of ['https://github.com/o/..', 'https://github.com/o/.', 'https://github.com/o/..git']) assert.equal(repoOf(no) === 'o/..' || repoOf(no) === 'o/.', false, no)
+    const s0 = shelf({ list: [{ repo: 'x/..', pin: A }, { repo: 'x/.', pin: A }, { repo: 'x/ok.', pin: A }], named: () => [{ repo: 'y/..', pin: A, by: 'did:key:zM', at: 1 }, { repo: 'y/.', pin: B, by: 'did:key:zM', at: 2 }, { repo: 'y/ok', pin: B, by: 'did:key:zM', at: 3 }] })
+    assert.deepEqual(s0.all().map((p) => p.repo).sort(), ['x/ok.', 'y/ok']); assert.deepEqual(s0.waitingForACommit, [])
+    reset(); override = (sha) => [...REPO_FILES(sha), ['README.md', 'second readme\n'], ['src/main.rs', Buffer.concat([Buffer.from('x'), Buffer.from([0])])], ['LICENSE', 'MIT License\n']] // README twice (the last is kept), main.rs again as a binary (so it is gone), LICENSE again
+    const s = shelf(), list = await s.files('o/demo')
+    assert.equal(list.files.filter((f) => f.path === 'README.md').length, 1); assert.equal(list.files.some((f) => f.path === 'src/main.rs'), false)
+    assert.equal((await s.read('o/demo', 'README.md')).text, 'second readme\n'); assert.equal(existsSync(join(s.dir, 'o__demo', A, 'files', 'src/main.rs')), false)
+    assert.equal(s.view().projects.find((p) => p.project === 'o/demo').copy.licence, 'MIT')
+    const copy = s.view().projects.find((p) => p.project === 'o/demo').copy; assert.equal(copy.commitConfirmed, true)
+    reset(); mode = 'no-record'; const t = shelf()
+    await assert.rejects(t.files('o/demo'), (e) => e.status === 502 && /did not say which commit it was cut from.*not confirmed/.test(e.message)); assert.equal(existsSync(join(t.dir, 'o__demo', A)), false)
+  })
+
   test('a cap that is passed stops the unpack and discards it: no partial copy, and no second try at that commit', async () => {
     const refuseAt = async (limits, why, files = null) => {
       reset(); override = files; const s = shelf({ limits })
@@ -383,7 +397,7 @@ describe('the projects shelf', () => {
 
   test('a large project lists as folders with counts', async () => {
     const many = Array.from({ length: 450 }, (_, i) => [`pkg${i % 3}/f${i}.js`, `// ${i}\n`])
-    const big = createServer((req, res) => { if (req.url.includes('/commits/')) { res.writeHead(200); return res.end(A) } res.writeHead(200); res.end(tarGz('big-aaaaaaa', [['LICENSE', 'MIT License\n'], ['top.md', 'hi\n'], ...many])) })
+    const big = createServer((req, res) => { if (req.url.includes('/commits/')) { res.writeHead(200); return res.end(A) } res.writeHead(200); res.end(tarGz('big-aaaaaaa', [['LICENSE', 'MIT License\n'], ['top.md', 'hi\n'], ...many], A)) })
     await new Promise((r) => big.listen(0, '127.0.0.1', r))
     try {
       const s = new Shelf({ dataDir: mkdtempSync(join(dir, 'b-')), list: [{ repo: 'o/big', pin: A }], hosts: { api: `http://127.0.0.1:${big.address().port}`, code: `http://127.0.0.1:${big.address().port}` }, allowHttp: true })
