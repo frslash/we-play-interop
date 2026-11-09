@@ -110,7 +110,6 @@ describe('a change merged without votes closes only pull requests proposed for t
     assert.match(result.detail, /left #77 open/)
   })
 
-  // this replaces #96's test (test/close-others-pull.test.js), which expected the opposite
   test('a page-only change with no votes may not close another person’s open pull request it names', async () => {
     const rules = JSON.parse(readFileSync(new URL('../rules.json', import.meta.url), 'utf8'))
     assert.equal(laneOf(rules, ['public/index.html']), 'small', 'the change touches the page only')
