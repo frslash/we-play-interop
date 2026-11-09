@@ -2,6 +2,7 @@
 // DIF reference library (it verifies the log's hash chain and signatures).
 // Fetches for did:webvh go only to public https hosts, with a timeout and a size cap.
 import { lookup } from 'node:dns/promises'
+import https from 'node:https'
 import { isIP } from 'node:net'
 import { resolveDID as resolveWebvh } from 'didwebvh-ts'
 import { resolveDidKey, resolveDidPeer4 } from '../shared/did.js'
@@ -13,20 +14,68 @@ const privateV4 = (ip) => {
 }
 const privateV6 = (ip) => { const s = ip.toLowerCase(); return s === '::1' || s === '::' || s.startsWith('fc') || s.startsWith('fd') || s.startsWith('fe80') || s.startsWith('::ffff:') }
 
-/** fetch for did:webvh: public https only, 8 s, 1 MB. */
-export async function publicFetch (input, init = {}) {
+const MAX_BYTES = 1_000_000
+
+/**
+ * fetch for did:webvh and the room's outbound calls: public https only, port 443 only,
+ * 8 s, 1 MB. The address that passes the public check is the address that is connected to
+ * (pinned through the socket's `lookup`), so a server that answers differently the second
+ * time (DNS rebinding) cannot steer the request to 127.0.0.1 or 169.254.169.254.
+ */
+export function createPublicFetch ({ lookup: dnsLookup = lookup, request = https.request, port: fixedPort = 443 } = {}) {
+  return (input, init = {}) => doPublicFetch(input, init, { dnsLookup, request, fixedPort })
+}
+
+// `lookup`, `request` and `port` are injectable only so the tests can run a local server and a stub resolver.
+async function doPublicFetch (input, init, { dnsLookup, request, fixedPort }) {
   const u = new URL(input)
   if (u.protocol !== 'https:') throw new Error('did:webvh: https only')
+  if (u.port && u.port !== '443') throw new Error('did:webvh: port 443 only')
+  if (u.username || u.password) throw new Error('did:webvh: no credentials in the address')
   const host = u.hostname.replace(/^\[|\]$/g, '')
-  const addrs = isIP(host) ? [{ address: host, family: isIP(host) }] : await lookup(host, { all: true })
+  const addrs = isIP(host) ? [{ address: host, family: isIP(host) }] : await dnsLookup(host, { all: true })
   if (!addrs.length || addrs.some((a) => (a.family === 4 ? privateV4(a.address) : privateV6(a.address)))) throw new Error('did:webvh: host is not public')
-  const res = await fetch(u, { ...init, redirect: 'error', signal: AbortSignal.timeout(8000) })
-  const len = Number(res.headers.get('content-length') || 0)
-  if (len > 1_000_000) throw new Error('did:webvh: log too large')
-  const body = await res.text()
-  if (body.length > 1_000_000) throw new Error('did:webvh: log too large')
-  return new Response(body, { status: res.status, headers: res.headers })
+  const pinned = addrs[0]
+  const signal = init.signal ?? AbortSignal.timeout(8000)
+  const headers = {}
+  for (const [k, v] of new Headers(init.headers ?? {})) headers[k] = v
+  const body = init.body == null ? undefined : (typeof init.body === 'string' || init.body instanceof Uint8Array ? init.body : String(init.body))
+  return await new Promise((resolve, reject) => {
+    const req = request({
+      protocol: 'https:',
+      host,
+      port: fixedPort,
+      path: u.pathname + u.search,
+      method: init.method ?? 'GET',
+      headers,
+      servername: isIP(host) ? undefined : host,
+      lookup: (_name, opts, cb) => (opts?.all ? cb(null, [{ address: pinned.address, family: pinned.family }]) : cb(null, pinned.address, pinned.family)),
+      signal,
+    }, (res) => {
+      const status = res.statusCode ?? 0
+      if (status >= 300 && status < 400) { res.destroy(); reject(new Error('did:webvh: redirects are not followed')); return }
+      if (Number(res.headers['content-length'] || 0) > MAX_BYTES) { res.destroy(); reject(new Error('did:webvh: log too large')); return }
+      const chunks = []
+      let size = 0
+      res.on('data', (c) => {
+        size += c.length
+        if (size > MAX_BYTES) { res.destroy(); reject(new Error('did:webvh: log too large')); return }
+        chunks.push(c)
+      })
+      res.on('error', reject)
+      res.on('end', () => {
+        const h = new Headers()
+        for (const [k, v] of Object.entries(res.headers)) for (const x of [].concat(v)) h.append(k, x)
+        const noBody = status === 204 || status === 205 || status === 304
+        resolve(new Response(noBody ? null : Buffer.concat(chunks), { status, headers: h }))
+      })
+    })
+    req.on('error', reject)
+    req.end(body)
+  })
 }
+
+export const publicFetch = createPublicFetch()
 
 export function createResolver ({ fetch = publicFetch, ttlMs = 5 * 60_000 } = {}) {
   const cache = new Map()
