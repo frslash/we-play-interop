@@ -488,6 +488,11 @@ function renderTalk (scrollDown) {
     talk.toggle = h('div', { class: 'seg small' })
     talk.input = keep(h('textarea', { rows: 1, maxlength: 2000, placeholder: 'Say something…' }), 'chat.text')
     talk.input.addEventListener('input', autoGrow)
+    // @mentions: type @ and a few letters to pick a person or agent; the room wakes whoever is named
+    talk.mentions = h('div', { class: 'row', hidden: true })
+    const mentionFor = () => { const m = /(^|\s)@([^@\n]{0,30})$/.exec(talk.input.value.slice(0, talk.input.selectionStart)); return m ? m[2].toLowerCase() : null }
+    const pickMention = (name) => { const end = talk.input.selectionStart, before = talk.input.value.slice(0, end).replace(/@([^@\n]{0,30})$/, '@' + name + ' '); talk.input.value = before + talk.input.value.slice(end); talk.input.focus(); talk.input.setSelectionRange(before.length, before.length); talk.input.dispatchEvent(new Event('input')) }
+    talk.input.addEventListener('input', () => { const q = mentionFor(), names = q == null ? [] : (S?.people ?? []).filter((p) => p.name && !isCheck(p.did) && p.name.toLowerCase().startsWith(q)).map((p) => p.name).slice(0, 6); talk.mentions.hidden = !names.length; fill(talk.mentions, names.map((n) => h('button', { class: 'btn tiny', type: 'button', onclick: () => pickMention(n) }, '@' + n))) })
     talk.input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && matchMedia('(min-width: 760px)').matches) { ev.preventDefault(); sendChat() } })
     talk.picker = h('input', { type: 'file', accept: 'image/*,.pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv', multiple: true, hidden: true, onchange: (ev) => addPhotos([...ev.target.files]).finally(() => { ev.target.value = '' }) })
     talk.tray = h('div', { class: 'photo-tray', hidden: true })
@@ -505,7 +510,7 @@ function renderTalk (scrollDown) {
       rec.onend = () => { talk.rec = null; talk.micBtn.classList.remove('primary') }
       rec.start(); talk.micBtn.classList.add('primary')
     }
-    talk.composer = h('div', { class: 'composer' }, talk.reply, talk.tray, h('div', { class: 'composer-row' }, h('button', { class: 'btn attach', 'aria-label': 'Add a photo or file', title: 'Add a photo or a file (a photo’s location and camera data are removed)', onclick: () => talk.picker.click() }, '📎'), talk.picker, talk.micBtn, talk.input, h('button', { class: 'btn primary send', onclick: sendChat, 'aria-label': 'Send' }, '↑')), talk.toggle)
+    talk.composer = h('div', { class: 'composer' }, talk.reply, talk.tray, talk.mentions, h('div', { class: 'composer-row' }, h('button', { class: 'btn attach', 'aria-label': 'Add a photo or file', title: 'Add a photo or a file (a photo’s location and camera data are removed)', onclick: () => talk.picker.click() }, '📎'), talk.picker, talk.micBtn, talk.input, h('button', { class: 'btn primary send', onclick: sendChat, 'aria-label': 'Send' }, '↑')), talk.toggle)
     talk.input.addEventListener('paste', (ev) => { const files = [...(ev.clipboardData?.files ?? [])].filter((f) => f.type.startsWith('image/')); if (files.length) { ev.preventDefault(); addPhotos(files) } })
     fill(root, talk.goals, talk.list, talk.composer)
   }
