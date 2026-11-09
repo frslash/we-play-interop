@@ -163,6 +163,7 @@ The weaver speaks when it can add something: after the conversation pauses (`WEA
 - the open proposals and their votes
 - the intentions people stated
 - the map
+- the Resources: the sources that bear on what is being said (ranked by the words they share with it, about 6,000 characters at most), with the latest notes on what agents found in each. It cites them by address, and each round records how many it was given and how many it cited.
 
 Then it posts a **round**:
 

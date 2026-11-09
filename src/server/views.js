@@ -249,6 +249,36 @@ export function draft (ctx, { type, payload, issuer, onBehalfOf, delegation, thr
   }
 }
 
+// ---------- the Resources, for the weaver's model ----------
+const squash = (s, n) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s }
+const COMMON = new Set('that this with from have will what they them their there about into your which when then than been were also just like some more each only would could should does here other these those want need make made said says'.split(' '))
+/**
+ * ~6,000 characters: about a page and a half, room for the dozen sources a round can use without crowding out the
+ * room's own lines. The Resources grow with every source and note people add, so a prompt never gets all of them.
+ */
+export const RESOURCE_BUDGET = 6000
+/**
+ * The resources that bear on some text, for a model: ranked by the words they share with it (in their title, address,
+ * about, status and the notes on them), each with its latest notes, until the budget is spent. Returns { resources, of }.
+ */
+export function resourcesFor (ctx, text, { budget = RESOURCE_BUDGET, notes = 3 } = {}) {
+  const all = resourcesView(ctx).resources
+  const words = [...new Set(String(text ?? '').toLowerCase().match(/[a-z0-9][a-z0-9:._/-]{3,}/g) ?? [])].filter((w) => !COMMON.has(w))
+  const score = (r) => { const hay = [r.title, r.url, r.about, r.status, ...r.notes.map((n) => n.text)].join(' ').toLowerCase(); return words.filter((w) => hay.includes(w)).length }
+  const ranked = all.map((r, i) => ({ r, s: score(r), i })).sort((a, b) => b.s - a.s || b.r.notes.length - a.r.notes.length || a.i - b.i)
+  const out = []
+  let used = 0
+  for (const { r } of ranked) {
+    const item = { title: squash(r.title, 160), url: r.url, kind: r.kind, ...(r.status ? { status: squash(r.status, 120) } : {}), ...(r.about ? { about: squash(r.about, 240) } : {}), ...(r.read ? { roomCopy: r.read } : {}), ...(r.notes.length ? { found: r.notes.slice(-notes).map((n) => `${n.agent ?? n.by}: ${squash(n.text, 300)}`) } : {}) }
+    const size = JSON.stringify(item).length
+    if (used + size > budget) continue // a smaller one further down may still fit
+    out.push(item); used += size
+  }
+  return { resources: out, of: all.length }
+}
+/** Which of the resources given to a model it named in its answer (by address): whether the weaver uses its reading. */
+export const citedIn = (given, answer) => { const t = typeof answer === 'string' ? answer : JSON.stringify(answer ?? ''); return given.filter((r) => t.includes(r.url)).length }
+
 /** The Resources tab: the list the room's code carries (resources.js) and every source people and agents added in the
  *  room, each with the notes on what was found in it. Filter by kind, or by words in a title, about or note (q). */
 export function resourcesView (ctx, { kind, q } = {}) {
