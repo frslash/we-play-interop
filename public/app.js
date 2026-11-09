@@ -76,7 +76,7 @@ function forMe (e) {
   return lineIsFor(e, { did: me.did, name: person(me.did)?.name }, parent)
 }
 const seenForMe = () => Number(store.get('wpi.forMeSeen') ?? -1)
-function markForMeSeen () { const top = feed.find(forMe)?.seq; if (top != null && top > seenForMe()) { store.set('wpi.forMeSeen', String(top)); drawForMeCount() } }
+function markForMeSeen () { const top = feed.find(forMe)?.seq; if (top != null && top > seenForMe()) { store.set('wpi.forMeSeen', String(top)); drawForMeCount(); loadForYouSoon() } }
 function drawForMeCount () {
   const b = document.querySelector('.tabs button[data-tab="talk"]'); if (!b) return
   const n = feed.filter((e) => e.seq > seenForMe() && forMe(e)).length
@@ -99,6 +99,36 @@ async function toggleNotify () {
   if (!('Notification' in window)) return toast('This browser can\'t show notifications.')
   const ok = (await Notification.requestPermission()) === 'granted'
   store.set('wpi.notify', ok ? '1' : null); toast(ok ? 'You\'ll get a notification here when a line is for you.' : 'Notifications are blocked for this site in your browser settings.'); render()
+}
+
+// ---------- For you: what waits on you, counted by the room for you alone (room line 2629) ----------
+// Asked with a request signed here and answered only to its signer; none of it is in /api/state or the log.
+const BASE_TITLE = document.title
+let forYouData = null, forYouLast = 0, forYouTimer = null
+function loadForYouSoon () { // at most every 3 seconds, whatever the live stream does
+  clearTimeout(forYouTimer)
+  forYouTimer = setTimeout(() => { forYouLast = Date.now(); loadForYou().catch(() => {}) }, Math.max(0, 3000 - (Date.now() - forYouLast)))
+}
+async function loadForYou () {
+  if (!joined()) { forYouData = null; return drawForYou() }
+  const r = await privateCall('/api/for-you', 'forYou', { seenUpTo: seenForMe() })
+  forYouData = r.ok && r.body.for === me.did ? r.body : null
+  drawForYou()
+}
+function drawForYou () {
+  const box = $('#for-you'), d = joined() ? forYouData : null
+  document.title = d?.total ? `(${d.total}) ${BASE_TITLE}` : BASE_TITLE
+  if (!box) return
+  if (!d) { box.hidden = true; return fill(box) }
+  const toAgent = () => { const a = d.ok[0]?.agent; if (a && myLiveAgents()[0]?.did === a) talk.to = 'agent'; go('talk'); renderTalk(true) }
+  const toRoom = () => { talk.to = 'room'; go('talk'); renderTalk(true) }
+  const item = (n, label, onclick) => h('button', { type: 'button', class: 'fy' + (n ? ' some' : ''), onclick, 'aria-label': `${n} ${label}` }, h('b', null, String(n)), label)
+  box.hidden = false
+  fill(box, h('h2', null, 'For you'),
+    item(d.counts.ok, 'waiting for your OK', toAgent),
+    item(d.counts.vote, 'need your vote', () => go('decide')),
+    item(d.counts.waiting, 'waiting on you', () => go('steps')),
+    item(d.counts.replies, d.counts.replies === 1 ? 'unread reply' : 'unread replies', toRoom))
 }
 
 // an agent is in the room once it has been heard; before that it is being set up, on its person's card only
@@ -1618,6 +1648,7 @@ function render () {
   if (!S) return
   renderTop()
   if (document.body.dataset.tab === 'talk' && !document.hidden) markForMeSeen(); else drawForMeCount()
+  loadForYouSoon()
   for (const [name, draw] of Object.entries(TABS)) {
     const el = $('#tab-' + name)
     if (!['talk', 'watch'].includes(name) && typing(el)) stale.add(name); else { stale.delete(name); draw() } // the chat and the loom redraw around the typing, not over it
