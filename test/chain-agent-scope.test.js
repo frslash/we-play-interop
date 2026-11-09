@@ -17,8 +17,8 @@ describe('the chain verifier checks an agent\'s scope the way the room does', ()
     const dir = mkdtempSync(join(tmpdir(), 'wpi-scope-'))
     const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, agentApprovals: true, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } }, { awayGatherMs: 0, hostWelcomeMs: null })
     try {
-      await new Promise((r) => ctx.server.listen(0, r))
-      const base = `http://localhost:${ctx.server.address().port}`
+      await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+      const base = `http://127.0.0.1:${ctx.server.address().port}`
       const post = async (doc) => { const r = await fetch(`${base}/api/entries`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc) }); return { status: r.status, body: await r.json() } }
       const send = (id, name, payload, extra) => post(signedDocument(id, { type: TYPES[name], payload, ...extra }))
       const exp = new Date(Date.now() + 86400000).toISOString()

@@ -15,8 +15,8 @@ describe('export: the public record leaves whole, and comes back to the same hea
   test('export, import into a clean instance, same chain head and same meaning', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wpi-exp-')), dir2 = mkdtempSync(join(tmpdir(), 'wpi-imp-'))
     const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } }, { awayGatherMs: 0, hostWelcomeMs: null })
-    await new Promise((r) => ctx.server.listen(0, r))
-    const base = `http://localhost:${ctx.server.address().port}`, person = newIdentity()
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    const base = `http://127.0.0.1:${ctx.server.address().port}`, person = newIdentity()
     const send = async (name, payload) => (await fetch(`${base}/api/entries`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signedDocument(person, { type: TYPES[name], payload })) })).json()
     await send('join', { name: 'Person A' })
     await send('card', { goals: ['interop'], workingOn: 'a thing', lookingFor: 'partners' })

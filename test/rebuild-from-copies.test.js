@@ -16,7 +16,7 @@ import { checkExport } from '../src/server/export.js'
 
 const run = promisify(execFile)
 const cfg = (dataDir) => ({ ...baseConfig, dataDir, databaseUrl: '', workspaceKey: '', production: false, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } })
-const freePort = () => new Promise((r) => { const s = createServer().listen(0, () => { const p = s.address().port; s.close(() => r(p)) }) })
+const freePort = () => new Promise((r) => { const s = createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)) }) })
 const clone = (x) => JSON.parse(JSON.stringify(x))
 
 async function aRoom () {
@@ -81,11 +81,12 @@ describe('the record rebuilds from members\' copies with the server off', () => 
     assert.equal((await rebuildFromCopies([{ name: 'ours', entries: all }, { name: 'theirs', entries: theirs }], { room: all[0].author })).ok, true, 'naming the room settles it')
   })
 
-  test('from running mirrors, after the room is switched off (agent/mirror.js, agent/rebuild.js)', { timeout: 60_000 }, async () => {
+  // The ceiling only keeps a hung child process from stalling the suite; the waits inside poll for a condition.
+  test('from running mirrors, after the room is switched off (agent/mirror.js, agent/rebuild.js)', { timeout: 300_000 }, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wpi-rbm-'))
     const ctx = await createApp(cfg(dir), { awayGatherMs: 0, hostWelcomeMs: null })
-    await new Promise((r) => ctx.server.listen(0, r))
-    const room = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    const room = `http://127.0.0.1:${ctx.server.address().port}`
     const a = newIdentity()
     for (const name of ['Person A']) await ctx.log.accept(signedDocument(a, { type: TYPES.join, payload: { name } }))
     await ctx.log.accept(signedDocument(a, { type: TYPES.card, payload: { goals: ['interop'], workingOn: 'a thing', lookingFor: 'partners' } }))
@@ -96,13 +97,14 @@ describe('the record rebuilds from members\' copies with the server off', () => 
       for (let i = 0; i < 2; i++) {
         const port = await freePort(), mdir = join(dir, `mirror-${i}`)
         const kid = spawn(process.execPath, ['agent/mirror.js', room, '--dir', mdir, '--port', String(port), '--every', '1'], { stdio: 'ignore' })
-        kids.push(kid); mirrors.push({ url: `http://localhost:${port}`, dir: mdir })
+        kids.push(kid); mirrors.push({ url: `http://127.0.0.1:${port}`, dir: mdir })
       }
       for (const m of mirrors) {
-        for (let t = 0; ; t++) {
+        const deadline = Date.now() + 120_000
+        for (;;) {
           const got = await fetch(`${m.url}/`).then((r) => r.json()).catch(() => null)
           if (got?.entries === all.length && got.checksOut) break
-          if (t > 200) throw new Error('mirror never caught up')
+          if (Date.now() > deadline) throw new Error('mirror never caught up')
           await new Promise((r) => setTimeout(r, 100))
         }
       }

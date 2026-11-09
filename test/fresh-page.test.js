@@ -16,9 +16,9 @@ describe('a new release reaches browsers at once', () => {
   test('the page points at this release, re-checks itself, and each file of the release may be kept for good', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wpi-fresh-'))
     const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }, { hostWelcomeMs: null })
-    await new Promise((r) => ctx.server.listen(0, r))
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
     try {
-      const base = `http://localhost:${ctx.server.address().port}`
+      const base = `http://127.0.0.1:${ctx.server.address().port}`
       const page = await fetch(`${base}/`), html = await page.text()
       assert.equal(page.headers.get('cache-control'), 'no-cache', 'the page is always re-checked')
       const rel = /src="\/r\/([0-9a-f]{12})\/app\.js"/.exec(html)?.[1]

@@ -22,8 +22,8 @@ describe('log round trip: export-log.js from a running room, import-log.js into 
     const roomDir = mkdtempSync(join(tmpdir(), 'wpi-rt-room-')), emptyDir = mkdtempSync(join(tmpdir(), 'wpi-rt-empty-')), work = mkdtempSync(join(tmpdir(), 'wpi-rt-work-'))
     const ctx = await createApp(roomConfig(roomDir), { awayGatherMs: 0, hostWelcomeMs: null })
     try {
-      await new Promise((r) => ctx.server.listen(0, r))
-      const base = `http://localhost:${ctx.server.address().port}`, person = newIdentity()
+      await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+      const base = `http://127.0.0.1:${ctx.server.address().port}`, person = newIdentity()
       const send = async (name, payload) => (await fetch(`${base}/api/entries`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signedDocument(person, { type: TYPES[name], payload })) })).json()
       await send('join', { name: 'Person A' })
       await send('card', { goals: ['interop'], workingOn: 'a thing', lookingFor: 'partners' })

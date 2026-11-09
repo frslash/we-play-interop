@@ -17,7 +17,7 @@ describe('waiting on the room', () => {
   const person = newIdentity(), other = newIdentity()
   const send = async (id, name, payload, extra) => { const r = await fetch(`${base}/api/entries`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signedDocument(id, { type: TYPES[name], payload, ...extra })) }); return { status: r.status, body: await r.json() } }
   const wait = (q) => fetch(`${base}/api/wait?me=${encodeURIComponent(agent)}&${q}`).then(async (r) => ({ status: r.status, retryAfter: r.headers.get('retry-after'), body: q.includes('as=text') ? await r.text() : await r.json() }))
-  const start = async () => { ctx = await createApp(config, { awayGatherMs: 0, hostWelcomeMs: null }); await new Promise((r) => ctx.server.listen(0, r)); base = `http://localhost:${ctx.server.address().port}` }
+  const start = async () => { ctx = await createApp(config, { awayGatherMs: 0, hostWelcomeMs: null }); await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r)); base = `http://127.0.0.1:${ctx.server.address().port}` }
   const head = () => ctx.log.head().seq
 
   before(async () => {

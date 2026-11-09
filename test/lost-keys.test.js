@@ -24,8 +24,8 @@ describe('replacing a lost key', () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-lostkeys-'))
     const board = { generated: new Date().toISOString().slice(0, 10), projects: [], credentialProfiles: { profiles: {} }, runs: [] }
     ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', hosts: [host.did], weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(board)), llm: { ...baseConfig.llm, apiKey: '' } }, { awayGatherMs: 0, hostWelcomeMs: null })
-    await new Promise((r) => ctx.server.listen(0, r))
-    base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${ctx.server.address().port}`
     for (const [id, name] of [[oldKey, 'Person A'], [friend, 'Person B'], [host, 'The host'], [stranger, 'Person C']]) await send(id, 'join', { name })
     await send(oldKey, 'card', { goals: ['interop'], workingOn: 'a wallet', lookingFor: '' })
     const made = (await send(oldKey, 'host', { label: 'Helper' })).body.hosted

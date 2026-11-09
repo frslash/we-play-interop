@@ -181,8 +181,8 @@ describe('the workspace, end to end', () => {
     ghCalls = []
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: 'test', vetoWindowMinutes: 0, approvalsRequired: 1, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, apiKey: '' } }
     ctx = await createApp(config, { resolver: createResolver({ fetch: webvh.fetch }), gh, wakeFetch, awayGatherMs: 0, hostWelcomeMs: null })
-    await new Promise((r) => ctx.server.listen(0, r))
-    base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${ctx.server.address().port}`
     await ctx.board.refresh()
   })
   after(async () => { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) })
@@ -605,8 +605,8 @@ describe('the workspace, end to end', () => {
     const before = ctx.log.entries.map((e) => e.hash)
     await ctx.stop()
     ctx = await createApp({ ...ctx.config }, { resolver: createResolver({ fetch: webvh.fetch }), gh })
-    await new Promise((r) => ctx.server.listen(0, r))
-    base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${ctx.server.address().port}`
     assert.deepEqual(ctx.log.entries.map((e) => e.hash), before)
     assert.equal((await ctx.log.verify()).ok, true)
   })

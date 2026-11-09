@@ -24,8 +24,8 @@ async function room ({ running = true } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'wpi-facilitate-'))
   const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, voteMinutes: 10, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }
   const ctx = await createApp(config, { resolver: createResolver(), hostWelcomeMs: null })
-  await new Promise((r) => ctx.server.listen(0, r))
-  const base = `http://localhost:${ctx.server.address().port}`
+  await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+  const base = `http://127.0.0.1:${ctx.server.address().port}`
   await ctx.board.refresh()
   ctx.weaver.llm = { configured: false }
   const postDoc = async (doc) => { const r = await fetch(`${base}/api/entries`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc) }); return { status: r.status, body: await r.json() } }
@@ -399,7 +399,7 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
     const r = await room()
     try {
       const made = await r.send(r.people.c, 'host', { label: 'Hosted Agent' })
-      const hosted = made.body.hosted.did, link = made.body.hosted.connector.replace(/^https?:\/\/[^/]+/, `http://localhost:${r.ctx.server.address().port}`)
+      const hosted = made.body.hosted.did, link = made.body.hosted.connector.replace(/^https?:\/\/[^/]+/, `http://127.0.0.1:${r.ctx.server.address().port}`)
       await r.send(r.people.c, 'delegate', { delegate: hosted, scope: ['note', 'propose', 'vote'], label: 'Hosted Agent' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
       const call = async (tool, args) => { const res = await fetch(`${link}/call/${tool}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args ?? {}) }); return { status: res.status, text: await res.text() } }
       const pr = await r.agree('a', 'Write the wallet join walkthrough')

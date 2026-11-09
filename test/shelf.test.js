@@ -80,7 +80,7 @@ const fake = createServer((req, res) => {
 describe('the projects shelf', () => {
   let dir, base
   const shelf = (over = {}) => new Shelf({ dataDir: mkdtempSync(join(dir, 's-')), list: [{ repo: 'o/demo', title: 'Demo', pin: A }, { repo: 'o/pinned', title: 'Pinned', pin: PIN }], hosts: { api: base, code: base }, allowHttp: true, ...over })
-  before(async () => { await new Promise((r) => fake.listen(0, r)); base = `http://localhost:${fake.address().port}`; dir = mkdtempSync(join(tmpdir(), 'wpi-shelf-')) })
+  before(async () => { await new Promise((r) => fake.listen(0, '127.0.0.1', r)); base = `http://127.0.0.1:${fake.address().port}`; dir = mkdtempSync(join(tmpdir(), 'wpi-shelf-')) })
   after(() => { fake.close(); rmSync(dir, { recursive: true, force: true }) })
   const reset = () => { head = A; hits = []; sawAuth = false; mode = 'ok' }
 
@@ -295,9 +295,9 @@ describe('the projects shelf', () => {
   test('a large project lists as folders with counts', async () => {
     const many = Array.from({ length: 450 }, (_, i) => [`pkg${i % 3}/f${i}.js`, `// ${i}\n`])
     const big = createServer((req, res) => { if (req.url.includes('/commits/')) { res.writeHead(200); return res.end(A) } res.writeHead(200); res.end(tarGz('big-aaaaaaa', [['LICENSE', 'MIT\n'], ['top.md', 'hi\n'], ...many])) })
-    await new Promise((r) => big.listen(0, r))
+    await new Promise((r) => big.listen(0, '127.0.0.1', r))
     try {
-      const s = new Shelf({ dataDir: mkdtempSync(join(dir, 'b-')), list: [{ repo: 'o/big', pin: A }], hosts: { api: `http://localhost:${big.address().port}`, code: `http://localhost:${big.address().port}` }, allowHttp: true })
+      const s = new Shelf({ dataDir: mkdtempSync(join(dir, 'b-')), list: [{ repo: 'o/big', pin: A }], hosts: { api: `http://127.0.0.1:${big.address().port}`, code: `http://127.0.0.1:${big.address().port}` }, allowHttp: true })
       const top = await s.files('o/big')
       assert.equal(top.count, 452); assert.deepEqual(top.folders.map((f) => [f.path, f.files]), [['pkg0/', 150], ['pkg1/', 150], ['pkg2/', 150]]); assert.deepEqual(top.files.map((f) => f.path), ['LICENSE', 'top.md'])
       const one = await s.files('o/big', { under: 'pkg1' })
@@ -350,11 +350,11 @@ describe('the shelf in a running room', () => {
   const get = async (p) => { const r = await fetch(base + p); return { status: r.status, body: await r.json() } }
   before(async () => {
     head = A; hits = []; sawAuth = false; mode = 'ok'
-    await new Promise((r) => fake.listen(0, r)); gh = `http://localhost:${fake.address().port}`
+    await new Promise((r) => fake.listen(0, '127.0.0.1', r)); gh = `http://127.0.0.1:${fake.address().port}`
     dir = mkdtempSync(join(tmpdir(), 'wpi-shelf-app-'))
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, checkEveryMinutes: 0, githubToken: 'ghp_must_never_be_sent', workspaceRepo: 'o/demo', llm: { ...baseConfig.llm, apiKey: '', anthropicKey: '', provider: 'openai' } }
     ctx = await createApp(config, { hostWelcomeMs: null, sources: { startDelayMs: 3_600_000 }, shelf: { list: [{ repo: 'o/pinned', title: 'Pinned', pin: PIN }, { repo: 'Project-Weave-Tech/dtg-interop', title: 'Board', pin: A }], hosts: { api: gh, code: gh }, allowHttp: true } })
-    await new Promise((r) => ctx.server.listen(0, r)); base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r)); base = `http://127.0.0.1:${ctx.server.address().port}`
   })
   after(async () => { await ctx.stop(); fake.close(); rmSync(dir, { recursive: true, force: true }) })
 

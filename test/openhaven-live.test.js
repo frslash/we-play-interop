@@ -26,12 +26,12 @@ describe('OpenHaven live copy', () => {
   let dir, ctx, base, port
   const get = async (p) => { const r = await fetch(base + p); return { status: r.status, text: await r.text() } }
   before(async () => {
-    await new Promise((r) => fake.listen(0, r)); port = fake.address().port
+    await new Promise((r) => fake.listen(0, '127.0.0.1', r)); port = fake.address().port
     dir = mkdtempSync(join(tmpdir(), 'wpi-src-'))
-    const list = [{ ...SOURCES[0], url: `http://localhost:${port}/api/graph.json` }]
+    const list = [{ ...SOURCES[0], url: `http://127.0.0.1:${port}/api/graph.json` }]
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, checkEveryMinutes: 0, llm: { ...baseConfig.llm, apiKey: '' } }
     ctx = await createApp(config, { hostWelcomeMs: null, sources: { list, allowHttp: true, startDelayMs: 3_600_000 } })
-    await new Promise((r) => ctx.server.listen(0, r)); base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r)); base = `http://127.0.0.1:${ctx.server.address().port}`
   })
   after(async () => { await ctx.stop(); fake.close(); rmSync(dir, { recursive: true, force: true }) })
 
@@ -93,7 +93,7 @@ describe('OpenHaven live copy', () => {
   })
 
   test('only https addresses are fetched outside tests', async () => {
-    const s = new Sources({ dataDir: dir + '/strict', list: [{ ...SOURCES[0], url: `http://localhost:${port}/x` }] })
+    const s = new Sources({ dataDir: dir + '/strict', list: [{ ...SOURCES[0], url: `http://127.0.0.1:${port}/x` }] })
     assert.match((await s.refresh('openhaven')).error, /https/)
   })
 
@@ -123,7 +123,7 @@ describe('OpenHaven live copy', () => {
   test('start fetches shortly after starting, and stop clears the timers', async () => {
     const dir2 = mkdtempSync(join(tmpdir(), 'wpi-src2-'))
     mode = 'ok'; hits = 0
-    const s = new Sources({ dataDir: dir2, allowHttp: true, startDelayMs: 10, list: [{ ...SOURCES[0], url: `http://localhost:${port}/g` }] })
+    const s = new Sources({ dataDir: dir2, allowHttp: true, startDelayMs: 10, list: [{ ...SOURCES[0], url: `http://127.0.0.1:${port}/g` }] })
     s.start()
     for (let i = 0; i < 100 && !s.meta('openhaven').fetchedAt; i++) await new Promise((r) => setTimeout(r, 20))
     assert.ok(s.meta('openhaven').fetchedAt); assert.equal(hits, 1)
