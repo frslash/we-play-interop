@@ -4,6 +4,9 @@
 //   node agent/verify-log.js https://your-workspace
 import { verifyChain } from '../src/shared/chain.js'
 import { createResolver } from '../src/server/resolver.js'
+import { config } from '../src/server/config.js'
+// Whether agents may approve: AGENT_APPROVALS / SANDBOX as for a room, else the agreed rule in rules.json.
+const agentsMayApprove = Boolean(config.sandbox || config.agentApprovals)
 
 const base = (process.argv[2] || process.env.WPI_URL || '').replace(/\/$/, '')
 if (!base) { console.error('usage: node agent/verify-log.js <workspace url>'); process.exit(2) }
@@ -17,6 +20,6 @@ for (let after = -1; ;) {
   after = entries.at(-1).seq
 }
 const resolver = createResolver()
-const report = await verifyChain(entries, { keyFor: (did, vm, purpose) => resolver.keyFor(did, vm, purpose) })
+const report = await verifyChain(entries, { keyFor: (did, vm, purpose) => resolver.keyFor(did, vm, purpose), agentsMayApprove })
 console.log(JSON.stringify(report, null, 2))
 process.exit(report.ok ? 0 : 1)
