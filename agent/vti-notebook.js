@@ -199,9 +199,12 @@ export class VtiNotebook {
 
   #note (key, o) {
     const tags = Array.isArray(o.body.tags) ? o.body.tags : [], mine = tags.includes(NOTE_TAG)
-    const from = !mine || tagOf(tags, 'from:') === 'person' ? 'person' : tagOf(tags, 'agent:') === this.agentTag ? 'agent' : 'another-agent'
+    // #checked has verified `author` signed this body. A room can hold several members: only this member's own notes may read as the person's
+    // words (or the agent's); another member's note says so, whatever its tags claim, and names its author so it is shown as someone else's text.
+    const other = o.body.author !== this.member
+    const from = other ? 'another-member' : !mine || tagOf(tags, 'from:') === 'person' ? 'person' : tagOf(tags, 'agent:') === this.agentTag ? 'agent' : 'another-agent'
     const moved = tagOf(tags, 'moved:')
-    return { v: o.version, key, at: (mine && tagOf(tags, 'at:')) || o.at, from, text: mine ? String(o.body.body ?? '') : [o.body.title, o.body.body].filter(Boolean).join('\n'), ...(moved ? { moved } : {}) }
+    return { v: o.version, key, at: (mine && tagOf(tags, 'at:')) || o.at, from, ...(other ? { author: o.body.author } : {}), text: (mine ? String(o.body.body ?? '') : [o.body.title, o.body.body].filter(Boolean).join('\n')).slice(0, MAX_NOTE_CHARS), ...(moved ? { moved } : {}) }
   }
 
   /**
@@ -217,7 +220,10 @@ export class VtiNotebook {
       if (size >= chars) { older++; continue }
       const o = await this.#open(m)
       if (o.why) { unreadable[o.why] = (unreadable[o.why] ?? 0) + 1; continue }
-      const n = this.#note(m.key, o); notes.push(n); size += n.text.length
+      const n = this.#note(m.key, o); notes.push(n)
+      // Each record costs a fetch and an open even when it is empty; 200 stands for that cost in the same budget, so thousands of empty records
+      // cannot be opened one after another on every read.
+      size += n.text.length + 200
     }
     return { notes: notes.reverse(), older, unreadable }
   }
@@ -226,7 +232,7 @@ export class VtiNotebook {
   async #readUpTo () {
     const meta = this.records.get(this.markerKey)
     if (!meta) return 0
-    if (this.mark?.version !== meta.version) { const o = await this.#open(meta); this.mark = { version: meta.version, upTo: o.why ? 0 : Number(tagOf(o.body.tags ?? [], 'read:')) || 0 } }
+    if (this.mark?.version !== meta.version) { const o = await this.#open(meta); this.mark = { version: meta.version, upTo: o.why || o.body.author !== this.member ? 0 : Number(tagOf(o.body.tags ?? [], 'read:')) || 0 } } // only this member's own marker counts: another member's moves nothing
     return this.mark.upTo
   }
 
@@ -296,7 +302,7 @@ export class VtiNotebook {
       const r = await this.get()
       if (op === 'read') await this.markRead()
       const left = Object.values(r.unreadable).reduce((a, b) => a + b, 0)
-      return { notes: r.notes.map(({ at, from, text: t }) => ({ at, from, text: t })), ...(r.older ? { older: r.older } : {}), ...(left ? { unreadable: r.unreadable } : {}), ...(op === 'read' && card ? { card: await card().catch(() => null) } : {}) }
+      return { notes: r.notes.map(({ at, from, author, text: t }) => ({ at, from, ...(from === 'another-member' ? { author } : {}), text: t })), ...(r.older ? { older: r.older } : {}), ...(left ? { unreadable: r.unreadable } : {}), ...(op === 'read' && card ? { card: await card().catch(() => null) } : {}) }
     }
   }
 }

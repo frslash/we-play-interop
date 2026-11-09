@@ -44,7 +44,7 @@ export class RoomHost {
     this.url = url ? String(url).replace(/\/+$/, '') : null
     this.fetch = f ?? (this.url ? globalThis.fetch : publicFetch) // an address from someone else's DID document is only ever reached as a public https host
     this.gen = NEWER
-    this.counts = { calls: 0, refused: 0, slowDowns: 0, signedAnswers: 0, uncheckedAnswers: 0 }
+    this.counts = { calls: 0, refused: 0, slowDowns: 0, signedAnswers: 0, uncheckedAnswers: 0, unsignedRefused: 0 }
     this.last = null
   }
 
@@ -66,19 +66,25 @@ export class RoomHost {
     if (doc.id !== unsigned.id || doc.type !== type || doc.recipient !== this.hostDid || doc.payload?.roomId !== payload.roomId || !doc.proof) throw new VtiError('indeterminate', 'the trust agent handed back a different request than the one it was given', { from: 'the trust agent' })
     this.counts.calls++
     const r = await sendTask(await this.door(), doc, { fetch: this.fetch, counts: this.counts, ...(this.sleep ? { sleep: this.sleep } : {}) })
-    // A host with a DID of its own signs what it answers; one reached only by address answers unsigned. A signature that is there must hold.
-    if (r.reply?.proof) {
-      const bad = () => { throw new VtiError('proofInvalid', 'the answer is signed, but not by the host it was sent to', { from: 'the room host' }) }
-      if (signerOf(r.reply) !== this.hostDid) bad()
+    // A host whose DID this machine can read signs every answer it gives, and an answer that is not signed by it is refused (anyone on the
+    // path could otherwise forge a listing: versions, authors, cursors). A host reached only by address, or by a DID this machine cannot read
+    // (did:peer:2), answers unsigned: that goes through, counted. A signature that is there must always hold. An answer with no body at all
+    // (202, 204, 429) is not an unsigned reply: it says nothing to forge, and is handled below.
+    if (r.reply) {
+      const bad = (why) => { throw new VtiError('proofInvalid', why ?? 'the answer is signed, but not by the host it was sent to', { from: 'the room host' }) }
       let hostDoc = null
-      try { hostDoc = await this.resolver.resolve(this.hostDid) } catch {} // a host DID this machine cannot read (did:peer:2): its signature goes unchecked, and that is counted
-      if (!hostDoc) this.counts.uncheckedAnswers++
-      else {
-        let key = null
-        try { key = keyFromDidDocument(hostDoc, this.hostDid, r.reply.proof.verificationMethod, r.reply.proof.proofPurpose) } catch {}
-        if (!key || !verifySignature(r.reply, key).ok) bad()
-        this.counts.signedAnswers++
-      }
+      try { hostDoc = await this.resolver.resolve(this.hostDid) } catch {}
+      if (hostDoc && !r.reply.proof) { this.counts.unsignedRefused++; bad('the answer is not signed, though the host it was sent to has a DID that signs its answers: it may not have come from that host') }
+      if (r.reply.proof) {
+        if (signerOf(r.reply) !== this.hostDid) bad()
+        if (!hostDoc) this.counts.uncheckedAnswers++ // a host DID this machine cannot read (did:peer:2): its signature goes unchecked, and that is counted
+        else {
+          let key = null
+          try { key = keyFromDidDocument(hostDoc, this.hostDid, r.reply.proof.verificationMethod, r.reply.proof.proofPurpose) } catch {}
+          if (!key || !verifySignature(r.reply, key).ok) bad()
+          this.counts.signedAnswers++
+        }
+      } else this.counts.uncheckedAnswers++ // no DID to check against: answered unsigned, as such a host does
     }
     if (r.kind === 'done-no-body') throw new VtiError('indeterminate', 'the host had already answered this request and keeps no copy of a read; ask again', { from: 'the room host', status: r.status })
     this.member ??= principal
