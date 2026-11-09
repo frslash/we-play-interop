@@ -229,6 +229,18 @@ export class Log extends EventEmitter {
         if (!p.sides.some((s) => mine.includes(s.project)) && !p.sources?.length) throw new TaskError('malformedRequest', 'a run is entered by one of its two sides: join for your project, or add sources (public links) and it shows as reported')
         break
       }
+      case 'note':
+        if (p.task) {
+          const who = st.participants.get(p.task.for); if (!who || who.kind !== 'human' || who.left) throw new TaskError('malformedRequest', 'task.for: a person in this room (tasks are for people; agents get steps)')
+          if (p.task.by !== undefined || p.task.from !== undefined) throw new TaskError('malformedRequest', 'task.by and task.from are the weaver\'s to fill, when it turns someone\'s line into a task; a task line you write is asked by you')
+        }
+        if (p.taskDone) {
+          const t = st.tasks.get(p.taskDone)
+          if (!t) throw new TaskError('malformedRequest', 'taskDone: no task with that hash')
+          if (t.for !== principal) throw new TaskError('permissionDenied', `only ${st.nameOf(t.for)} (or their agent) says this task is done`, { status: 403 })
+          if (t.doneAt) throw new TaskError('malformedRequest', 'that task is marked done already')
+        }
+        break
       case 'propose':
         if (p.kind === 'record-run') {
           const mine = st.participants.get(principal)?.projects ?? []

@@ -459,10 +459,10 @@ async function sendChat () {
     if (!media) return
     const target = talk.replyTo
     const photos = media.filter((m) => !m.doc), docs = media.filter((m) => m.doc).map(({ doc, ...f }) => f)
-    const ok = await post('note', { text, kind: 'message', ...(photos.length ? { media: photos } : {}), ...(docs.length ? { files: docs } : {}) }, target ? { threadId: target.document.threadId ?? target.document.id, recipient: target.author } : {})
+    const ok = await post('note', { text, kind: 'message', ...(photos.length ? { media: photos } : {}), ...(docs.length ? { files: docs } : {}), ...taskOf() }, target ? { threadId: target.document.threadId ?? target.document.id, recipient: target.author } : {})
     if (!ok) return
     talk.photos.forEach((ph) => URL.revokeObjectURL(ph.url)); talk.photos = []; drawTray()
-    talk.input.value = ''; forget('chat.text'); autoGrow(); setReply(null); renderTalk(true)
+    talk.input.value = ''; forget('chat.text'); autoGrow(); setReply(null); drawTaskBox(); renderTalk(true)
     return
   }
   if (talk.to === 'agent') {
@@ -474,17 +474,17 @@ async function sendChat () {
     toast(listeningOf(agent.did) ? `Sent privately to ${agent.name}.` : `Sent privately to ${agent.name}. It isn’t running right now, so it reads this when it next starts.`)
   } else {
     const target = talk.replyTo
-    const ok = await post('note', { text, kind: 'message' }, target ? { threadId: target.document.threadId ?? target.document.id, recipient: target.author } : {})
+    const ok = await post('note', { text, kind: 'message', ...taskOf() }, target ? { threadId: target.document.threadId ?? target.document.id, recipient: target.author } : {})
     if (!ok) return
   }
-  talk.input.value = ''; forget('chat.text'); autoGrow(); setReply(null); renderTalk(true)
+  talk.input.value = ''; forget('chat.text'); autoGrow(); setReply(null); drawTaskBox(); renderTalk(true)
 }
-function setReply (e) {
+function setReply (e, { label } = {}) {
   talk.replyTo = e
   if (!talk.reply) return
   talk.reply.hidden = !e
   const deaf = e && person(e.author)?.kind === 'agent' && !listeningOf(e.author)
-  if (e) fill(talk.reply, h('span', { class: 'grow' }, `Replying to ${nameOf(e.author)}: `, h('em', null, (e.document.payload.text ?? '').slice(0, 80)), deaf ? h('span', { class: 'deaf' }, ` · ${nameOf(e.author)} isn’t listening right now, so it may not answer until its person is back`) : null), h('button', { class: 'btn small', onclick: () => setReply(null) }, '✕'))
+  if (e) fill(talk.reply, h('span', { class: 'grow' }, label ?? `Replying to ${nameOf(e.author)}: `, h('em', null, (e.document.payload.text ?? '').slice(0, 80)), deaf ? h('span', { class: 'deaf' }, ` · ${nameOf(e.author)} isn’t listening right now, so it may not answer until its person is back`) : null), h('button', { class: 'btn small', onclick: () => setReply(null) }, '✕'))
   if (e) talk.input.focus()
 }
 function voteButtons (p) {
@@ -539,7 +539,7 @@ function chatItem (e) {
     const weaver = e.author === S.workspace // every line the weaver signs reads as a notice, like its rounds: centred and quieter
     return h('div', { class: 'msg' + (weaver ? ' weaver' : '') + (e.author === me?.did ? ' mine' : '') + (agent && !weaver ? ' agent' : '') + (mineToAnswer ? ' for-me' : '') },
       h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${weaver ? 'var(--gold)' : colorFor(e.author)}` }), weaver ? 'The weaver' : nameOf(e.author), agent && !weaver ? listenDot(e.author) : null, agent && !weaver ? waitingBadge(e.author) : null, agent && !weaver && saysIt(e.author) ? h('span', { class: 'for', title: 'The agent’s own word: the room cannot check it' }, ` · ${saysIt(e.author)}`) : null, agent && !weaver && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
-        d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, mineToAnswer ? h('span', { class: 'badge for-me' }, 'for you') : null, ' ', time, actions),
+        d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, mineToAnswer ? h('span', { class: 'badge for-me' }, 'for you') : null, taskBadge(e), ' ', time, actions),
       parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${splitLayers(parent.document.payload.text ?? parent.document.payload.title ?? '').short.slice(0, 100)}`) : null,
       p.media?.length ? h('div', { class: 'photos' }, p.media.map((m) => h('a', { href: `/media/${m.sha256}`, target: '_blank', rel: 'noopener' }, h('img', { src: `/media/${m.sha256}`, loading: 'lazy', width: m.w, height: m.h, alt: 'a photo' })))) : null,
       p.files?.length ? h('div', { class: 'files' }, p.files.map((f) => h('a', { class: 'doc-chip', href: `/media/${f.sha256}?name=${encodeURIComponent(f.name)}`, download: f.name }, `📄 ${f.name} · ${sizeOf(f.bytes)}`))) : null,
@@ -621,6 +621,85 @@ async function loadOlder () {
     renderTalk(false, { holdAt: fromBottom })
   } finally { talk.loadingOlder = false }
 }
+// ---------- your tasks: what someone in the room asked you to do, beside the chat ----------
+// A line that asks a person to do something becomes a task on their list: the weaver spots the ask, an agent
+// aims one with its say tool, or a person ticks "Put this on …'s list" under the box. Ticking it posts
+// "Did it: …" in the task's thread; "Ask for help" opens a reply there, in the main chat, with the cursor in the box.
+const myTasks = () => (joined() ? (S.tasks ?? []).filter((t) => t.for === me.did) : [])
+function myBoard () {
+  const b = S.steps
+  if (!b || !joined()) return []
+  return [...b.goals.flatMap((g) => g.test), ...b.steps].filter((s) => !s.aside && s.state !== 'checked' &&
+    ((s.waitingOn?.who === me.did && !s.decision?.holds) || s.offeredTo === me.did || s.owner === me.did))
+}
+async function tickTask (t, box) {
+  box.disabled = true
+  const asker = t.by !== me.did && person(t.by) ? { recipient: t.by } : {}
+  const ok = await post('note', { text: `Did it: ${t.text}`.slice(0, 2000), kind: 'message', taskDone: t.hash }, { threadId: t.thread, ...asker })
+  if (!ok) { box.checked = false; box.disabled = false }
+}
+function askHelp (t) {
+  if (document.body.dataset.tab !== 'talk') go('talk')
+  setReply({ author: t.by, document: { id: t.thread, threadId: t.thread, payload: { text: t.text } } }, { label: 'Asking for help with your task: ' })
+  if (!talk.input.value.trim()) talk.input.value = `I need a hand with this: `
+  talk.input.focus(); talk.input.setSelectionRange(talk.input.value.length, talk.input.value.length); autoGrow()
+}
+function taskRow (t) {
+  const box = h('input', { type: 'checkbox', 'aria-label': `Done: ${t.text.slice(0, 80)}`, onchange: (ev) => { if (ev.target.checked) tickTask(t, ev.target) } })
+  return h('div', { class: 'task' },
+    h('label', { class: 'task-line' }, box, h('span', null, t.text)),
+    h('div', { class: 'meta' }, `asked by ${t.by === me.did ? 'you' : t.byName} · ${ago(t.at)} · `, h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); askHelp(t) } }, 'Ask for help')))
+}
+function boardRow (s) {
+  const why = s.waitingOn?.who === me.did ? `waiting on your choice: ${s.waitingOn.decision}` : s.offeredTo === me.did ? 'offered to you: take it, or say it’s not for you' : `yours · ${s.state}`
+  return h('div', { class: 'task board' },
+    h('div', null, s.test ? `(${s.test.n}) ` : '', s.title),
+    h('div', { class: 'meta' }, why, ' · ', h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); go('steps') } }, 'Open in Steps')))
+}
+function drawTasks () {
+  const root = $('#tab-talk'), side = talk.side
+  if (!side) return
+  const mine = myTasks(), open = mine.filter((t) => !t.doneAt).sort((a, b) => (a.at < b.at ? 1 : -1)), done = mine.filter((t) => t.doneAt).sort((a, b) => (a.doneAt < b.doneAt ? 1 : -1))
+  const board = myBoard()
+  side.hidden = !joined()
+  root.classList.toggle('has-tasks', joined())
+  root.classList.toggle('tasks-quiet', !open.length && !board.length) // on a phone the list only takes room when something is on it
+  if (!joined()) { talk.tasksKey = null; return }
+  // redrawn only when something on it changed, so a click or a tick in progress is never swept away by the room's next line
+  const key = JSON.stringify([open.map((t) => t.hash), done.map((t) => [t.hash, ago(t.doneAt)]), open.map((t) => ago(t.at)), board.map((s) => [s.id, s.state, s.waitingOn?.who, s.offeredTo, s.owner])])
+  if (key === talk.tasksKey) return
+  talk.tasksKey = key
+  const n = open.length + board.length
+  fill(side,
+    h('h2', null, 'Your tasks', n ? h('span', { class: 'count' }, String(n)) : null),
+    open.length ? open.map(taskRow) : h('p', { class: 'empty' }, 'Nothing asked of you right now. When someone in the room asks you to do something, it lands here.'),
+    board.length ? [h('h3', null, 'On the board for you'), board.map(boardRow)] : null,
+    done.length ? h('details', { class: 'tasks-done' }, h('summary', null, `Done lately (${done.length})`), done.map((t) => h('div', { class: 'task done' }, h('div', null, t.text), h('div', { class: 'meta' }, `done ${ago(t.doneAt)}`)))) : null)
+}
+// in the chat, a task line says whose list it is on, and whether it's done; a "Did it" line says so too
+function taskBadge (e) {
+  const p = e.document.payload
+  if (p.taskDone) return h('span', { class: 'badge task done' }, '✓ did it')
+  if (!p.task) return null
+  const t = (S.tasks ?? []).find((x) => x.hash === e.hash)
+  return h('span', { class: 'badge task' + (t?.doneAt ? ' done' : '') }, t?.doneAt ? `✓ ${t.forName ?? nameOf(p.task.for)} did it` : `task for ${p.task.for === me?.did ? 'you' : nameOf(p.task.for)}`)
+}
+// under the box: name one person with @ and you can put the line on their list
+function mentionedPerson (text) {
+  const named = (S?.people ?? []).filter((p) => p.kind === 'human' && p.did !== me?.did && !p.left && !p.removed && !p.replacedBy && !isCheck(p.did) &&
+    new RegExp(`(^|\\s)@${p.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`, 'i').test(text))
+  return named.length === 1 ? named[0] : null
+}
+function drawTaskBox () {
+  const box = talk.taskBox
+  if (!box) return
+  const who = talk.to === 'room' && joined() ? mentionedPerson(talk.input.value) : null
+  if (who?.did !== talk.taskFor?.did) { talk.taskFor = who; talk.taskOn = false }
+  box.hidden = !who
+  if (who) fill(box, h('input', { type: 'checkbox', checked: Boolean(talk.taskOn), onchange: (ev) => { talk.taskOn = ev.target.checked } }), ` Put this on ${who.name}’s task list`)
+}
+const taskOf = () => (talk.taskOn && talk.taskFor && talk.to === 'room' && mentionedPerson(talk.input.value)?.did === talk.taskFor.did ? { task: { for: talk.taskFor.did } } : {})
+
 function renderTalk (scrollDown, { holdAt = null } = {}) {
   const root = $('#tab-talk')
   if (!talk.list) {
@@ -677,10 +756,14 @@ function renderTalk (scrollDown, { holdAt = null } = {}) {
       rec.onend = () => { talk.rec = null; talk.micBtn.classList.remove('primary') }
       rec.start(); talk.micBtn.classList.add('primary')
     }
-    talk.composer = h('div', { class: 'composer' }, talk.reply, talk.tray, talk.mentions, h('div', { class: 'composer-row' }, h('button', { class: 'btn attach', 'aria-label': 'Add a photo or file', title: 'Add a photo or a file (a photo’s location and camera data are removed)', onclick: () => talk.picker.click() }, '📎'), talk.picker, talk.micBtn, talk.input, h('button', { class: 'btn primary send', onclick: sendChat, 'aria-label': 'Send' }, '↑')), talk.toggle)
+    talk.taskBox = h('label', { class: 'task-toggle', hidden: true })
+    talk.input.addEventListener('input', drawTaskBox)
+    talk.composer = h('div', { class: 'composer' }, talk.reply, talk.tray, talk.mentions, talk.taskBox, h('div', { class: 'composer-row' }, h('button', { class: 'btn attach', 'aria-label': 'Add a photo or file', title: 'Add a photo or a file (a photo’s location and camera data are removed)', onclick: () => talk.picker.click() }, '📎'), talk.picker, talk.micBtn, talk.input, h('button', { class: 'btn primary send', onclick: sendChat, 'aria-label': 'Send' }, '↑')), talk.toggle)
     talk.input.addEventListener('paste', (ev) => { const files = [...(ev.clipboardData?.files ?? [])].filter((f) => f.type.startsWith('image/')); if (files.length) { ev.preventDefault(); addPhotos(files) } })
-    fill(root, talk.goals, talk.waiting, talk.list, talk.composer)
+    talk.side = h('aside', { class: 'tasks-side card', 'aria-label': 'Your tasks' })
+    fill(root, talk.side, h('div', { class: 'talk-main' }, talk.goals, talk.waiting, talk.list, talk.composer))
   }
+  drawTasks()
   const held = S.proposals.filter((p) => p.kind === 'goal' && p.status !== 'vetoed' && p.tally.for > p.tally.against)
   fill(talk.goals, held.length ? [h('strong', null, 'The room is going for: '), held.slice(0, 3).map((g) => g.title).join(' · ')] : h('span', { class: 'meta' }, 'Just talk. The weaver picks up what people want and suggests goals and next steps here.'))
   // every line your agents hold for your OK, from all of them, together above the chat so none scrolls away
