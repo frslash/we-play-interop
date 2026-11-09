@@ -8,6 +8,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { applyDiff } from './apply.mjs'
 
 const [root, live, repo] = process.argv.slice(2)
 const dir = join(root, 'data', 'patches'), queue = join(dir, 'queue'), results = join(dir, 'results')
@@ -28,9 +29,8 @@ for (const f of readdirSync(queue).filter((x) => x.endsWith('.json'))) {
     if (existsSync(work)) git(live, 'worktree', 'remove', '--force', work)
     git(live, 'worktree', 'add', '-q', '--detach', work, at)
     const diff = join(dir, `${sha}.diff`)
-    const check = spawnSync('git', ['apply', '--check', '--whitespace=nowarn', diff], { cwd: work, encoding: 'utf8' })
-    if (check.status !== 0) { say(sha, { ...base, status: 'red', why: `the diff does not apply to ${at.slice(0, 10)}: ${(check.stderr || '').trim().slice(0, 240)}` }); continue }
-    git(work, 'apply', '--whitespace=nowarn', diff)
+    const applied = applyDiff(work, diff) // recounts hand-written hunk headers; the lines around a change must still match
+    if (!applied.ok) { say(sha, { ...base, status: 'red', why: `the diff does not apply to ${at.slice(0, 10)}: ${applied.why.slice(0, 240)}` }); continue }
     if (!existsSync(join(work, 'node_modules'))) symlinkSync(join(live, 'node_modules'), join(work, 'node_modules'))
     const tests = spawnSync('env', ['-i', `HOME=${root}/home`, 'PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin', 'sandbox-exec', '-f', join(root, 'tests.sb'), 'npm', 'test'], { cwd: work, encoding: 'utf8', timeout: 300_000 })
     const out = `${tests.stdout ?? ''}${tests.stderr ?? ''}`
