@@ -489,10 +489,21 @@ function renderTalk (scrollDown) {
     talk.input = keep(h('textarea', { rows: 1, maxlength: 2000, placeholder: 'Say something…' }), 'chat.text')
     talk.input.addEventListener('input', autoGrow)
     // @mentions: type @ and a few letters to pick a person or agent; the room wakes whoever is named
-    talk.mentions = h('div', { class: 'row', hidden: true })
+    talk.mentions = h('div', { class: 'mentions', role: 'listbox', 'aria-label': 'People and agents to name', hidden: true })
     const mentionFor = () => { const m = /(^|\s)@([^@\n]{0,30})$/.exec(talk.input.value.slice(0, talk.input.selectionStart)); return m ? m[2].toLowerCase() : null }
     const pickMention = (name) => { const end = talk.input.selectionStart, before = talk.input.value.slice(0, end).replace(/@([^@\n]{0,30})$/, '@' + name + ' '); talk.input.value = before + talk.input.value.slice(end); talk.input.focus(); talk.input.setSelectionRange(before.length, before.length); talk.input.dispatchEvent(new Event('input')) }
-    talk.input.addEventListener('input', () => { const q = mentionFor(), names = q == null ? [] : (S?.people ?? []).filter((p) => p.name && !isCheck(p.did) && p.name.toLowerCase().startsWith(q)).map((p) => p.name).slice(0, 6); talk.mentions.hidden = !names.length; fill(talk.mentions, names.map((n) => h('button', { class: 'btn tiny', type: 'button', onclick: () => pickMention(n) }, '@' + n))) })
+    // the drop-up list: people first, then agents under their person ("Faolan's agent, Emrys"), up to 8
+    const mentionOptions = (q) => {
+      const live = (S?.people ?? []).filter((p) => p.name && !isCheck(p.did) && !p.removed), byDid = new Map(live.map((p) => [p.did, p]))
+      const people = live.filter((p) => p.kind !== 'agent'), agents = live.filter((p) => p.kind === 'agent')
+      const owner = (a) => byDid.get(a.principal)?.name ?? ''
+      const starts = (x) => x.toLowerCase().startsWith(q)
+      const out = people.filter((p) => starts(p.name)).map((p) => ({ name: p.name, label: '@' + p.name }))
+      const rank = (a) => { const i = people.findIndex((p) => p.did === a.principal); return i < 0 ? people.length : i }
+      for (const a of agents.filter((a) => starts(a.name) || (owner(a) && starts(owner(a)))).sort((a, b) => rank(a) - rank(b))) out.push({ name: a.name, label: owner(a) ? `${owner(a)}’s agent, ${a.name}` : `Agent ${a.name}` })
+      return out.slice(0, 8)
+    }
+    talk.input.addEventListener('input', () => { const q = mentionFor(), opts = q == null ? [] : mentionOptions(q); talk.mentions.hidden = !opts.length; fill(talk.mentions, opts.map((o) => h('button', { class: 'btn tiny', type: 'button', role: 'option', onclick: () => pickMention(o.name) }, o.label))) })
     talk.input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && matchMedia('(min-width: 760px)').matches) { ev.preventDefault(); sendChat() } })
     talk.picker = h('input', { type: 'file', accept: 'image/*,.pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv', multiple: true, hidden: true, onchange: (ev) => addPhotos([...ev.target.files]).finally(() => { ev.target.value = '' }) })
     talk.tray = h('div', { class: 'photo-tray', hidden: true })
