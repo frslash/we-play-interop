@@ -42,12 +42,15 @@ export const TYPES = {
   vouch: T('member/vouch'),
   replace: T('member/replace'),
   resource: T('map/resource'),
+  decision: T('weaver/decision'),
+  reverse: T('decision/reverse'),
 }
 export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v, k]))
 
 /** Who may write each kind of document. */
 export const WHO = {
   genesis: 'workspace', round: 'workspace', step: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
+  decision: 'workspace', reverse: 'human', // the weaver's decisions are signed lines; a person's word reverses one, never an agent's (room line 1689)
   link: 'human', vouch: 'human', replace: 'human', // a lost key: people only, never agents (room lines 772-821)
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone', resource: 'anyone',
@@ -335,11 +338,35 @@ export function checkPayload (name, doc) {
     case 'veto':
       if (!HASH_RE.test(p.target ?? '')) return 'target: the hash of the proposal it stops'
       return str(p.reason, 1, 500) ? null : 'reason: 1 to 500 characters'
+    case 'reverse':
+      if (!HASH_RE.test(p.decision ?? '')) return 'decision: the hash of the decision line it reverses'
+      return optStr(p.why, 500) ? null : 'why: at most 500 characters (optional, public)'
     case 'mode':
       if (!MODES.includes(p.mode)) return `mode: ${MODES.join(' | ')}`
       return optStr(p.reason, 500) ? null : 'reason: at most 500 characters'
     default: return null // workspace-authored types are made by the server itself
   }
+}
+
+/**
+ * A decision the weaver made, as one line (room line 1689: provisional, visible, reversible by any person):
+ *  by    who decided (DIDs: the weaver, or the agents whose agreement it acted on)
+ *  for   whom it was decided for (DIDs, or "the room")
+ *  what  what was decided, one sentence
+ *  why   why, one or two sentences
+ *  rests the lines it rests on (entry hashes, at least one)
+ *  about optionally what it made: { kind, ref } (a step, a proposal)
+ * The workspace writes it, so this check runs before it is signed (src/server/decisions.js).
+ */
+export function checkDecision (p) {
+  if (!isObj(p)) return 'a decision is an object'
+  if (!Array.isArray(p.by) || !p.by.length || p.by.length > 12 || !p.by.every((d) => DID_RE.test(d))) return 'by: 1 to 12 DIDs, who decided'
+  if (!Array.isArray(p.for) || !p.for.length || p.for.length > 12 || !p.for.every((d) => d === 'the room' || DID_RE.test(d))) return 'for: 1 to 12 DIDs (or "the room"), whom it was decided for'
+  if (!str(p.what, 3, 300)) return 'what: what was decided, 3 to 300 characters'
+  if (!str(p.why, 3, 500)) return 'why: why, 3 to 500 characters'
+  if (!Array.isArray(p.rests) || !p.rests.length || p.rests.length > 24 || !p.rests.every((h) => HASH_RE.test(h))) return 'rests: 1 to 24 hashes of the lines it rests on'
+  if (p.about !== undefined && (!isObj(p.about) || !str(p.about.kind, 1, 40) || !HASH_RE.test(p.about.ref ?? ''))) return 'about: { kind, ref: a hash }'
+  return null
 }
 
 /** Framework-level shape of a Trust Task document (before any signature check). */

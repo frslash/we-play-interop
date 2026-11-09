@@ -208,6 +208,12 @@ export class Log extends EventEmitter {
         if (!d || d.issuer !== doc.issuer) throw new TaskError('permissionDenied', 'you can revoke only your own delegations', { status: 403 })
         break
       }
+      case 'reverse': { // any person's word reverses a decision the weaver made; the record keeps both lines
+        const d = st.decisions.get(p.decision)
+        if (!d) throw new TaskError('malformedRequest', 'no decision with that hash')
+        if (d.reversed) throw new TaskError('permissionDenied', `that decision was already reversed by ${st.nameOf(d.reversed.by)}`, { status: 403 })
+        break
+      }
       case 'vote': case 'approve': proposal(p.proposal); break
       case 'veto': proposal(p.target); break
       case 'project': {
