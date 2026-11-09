@@ -71,11 +71,11 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       assert.ok(test6.every((s) => s.state === 'open' && s.goal === goal2))
       assert.match(test6.find((s) => s.test.n === 3).title, /Geb member and a Keyring member/)
       // (5) needs a person (a domain costs money): it waits on the goal's proposer from the start, by name
-      assert.equal(test6.find((s) => s.test.n === 5).waitingOn.who, null) // money, but no owner yet and never held for the goal's proposer: the agents
-      assert.equal(test6.find((s) => s.test.n === 5).waitingOn.held, undefined)
+      assert.equal(test6.find((s) => s.test.n === 5).waitingOn.who, r.people.a.did) // money, no owner yet: held for the goal's proposer
+      assert.equal(test6.find((s) => s.test.n === 5).waitingOn.held, 'money')
       const seed = r.said('seed')
       assert.equal(seed.length, 1)
-      assert.match(seed[0].payload.text, /Check \(5\) waits on a choice first, for the agents here: which permanent domain/)
+      assert.match(seed[0].payload.text, /Check \(5\) waits on a choice first, held for Person A \(it touches their money\): which permanent domain/)
       // the other held goal has no done-test: the room is asked for one, naming whose goal it is
       const ask = r.said('ask test')
       assert.equal(ask.length, 1); assert.match(ask[0].payload.text, /Goal 1.*\(Person B\)/)
@@ -275,6 +275,9 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       assert.equal(r.said('decide').length, 1, 'five re-posts in a minute: one question')
       s = r.stepFrom(pr)
       await r.as('c', 'note', { text: 'Use the Railway host for now.', kind: 'message' }, { threadId: s.thread })
+      await r.ctx.facilitator.tick(r.at(13))
+      assert.ok(r.stepFrom(pr).waitingOn, 'an agent of another person alone only suggests')
+      await r.as('b', 'note', { text: 'Use the Railway host for now.', kind: 'message' }, { threadId: s.thread }) // the step's own agent: provisionally
       await r.ctx.facilitator.tick(r.at(13)); s = r.stepFrom(pr)
       assert.equal(s.waitingOn, undefined, 'the answer clears the wait')
       assert.match(s.decided.text, /Railway/, 'and stays as the step’s decision')
@@ -329,7 +332,7 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       const first = r.said('report')
       assert.equal(first.length, 1)
       assert.match(first[0].payload.text, /0 of 6 checked/)
-      assert.match(first[0].payload.text, /Waiting on the agents: which permanent domain/)
+      assert.match(first[0].payload.text, /Waiting on Person A: which permanent domain[^\n]*Held for Person A: it touches their money/)
       // nothing moved: silent, even an hour later
       await r.ctx.facilitator.tick(r.at(11) + REPORT_MS + MIN)
       assert.equal(r.said('report').length, 1)
