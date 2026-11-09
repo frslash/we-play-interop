@@ -3,7 +3,7 @@
 # .github/workflows/setup-community.yml (manual dispatch, main only, environment `railway-setup`).
 # Security's terms (blocks 10727, 10742, 10768, 10790): create-only and idempotent; the first call is a harmless
 # read that stops on a permission error; stops if the workspace holds any project other than wpi-community;
-# passphrases are made here, masked, never printed, never in argv, never in a log; the job never deletes
+# passphrases are made here, masked, never printed, never in a command line (they pass through files under a 0700 temp dir), never in a log; the job never deletes
 # anything and never reads a secret back.
 # Needs: RAILWAY_SETUP_TOKEN (workspace token). Optional: RAILWAY_API (tests only), GITHUB_ACTIONS.
 set -euo pipefail
@@ -17,7 +17,11 @@ T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT; chmod 700 "$T"
 # gql <query> [variables-json]: POST, print the data object; fail loudly (never echo the token or variables).
 gql() {
   local vars="${2:-}"; [ -n "$vars" ] || vars='{}'
-  jq -n --arg q "$1" --argjson v "$vars" '{query:$q,variables:$v}' > "$T/req.json"
+  if [ "${vars:0:1}" = "@" ]; then   # variables come from a file (secrets: kept out of every command line)
+    jq -n --arg q "$1" --slurpfile v "${vars:1}" '{query:$q,variables:$v[0]}' > "$T/req.json"
+  else
+    jq -n --arg q "$1" --argjson v "$vars" '{query:$q,variables:$v}' > "$T/req.json"
+  fi
   local code
   code=$(curl -sS --proto '=https,http' -o "$T/res.json" -w '%{http_code}' --max-time 60 -X POST "$API" \
     -H "Authorization: Bearer ${RAILWAY_SETUP_TOKEN}" -H 'Content-Type: application/json' --data @"$T/req.json") || { echo "::error::Railway API unreachable"; exit 1; }
@@ -54,12 +58,17 @@ ensure_service() { # name [image]
   SID[$name]=$(jq -r '.serviceCreate.id' <<<"$r"); CREATED="$CREATED $name"; echo "service $name created"
 }
 
-set_vars() { # service  name=value ...   (values never echoed; written through a temp file, not argv of the API call)
+set_vars() { # service  name=value ...   (values never echoed, never in any command line: they pass through files under the 0700 temp dir)
   local svc="$1"; shift
-  local obj='{}' kv
-  for kv in "$@"; do obj=$(jq -c --arg k "${kv%%=*}" --arg v "${kv#*=}" '. + {($k):$v}' <<<"$obj"); done
-  gql 'mutation($i: VariableCollectionUpsertInput!){ variableCollectionUpsert(input:$i) }' \
-    "$(jq -nc --arg p "$PID" --arg e "$EID" --arg s "${SID[$svc]}" --argjson v "$obj" '{i:{projectId:$p,environmentId:$e,serviceId:$s,variables:$v,skipDeploys:true}}')" >/dev/null
+  local kv
+  printf '{}' > "$T/obj.json"
+  for kv in "$@"; do
+    printf '%s' "${kv#*=}" > "$T/val"
+    jq -c --arg k "${kv%%=*}" --rawfile v "$T/val" '. + {($k):$v}' "$T/obj.json" > "$T/obj2.json" && mv "$T/obj2.json" "$T/obj.json"
+  done
+  jq -n --arg p "$PID" --arg e "$EID" --arg s "${SID[$svc]}" --slurpfile v "$T/obj.json" '{i:{projectId:$p,environmentId:$e,serviceId:$s,variables:$v[0],skipDeploys:true}}' > "$T/in.json"
+  gql 'mutation($i: VariableCollectionUpsertInput!){ variableCollectionUpsert(input:$i) }' "@$T/in.json" >/dev/null
+  rm -f "$T/val" "$T/obj.json" "$T/in.json"
   echo "variables set on $svc: $(for kv in "$@"; do printf '%s ' "${kv%%=*}"; done)"
 }
 
@@ -103,4 +112,6 @@ if [ "$dom" = "0" ]; then
 else echo "proxy already has a domain, left alone"; fi
 
 echo "done. created this run:${CREATED:- nothing}"
+LEFT=""; for s in vta vtc mediator proxy Redis; do case " $CREATED " in *" $s "*) ;; *) LEFT="$LEFT $s";; esac; done
+[ -z "$LEFT" ] || echo "::warning::existing and left alone this run:$LEFT. A run that died after creating a service may have left its variables unset: check vta's VTA_SEED_PASSPHRASE, vtc's VTC_SECRETS_PASSPHRASE, mediator's DATABASE_URL and proxy's three *_UPSTREAM values are present (a missing passphrase stops the service at start, loudly)"
 [ -z "$UNSEALED" ] || echo "not yet sealed:$UNSEALED  (seal each in the Railway dashboard, 3-dot menu, Seal, BEFORE DNS points at the host)"
