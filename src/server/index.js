@@ -1,6 +1,7 @@
 // We Play Interop: one small server. Reads are public; every write is a signed
 // Trust Task document, verified and appended to the hash-chained log.
 import { handleRoomDid, ensureRoomDid, growRoomDid } from './roomdid.js'
+import { JoinRoute } from './join-route.js'
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -141,6 +142,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.cursors = new Cursors({ dataDir: config.dataDir })
   ctx.sources = new Sources({ dataDir: config.dataDir, ...sources }) // `sources` lets tests point it at a fake server; the app passes none
   ctx.visits = new Visits() // join links for one visit each, in memory
+  ctx.join = new JoinRoute({ identity, config, resolver }) // the join desk at /didcomm, for the test community only
+  await ctx.join.refresh(true)
   ctx.types = TYPES
   ctx.changes = new Changes({ ctx, dataDir: config.dataDir })
   log.on('entry', (e) => ctx.changes.onEntry(e))
@@ -189,7 +192,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     const accept = String(req.headers.accept ?? '').toLowerCase(), json = accept.search(/application\/([\w.-]+\+)?json/), html = accept.indexOf('text/html')
     const wallet = json >= 0 && (html < 0 || json < html) // asked for JSON before a web page: software, not a person's browser
     const headers = { 'cache-control': 'no-store', vary: 'accept', 'referrer-policy': 'no-referrer' }
-    const about = (visit) => ({ base: baseOf(req), did: identity.did, name: config.workspaceName, visit })
+    const about = (visit) => ({ base: baseOf(req), did: ctx.join.did, name: ctx.join.community.name, visit })
     if (req.method === 'HEAD') { // a link check or a preview: says where the link goes, without using it up
       const v = CODE_RE.test(code) ? ctx.visits.look(code, ctx.visits.now()) : null
       if (v && !v.usedAt && !wallet) res.writeHead(303, { ...headers, location: visitLocation(about(v)) })
@@ -233,9 +236,10 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       return handleMcp(ctx, req, res, body)
     }
     if (handleRoomDid(req, res, path, { dataDir: config.dataDir, file: config.didLogFile })) return
+    if (await ctx.join.handle(req, res, path, readBody, send)) return
     if (path === '/.well-known/webfinger' || path.startsWith('/ap/')) return ctx.activitypub.handle(req, res, url)
     if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
-    if (path === '/api/info') return send(res, 200, views.info(ctx))
+    if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), keyring: ctx.join.readiness({ oob: true }) }) }
     if (path === '/api/state') return send(res, 200, views.state(ctx))
     if (path === '/api/steps') return send(res, 200, ctx.facilitator.view())
     if (path === '/api/map' || path === '/api/board') return send(res, 200, views.mapView(ctx))
@@ -261,7 +265,11 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' })
       const v = ctx.visits.make(ipOf(req))
       if (!v) return send(res, 429, { error: 'too many join links from this address; try again in a minute' }, { 'retry-after': '60' })
-      return send(res, 201, { url: `${baseOf(req)}/j/${v.code}?iuv=1`, expiresAt: new Date(v.expiresAt).toISOString() }, { 'cache-control': 'no-store' })
+      await ctx.join.refresh()
+      const token = ctx.join.mint() // the invitation's id is a one-time desk token, so the ?_oob= link is the join code itself
+      if (token) v.invitation = token
+      const oob = token ? visitLocation({ base: baseOf(req), did: ctx.join.did, name: ctx.join.community.name, visit: v }) : null
+      return send(res, 201, { url: `${baseOf(req)}/j/${v.code}?iuv=1`, oob, expiresAt: new Date(v.expiresAt).toISOString(), keyring: ctx.join.readiness({ oob: Boolean(oob) }) }, { 'cache-control': 'no-store' })
     }
     if (path.startsWith('/j/') && (req.method === 'GET' || req.method === 'HEAD')) return openVisit(req, res, path.slice(3))
     if (path === '/api/events') {

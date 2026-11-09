@@ -1101,25 +1101,29 @@ function lostKeyPanel (mine) {
 // ---------- join on your phone: a short link for this visit only, as a QR code ----------
 // The room makes the link (POST /api/visit); it opens once and runs out after ten minutes. A phone camera
 // opens it into this page's join flow; a wallet reads the room's DID and a DIDComm invitation behind it.
-const visit = { url: null, until: 0, asking: null, timer: null, img: null, failed: 0 }
+const visit = { url: null, oob: null, keyring: null, until: 0, asking: null, timer: null, img: null, label: null, failed: 0 }
+const visitText = () => visit.oob || visit.url // the ?_oob= invitation itself when the room made one, so a wallet that reads the code (Keyring) finds it
+const keyringLabel = () => visit.keyring?.ready ? 'Ready for Keyring' : '' // only when the room reports every part of it live
 const visitFresh = () => visit.url && visit.until - (Date.now() + serverOffset) > 30_000
 function askVisit (again) {
   if ((visitFresh() && !again) || visit.asking || Date.now() - visit.failed < 60_000) return // refused: wait a minute, not every redraw
   visit.asking = api('/api/visit', { method: 'POST' }).then((r) => {
     if (!r.ok) { visit.failed = Date.now(); return }
-    visit.url = r.body.url; visit.until = Date.parse(r.body.expiresAt)
-    if (visit.img?.isConnected) visit.img.src = `/api/qr.svg?text=${encodeURIComponent(visit.url)}`
+    visit.url = r.body.url; visit.oob = r.body.oob ?? null; visit.keyring = r.body.keyring ?? null; visit.until = Date.parse(r.body.expiresAt)
+    if (visit.img?.isConnected) visit.img.src = `/api/qr.svg?text=${encodeURIComponent(visitText())}`
+    if (visit.label?.isConnected) visit.label.textContent = keyringLabel()
     clearTimeout(visit.timer) // a fresh code shortly before this one runs out, while the page is still showing it
     visit.timer = setTimeout(() => { if (visit.img?.isConnected && !joined()) askVisit(true) }, Math.max(5_000, visit.until - (Date.now() + serverOffset) - 30_000))
   }).catch(() => {}).finally(() => { visit.asking = null })
 }
 function phoneCard () {
   if (window.matchMedia?.('(hover: none) and (pointer: coarse)').matches) return null // already on a phone: nothing to scan
-  visit.img = h('img', { class: 'qr small', alt: 'QR code: scan it to join on your phone', src: visitFresh() ? `/api/qr.svg?text=${encodeURIComponent(visit.url)}` : null })
+  visit.img = h('img', { class: 'qr small', alt: 'QR code: scan it to join on your phone', src: visitFresh() ? `/api/qr.svg?text=${encodeURIComponent(visitText())}` : null })
+  visit.label = h('span', { class: 'meta keyring-ready' }, visitFresh() ? keyringLabel() : '')
   askVisit()
   const did = S.workspace
   return h('div', { class: 'card join-qr' },
-    h('p', { class: 'why' }, 'Scan to join on your phone.'), visit.img,
+    h('p', { class: 'why' }, 'Scan to join on your phone.'), visit.img, visit.label,
     h('div', { class: 'row' }, h('span', { class: 'meta grow' }, 'For this visit only.'), h('button', { class: 'btn tiny', onclick: () => askVisit(true) }, 'New code')),
     fold('join-did', null, h('summary', null, 'Show the plain DID code'),
       h('p', { class: 'why' }, 'For a wallet that reads the room’s DID itself. The same for everyone, and it does not run out.'),
