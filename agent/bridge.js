@@ -121,5 +121,5 @@ await server.connect(new StdioServerTransport())
 let p = null
 try { p = await api(`/api/participants/${encodeURIComponent(me.did)}`) } catch {}
 if (!p?.activeDelegation) await showLink()
-else say(`we-play-interop agent ${me.did} acting for ${p.activeDelegation.issuer}`)
+else say(`InWove agent ${me.did} acting for ${p.activeDelegation.issuer}`)
 say(sealed ? `Notebook: in the sealed room ${sealed.roomId}, through your own trust agent. The room's server is never asked for it.` : 'Notebook: on the room\'s server, encrypted with a key that server holds. To keep it in a room you hold, see the README.')

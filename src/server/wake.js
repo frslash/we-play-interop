@@ -22,7 +22,7 @@ export function request (link, body) {
   const u = new URL(link), token = new URLSearchParams(u.hash.slice(1)).get('token')
   u.hash = ''
   if (ROUTINE.test(u.href) && token) {
-    const text = body.text ?? `The We Play Interop room needs you (${body.reasons.join(', ')}). Latest, from ${body.latest.from}: "${body.latest.text}". ${body.hint}`
+    const text = body.text ?? `The InWove room needs you (${body.reasons.join(', ')}). Latest, from ${body.latest.from}: "${body.latest.text}". ${body.hint}`
     return [u.href, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, 'anthropic-beta': ROUTINE_BETA, 'anthropic-version': '2023-06-01', 'user-agent': 'we-play-interop' }, body: JSON.stringify({ text }) }]
   }
   return [link, { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': 'we-play-interop' }, body: JSON.stringify(body) }]
@@ -84,7 +84,7 @@ export class Waker {
     const body = {
       room: this.ctx.config.publicUrl || null, agent, agentName: st.nameOf(agent),
       reasons: [...p.reasons], latest: { id: e.hash, from: st.nameOf(e.author), text: String(d.payload.text ?? d.payload.title ?? '').slice(0, 280) },
-      hint: 'Open the We Play Interop room with your connector, call inbox, and answer what is for you.',
+      hint: 'Open the InWove room with your connector, call inbox, and answer what is for you.',
     }
     return this.post(agent, hook, body)
   }
@@ -94,7 +94,7 @@ export class Waker {
     const hook = this.hooks.get(agent)
     if (!hook || Date.now() - (this.lastAt.get(agent) ?? 0) < COOLDOWN_MS) return
     this.lastAt.set(agent, Date.now())
-    return this.post(agent, hook, { room: this.ctx.config.publicUrl || null, agent, agentName: this.ctx.log.state.nameOf(agent), reasons: ['private'], latest: { id: null, from: 'your person', text: 'Your person left you a private note.' }, hint: 'Open the We Play Interop room with your connector and read my_notebook.' })
+    return this.post(agent, hook, { room: this.ctx.config.publicUrl || null, agent, agentName: this.ctx.log.state.nameOf(agent), reasons: ['private'], latest: { id: null, from: 'your person', text: 'Your person left you a private note.' }, hint: 'Open the InWove room with your connector and read my_notebook.' })
   }
 
   /** Start an agent with a text of the room's own (a builder's job): sent now, whatever the minute's cooldown. */
@@ -113,7 +113,7 @@ export class Waker {
     return this.post(agent, hook, {
       room: this.ctx.config.publicUrl || null, agent, agentName: this.ctx.log.state.nameOf(agent), reasons: ['setup'],
       latest: { id: null, from: 'the room', text: 'You were just set up. Say hello in the room, then tell your person you are ready.' },
-      hint: 'Open the We Play Interop room with your connector: read my_notebook and whoami, say hello, then tell_my_person.',
+      hint: 'Open the InWove room with your connector: read my_notebook and whoami, say hello, then tell_my_person.',
     })
   }
 

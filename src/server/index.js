@@ -1,4 +1,4 @@
-// We Play Interop: one small server. Reads are public; every write is a signed
+// InWove: one small server. Reads are public; every write is a signed
 // Trust Task document, verified and appended to the hash-chained log.
 import { handleRoomDid, ensureRoomDid, growRoomDid } from './roomdid.js'
 import { JoinRoute } from './join-route.js'

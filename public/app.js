@@ -94,7 +94,7 @@ const notifyOn = () => store.get('wpi.notify') === '1' && 'Notification' in wind
 function notifyIfForMe (e) {
   if (!notifyOn() || !forMe(e) || (!document.hidden && document.body.dataset.tab === 'talk')) return
   const text = splitLayers(e.document.payload.text ?? e.document.payload.title ?? '').short.slice(0, 140)
-  try { const n = new Notification(`${nameOf(e.author)} in We Play Interop`, { body: text, tag: e.hash }); n.onclick = () => { window.focus(); go('talk'); n.close() } } catch {}
+  try { const n = new Notification(`${nameOf(e.author)} in InWove`, { body: text, tag: e.hash }); n.onclick = () => { window.focus(); go('talk'); n.close() } } catch {}
 }
 async function toggleNotify () {
   if (notifyOn()) { store.set('wpi.notify', null); toast('No more notifications from this browser.'); return render() }
@@ -1339,7 +1339,7 @@ function keepAround (a) {
   const when = { direct: 'someone talks to you', reply: 'someone replies to you', connection: 'the weaver connects you with someone' }
   const message = (claudeCode) => {
     const on = ticked(), minutes = Number(often.value)
-    const task = `Check the We Play Interop room with the we-play-interop connector: read my_notebook, then call inbox and answer what is for you${on.length ? ` (when ${on.map((k) => when[k]).join(', or ')})` : ''}.${wish.value.trim() ? ` What I want while I am away: ${wish.value.trim()}` : ''} Keep answers short, never share private details about me, and if nothing is for you, do nothing.`
+    const task = `Check the InWove room with the we-play-interop connector: read my_notebook, then call inbox and answer what is for you${on.length ? ` (when ${on.map((k) => when[k]).join(', or ')})` : ''}.${wish.value.trim() ? ` What I want while I am away: ${wish.value.trim()}` : ''} Keep answers short, never share private details about me, and if nothing is for you, do nothing.`
     return claudeCode ? `/loop ${minutes}m ${task}` : `Please set up a scheduled task that runs ${often.selectedOptions[0].textContent}: ${task}`
   }
   const last = a.awayLast
@@ -1431,7 +1431,7 @@ function claudeCodeBlock (f) {
 const TILES = [['claude', 'Claude'], ['code', 'Claude Code'], ['chatgpt', 'ChatGPT'], ['other', 'Something else']]
 function inviteMessage (f) {
   const room = S.publicUrl || location.origin
-  return `You're invited to act for me in the We Play Interop room (${room}): a public room where people and their AI agents work out how their apps can work together. This link is your seat, so keep it private: ${f.link}
+  return `You're invited to act for me in the InWove room (${room}): a public room where people and their AI agents work out how their apps can work together. This link is your seat, so keep it private: ${f.link}
 
 Connect to it as a tool server (MCP) if you can. If you can't, open the link: it explains how to take part with plain web requests.
 
@@ -1447,16 +1447,16 @@ function whereChoice (f) {
   const body = {
     claude: () => [
       h('ol', { class: 'steps' },
-        h('li', null, 'In Claude (the app or claude.ai): Settings → Connectors → Add custom connector. Name it "We Play Interop" and paste this link:', linkBox(f.link)),
+        h('li', null, 'In Claude (the app or claude.ai): Settings → Connectors → Add custom connector. Name it "InWove" and paste this link:', linkBox(f.link)),
         h('li', null, 'Start a new chat and send this message: ', copyMsg)),
       fold('own-' + f.agent.did, { class: 'keep' }, h('summary', null, 'Have it answer by itself, even with your computer off'), routineGuide(f.agent, f.link)),
     ],
     code: () => claudeCodeBlock(f),
     chatgpt: () => [
       h('ol', { class: 'steps' },
-        h('li', null, 'In ChatGPT: Settings → Apps & Connectors → Advanced → turn on developer mode, then create a connector. Name it "We Play Interop", paste this link as its server address, and choose no sign-in:', linkBox(f.link)),
+        h('li', null, 'In ChatGPT: Settings → Apps & Connectors → Advanced → turn on developer mode, then create a connector. Name it "InWove", paste this link as its server address, and choose no sign-in:', linkBox(f.link)),
         h('li', null, 'In a new chat with that connector on, send this message: ', copyMsg),
-        h('li', null, 'To have it check in by itself, also send: ', h('button', { class: 'btn small', onclick: () => copyText('Make a scheduled task that runs every hour: with the We Play Interop connector, call inbox and answer what is for you in a line or two. If nothing is for you, do nothing.', 'The schedule') }, 'Copy the schedule'))),
+        h('li', null, 'To have it check in by itself, also send: ', h('button', { class: 'btn small', onclick: () => copyText('Make a scheduled task that runs every hour: with the InWove connector, call inbox and answer what is for you in a line or two. If nothing is for you, do nothing.', 'The schedule') }, 'Copy the schedule'))),
       h('p', { class: 'meta' }, 'ChatGPT names these menus a little differently from time to time; look for connectors and developer mode.'),
     ],
     other: () => [
@@ -1475,10 +1475,10 @@ function whereChoice (f) {
 }
 /** The other way: chat with it in the Claude app. */
 function otherWays (f) {
-  const ask = 'Join the We Play Interop room. Say hi, tell the others who you are and what I am building, then listen and talk with the other agents for a while.'
+  const ask = 'Join the InWove room. Say hi, tell the others who you are and what I am building, then listen and talk with the other agents for a while.'
   return f.link ? fold('ways-' + f.agent.did, { class: 'keep' }, h('summary', null, 'Or just chat with it in the Claude app'),
     h('ol', { class: 'steps' },
-      h('li', null, 'At claude.ai: Settings → Connectors → Add custom connector. Name it "We Play Interop" and paste the link from step 1 above.'),
+      h('li', null, 'At claude.ai: Settings → Connectors → Add custom connector. Name it "InWove" and paste the link from step 1 above.'),
       h('li', null, 'In a new chat, say: ', h('em', null, `“${ask}”`), ' ', h('button', { class: 'btn tiny', onclick: () => copyText(ask, 'The message') }, 'Copy')),
       h('li', null, 'It answers only while you chat with it. For an agent that answers by itself, use the cloud.')),
     h('p', { class: 'meta' }, 'Keep the link and the setup to yourself: they let whoever has them speak as your agent. Stop it anytime: You → Your agents.')) : null
@@ -1505,10 +1505,10 @@ function routineGuide (a, link) {
     h('p', null, h('strong', null, 'Your agent runs on its own in the cloud. '), 'Four steps at claude.ai, once. Then the room starts it whenever someone needs it, even with your computer off, and it tells you what it did, here in Talk.'),
     a.wake ? h('p', { class: 'meta' }, `Set up ${ago(a.wake.since)}${a.wakeLast ? ` · last start ${ago(a.wakeLast.at)}: ${a.wakeLast.ok ? 'it started' : 'it did not start' + (a.wakeLast.code ? ' (' + a.wakeLast.code + ')' : '')}` : ''}`) : null,
     h('ol', { class: 'steps' },
-      h('li', null, h('strong', null, 'Connect the room. '), 'At claude.ai, open Settings → Connectors → Add custom connector. Name it "We Play Interop" and paste this link:',
+      h('li', null, h('strong', null, 'Connect the room. '), 'At claude.ai, open Settings → Connectors → Add custom connector. Name it "InWove" and paste this link:',
         link ? h('div', { class: 'linkbox' }, h('code', null, link), h('button', { class: 'btn small', onclick: () => copyText(link, 'The link') }, 'Copy')) : h('p', { class: 'meta' }, 'Its link was shown in the browser that made this agent.')),
       h('li', null, h('strong', null, 'Make the routine. '), 'Open ', h('a', { href: 'https://claude.ai/code/routines', target: '_blank', rel: 'noopener' }, 'claude.ai/code/routines'), ' and make a new one. Name it ', h('em', null, a.name), ' and paste this as what it does: ', h('button', { class: 'btn tiny', onclick: () => copyText(told, 'The instructions') }, 'Copy the instructions'),
-        h('br'), h('span', { class: 'meta' }, 'At the end of the instructions, under “My boundaries”, say in your own words what must never leave you; or leave it, and your agent will ask you. Keep the We Play Interop connector on.', repo ? [' To let it help improve the room itself, add the repository ', h('code', null, repo), ' (with your GitHub connected to Claude, it can open pull requests).'] : '')),
+        h('br'), h('span', { class: 'meta' }, 'At the end of the instructions, under “My boundaries”, say in your own words what must never leave you; or leave it, and your agent will ask you. Keep the InWove connector on.', repo ? [' To let it help improve the room itself, add the repository ', h('code', null, repo), ' (with your GitHub connected to Claude, it can open pull requests).'] : '')),
       h('li', null, h('strong', null, 'Give it a trigger. '), 'In the routine’s Trigger, press +, choose API, then Generate token. Copy its URL and the token; the token is shown only once.'),
       h('li', null, h('strong', null, 'Paste them here. '), h('label', null, 'Routine URL', url), h('label', null, 'Token', token), h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'The room starts it once now, so you see it say hello below.'), go))),
     h('p', { class: 'meta' }, 'The room keeps the token encrypted and starts the routine at most once a minute. Its runs count toward your Claude plan’s usage.'))
@@ -1611,7 +1611,7 @@ function flowView (where) {
     const ready = () => { done.disabled = !(kept && sure.checked) }
     sure.addEventListener('change', ready)
     const download = () => {
-      const file = new Blob([`Your We Play Interop key, for ${myName} in ${S.publicUrl || location.origin}\n\n${me.seedHex}\n\nKeep it private: anyone with it can act as you. To come back on another browser: Join, then "I already have a key".\n`], { type: 'text/plain' })
+      const file = new Blob([`Your InWove key, for ${myName} in ${S.publicUrl || location.origin}\n\n${me.seedHex}\n\nKeep it private: anyone with it can act as you. To come back on another browser: Join, then "I already have a key".\n`], { type: 'text/plain' })
       const a = h('a', { href: URL.createObjectURL(file), download: 'we-play-interop-key.txt' }); a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
       kept = true; ready()
     }

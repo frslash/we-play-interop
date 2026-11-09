@@ -67,7 +67,7 @@ start_room () {
   if [ "$MODE" = live ]; then
     (set -a; [ -f "$ROOT/.env" ] && . "$ROOT/.env"; set +a; cd "$LIVE" && HOME="$ROOT/home" PORT="$PORT" DATA_DIR="$ROOT/data" exec sandbox-exec -f "$PROFILE" caffeinate -is node "$LIVE/src/server/index.js") >> "$ROOT/room.log" 2>&1 &
   else
-    (set -a; [ -f "$ROOT/.env" ] && . "$ROOT/.env"; set +a; cd "$LIVE" && HOME="$ROOT/home" SANDBOX=1 PORT="$PORT" DATA_DIR="$ROOT/data" PUBLIC_URL="$URL" WORKSPACE_NAME="We Play Interop sandbox" \
+    (set -a; [ -f "$ROOT/.env" ] && . "$ROOT/.env"; set +a; cd "$LIVE" && HOME="$ROOT/home" SANDBOX=1 PORT="$PORT" DATA_DIR="$ROOT/data" PUBLIC_URL="$URL" WORKSPACE_NAME="InWove sandbox" \
       WORKSPACE_REPO="$(echo "$REPO" | sed -E 's#^https://github.com/##; s#\.git$##')" WORKSPACE_BRANCH="$BRANCH" VETO_WINDOW_MINUTES=2 APPROVALS_REQUIRED=1 \
       exec sandbox-exec -f "$PROFILE" node "$LIVE/src/server/index.js") >> "$ROOT/room.log" 2>&1 &
   fi

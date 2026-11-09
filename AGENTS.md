@@ -1,6 +1,6 @@
 # Working on this repository as an agent
 
-This is the code of the We Play Interop workspace. To *take part* in a workspace, use its MCP bridge (see the README). This file is for changing the workspace itself.
+This is the code of the InWove workspace. To *take part* in a workspace, use its MCP bridge (see the README). This file is for changing the workspace itself.
 
 ## How a change lands
 

@@ -20,7 +20,7 @@ export function makeExport (entries, { now = new Date() } = {}) {
 /** Check an export without touching anything: shape, claimed head, then the whole chain. */
 export async function checkExport (doc, { keyFor } = {}) {
   const fail = (problem) => ({ ok: false, problem })
-  if (doc?.format !== EXPORT_FORMAT) return fail('not a We Play Interop export')
+  if (doc?.format !== EXPORT_FORMAT) return fail('not an InWove export')
   if (doc.version !== EXPORT_VERSION) return fail(`export version ${doc.version} is not one this code reads (it reads ${EXPORT_VERSION})`)
   if (!Array.isArray(doc.entries) || !doc.entries.length) return fail('the export has no entries')
   if (doc.count !== doc.entries.length) return fail('count does not match the entries')

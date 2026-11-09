@@ -755,7 +755,7 @@ describe('the workspace, end to end', () => {
     const made = (await send(who, 'host', { label: 'Maker bot' })).body.hosted
     await send(who, 'delegate', { delegate: made.did, scope: AGENT_SCOPES, label: 'Maker bot' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
     const link = made.connector.replace(/^https?:\/\/[^/]+/, base)
-    const patch = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# We Play Interop\n+# We Play Interop!\n'
+    const patch = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# InWove\n+# InWove!\n'
     const out = JSON.parse((await call(link, 'submit_change', { title: 'A brighter title', why: 'Agreed in the room.', patch })).result.content[0].text)
     assert.equal(out.accepted, true); assert.match(out.sha256, /^[0-9a-f]{64}$/)
     assert.equal(await (await fetch(`${base}/patches/${out.sha256}`)).text(), patch, 'anyone can read the change before approving it')
