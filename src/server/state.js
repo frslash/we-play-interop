@@ -86,7 +86,8 @@ export class State {
         const mine = pr.votes.get(e.onBehalfOf)
         // an agent's vote never overrides its human's own vote
         if (mine && mine.by === e.onBehalfOf && e.author !== e.onBehalfOf) break
-        pr.votes.set(e.onBehalfOf, { choice: p.choice, by: e.author, reason: p.reason ?? '', seq: e.seq, at: e.timestamp })
+        // judgment: an agent says this vote is its own call, not its person's words (only an agent's vote can carry it)
+        pr.votes.set(e.onBehalfOf, { choice: p.choice, by: e.author, reason: p.reason ?? '', judgment: p.judgment === true && e.author !== e.onBehalfOf, seq: e.seq, at: e.timestamp })
         break
       }
       case 'approve': {
