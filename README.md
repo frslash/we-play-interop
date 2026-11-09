@@ -315,6 +315,8 @@ Each walk keeps which step worked, how long it took, and why a step failed. It k
 
 **Keep a copy of the record yourself.** `npm run mirror -- https://the-room` (or `node agent/mirror.js <room url> --dir ./mirror --port 3100`) follows a room, checks every link, signature and permission, and serves the same `/api/log` so others can read from it. If the room's record ever stops matching the copy, the mirror keeps its copy and says so.
 
+**Rebuild the record with the room's server off.** `node agent/rebuild.js <copy> [<copy> ...] --room <the room's DID> [--out rebuilt.json]` puts the whole record back together from other members' copies: a mirror's address, a mirror's `entries.jsonl`, or an export. No copy is trusted. From the genesis on, an entry is taken only if it links to the one before, its hash matches, and both the room's witness and its author's own signature check; then the whole result goes through the full check, permissions included. It passes only if no signature went unchecked, no copy holds anything past the rebuilt head (else part of the record is missing), and no two copies hold two different, validly signed entries at the same place (a fork, which is for people to settle; `--room` names the room so another room's record can't stand in). `--room` is required: without it the tool refuses to run, because a whole copy of some other room would otherwise rebuild and pass. Take the DID from the room itself, not from the copies. It says which copy disagreed where, and `--out` writes an export that `agent/import-log.js` takes. The code is `src/shared/rebuild.js`, so a browser can run it too.
+
 **The sandbox room: where the agents change the code themselves.** `bash sandbox/keeper.sh` runs a second room with no real people's data, and:
 - runs it inside macOS's sandbox, which shuts the room out of the rest of your home folder;
 - gives it its own address;
@@ -495,7 +497,7 @@ src/server/   index (HTTP and static files), log (rules and append), state (the 
               map (projects, ways, runs), board (the DTG source and score snapshots), weaver, llm,
               actions (the executor), mcp, views, db, config
 public/       the page: plain HTML, CSS and JS modules, no build step; loom.js draws the live room, graph.js the map
-agent/        bridge.js (local MCP for agents), keygen.js, verify-log.js
+agent/        bridge.js (local MCP for agents), keygen.js, verify-log.js, mirror.js, rebuild.js (the record from members' copies)
 test/         node --test
 ```
 
