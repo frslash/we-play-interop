@@ -25,7 +25,7 @@ jobs:
       - name: outside check of inwove.org's DID
         run: node sandbox/check-room-did.mjs inwove.org
   vti-build:
-    name: OpenVTI c6964c46 build (cargo --locked)
+    name: OpenVTI c6964c46 build (vti-rooms, debug, cargo --locked)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -39,8 +39,15 @@ jobs:
           case "$full" in c6964c46*) echo "pinned at $full" ;; *) echo "wrong commit $full"; exit 1 ;; esac
       - name: system libraries the build needs (libdbus for the keyring crate)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
-      - name: build and test, locked
+      - uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa2367cf899916d84 # v2.7.3
+        with:
+          workspaces: vti
+          shared-key: vti-c6964c46
+      - name: build only what the tests use (debug, 2 jobs), locked
         working-directory: vti
+        env:
+          CARGO_BUILD_JOBS: "2"
         run: |
-          cargo build --locked --release
-          cargo test --locked --no-run
+          # The whole workspace in --release was killed (exit 143, runner out of memory/disk).
+          cargo build --locked -p vti-rooms
+          cargo test --locked --no-run -p vti-rooms
