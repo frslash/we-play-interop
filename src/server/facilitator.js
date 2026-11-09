@@ -186,6 +186,10 @@ export function decisionOf (text, asked = null) {
 export const stateKey = (s) => [s.state, s.owner ?? '', s.result ?? ''].join('|')
 /** The step's decision while it still holds (its state is the same as when it was decided), else null. */
 export const decided = (s) => (s?.decision && s.decision.stateKey === stateKey(s) ? s.decision : null)
+/** A step a builder may take without asking: it names a goal, is a check of a goal's done-test, came from an agreement, or is a real bug fix. */
+export const BUGFIX = /\b(fix(es|ed)?|bug|broken|regress(ion)?|crash(es)?|fails?|failing|wrong)\b/i
+/** A step an agreement made (from) was voted in the room already; one nobody agreed (the weaver's own) must serve a goal. */
+export const servesAGoal = (s) => Boolean(s.goal || s.test || s.from || BUGFIX.test(s.title ?? ''))
 export const isParked = (s) => Boolean(decided(s)?.parked)
 const sameAsk = (a, b) => String(a ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '') === String(b ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '')
 const median = (xs) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2 }
@@ -822,7 +826,11 @@ export class Facilitator {
   async build (now, did) {
     const b = this.ctx.builder
     if (!b) return
-    for (const s of this.steps()) if (s.state === 'open' && !s.waitingOn && !s.aside && !isParked(s) && b.is(s.owner ?? s.offeredTo) && await b.dispatch(s, now)) did.built.push(s.id)
+    for (const s of this.steps()) {
+      if (s.state !== 'open' || s.waitingOn || s.aside || isParked(s) || !b.is(s.owner ?? s.offeredTo)) continue
+      if (!servesAGoal(s) && !decided(s)) { await this.write(s, { waitingOn: { who: null, decision: 'Should a builder take this step? It serves none of the held goals and is not a bug fix' } }, 'waiting', null); continue } // a step that serves no goal needs the room's yes before a builder takes it
+      if (await b.dispatch(s, now)) did.built.push(s.id)
+    }
     await b.look(now).catch((err) => { b.lastError = `builder: ${err.message}` })
   }
 
