@@ -14,6 +14,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
@@ -34,9 +36,10 @@ jobs:
           set -e
           git clone https://github.com/OpenVTC/verifiable-trust-infrastructure vti
           cd vti
-          git checkout --detach c6964c46
+          git checkout --detach c6964c4612131089e1add0f47575894e1bd8a565
           full=$(git rev-parse HEAD)
-          case "$full" in c6964c46*) echo "pinned at $full" ;; *) echo "wrong commit $full"; exit 1 ;; esac
+          [ "$full" = "c6964c4612131089e1add0f47575894e1bd8a565" ] || { echo "wrong commit $full"; exit 1; }
+          echo "pinned at $full"
       - name: system libraries the build needs (libdbus for the keyring crate)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
       - uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa2367cf899916d84 # v2.7.3
