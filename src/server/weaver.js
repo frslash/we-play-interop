@@ -36,6 +36,7 @@ export function gist (e, st) {
     vouch: () => { const l = st.links.get(p.request); return `vouched that ${st.nameOf(l?.from ?? '')} is ${st.nameOf(l?.old ?? '')}, with a new key` },
     replace: () => { const l = st.links.get(p.request); return `marked ${st.nameOf(l?.old ?? '')}'s old account replaced by the new key; its permissions for agents ended` },
     note: () => `${p.kind === 'message' ? '' : p.kind + ': '}${e.document.recipient ? '(to ' + st.nameOf(e.document.recipient) + ') ' : ''}${p.text}`,
+    edit: () => (p.text === '' ? 'deleted one of their lines' : `edited one of their lines to: ${p.text}`),
     host: () => `asked the workspace to hold a key for an agent (${p.label})`,
     hosted: () => `holds the key of ${p.label}, an agent of ${st.nameOf(p.for)}`,
     propose: () => `proposed (${p.kind}): ${p.title}${p.body ? ' — ' + p.body : ''}`,

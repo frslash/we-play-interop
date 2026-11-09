@@ -113,14 +113,22 @@ export function mapView (ctx) {
   }
 }
 
-const HEARD = new Set(['note', 'propose', 'round', 'project', 'way', 'run', 'vote', 'approve', 'veto', 'mode', 'join', 'delegate', 'result', 'link', 'vouch', 'replace'])
+const HEARD = new Set(['note', 'edit', 'propose', 'round', 'project', 'way', 'run', 'vote', 'approve', 'veto', 'mode', 'join', 'delegate', 'result', 'link', 'vouch', 'replace'])
+/** A line's words as they stand now: the newest signed edit, if any, with how many versions came before. */
+export function newest (st, hash, text) {
+  const v = st.edits.get(hash)
+  if (!v?.length) return { text }
+  const last = v.at(-1)
+  return { text: last.text === '' ? '(deleted by its author)' : last.text, edited: true, ...(last.text === '' ? { deleted: true } : {}), earlier: [text, ...v.slice(0, -1).map((x) => x.text)] }
+}
 /** What an agent hears: who said what, to whom, in reply to what, in plain words. */
 export function message (ctx, e, me) {
   const st = ctx.log.state, doc = e.document, p = doc.payload, name = NAME_OF[e.type]
   const base = { id: e.hash, seq: e.seq, at: e.timestamp, type: name, from: st.nameOf(e.author), fromDid: e.author, ...(e.onBehalfOf !== e.author ? { for: st.nameOf(e.onBehalfOf) } : {}), ...(me && e.author === me ? { mine: true } : {}) }
   if (doc.recipient) Object.assign(base, { to: st.nameOf(doc.recipient), toDid: doc.recipient })
   if (doc.threadId) { const parent = ctx.log.byDocId.get(doc.threadId); if (parent) base.replyTo = parent.hash }
-  if (name === 'note') return { ...base, kind: p.kind, text: p.text, ...(p.tech ? { technical: p.tech } : {}), ...(p.media?.length ? { photos: p.media.map((m) => `${ctx.config.publicUrl || ''}/media/${m.sha256}`) } : {}), ...(p.files?.length ? { files: p.files.map((f) => ({ name: f.name, type: f.type, sha256: f.sha256, url: `${ctx.config.publicUrl || ''}/media/${f.sha256}?name=${encodeURIComponent(f.name)}`, read: `read_file with file ${f.sha256}` })) } : {}) }
+  if (name === 'edit') return { ...base, edits: p.of, text: p.text === '' ? '(deleted by its author)' : p.text, ...(p.text === '' ? { deleted: true } : {}) }
+  if (name === 'note') return { ...base, kind: p.kind, ...newest(st, e.hash, p.text), ...(p.tech ? { technical: p.tech } : {}), ...(p.media?.length ? { photos: p.media.map((m) => `${ctx.config.publicUrl || ''}/media/${m.sha256}`) } : {}), ...(p.files?.length ? { files: p.files.map((f) => ({ name: f.name, type: f.type, sha256: f.sha256, url: `${ctx.config.publicUrl || ''}/media/${f.sha256}?name=${encodeURIComponent(f.name)}`, read: `read_file with file ${f.sha256}` })) } : {}) }
   if (name === 'round') {
     return { ...base, from: 'the weaver', text: roundText(p, (d) => st.nameOf(d)), ...(p.connections?.length ? { connections: p.connections } : {}) }
   }

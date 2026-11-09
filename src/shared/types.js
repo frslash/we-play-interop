@@ -14,6 +14,7 @@ export const TYPES = {
   delegate: T('delegation/grant'),
   revoke: T('delegation/revoke'),
   note: T('input/note'),
+  edit: T('input/edit'),
   propose: T('proposal/open'),
   vote: T('proposal/vote'),
   approve: T('proposal/approve'),
@@ -51,14 +52,18 @@ export const WHO = {
   genesis: 'workspace', round: 'workspace', step: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', forYou: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
   link: 'human', vouch: 'human', replace: 'human', // a lost key: people only, never agents (room lines 772-821)
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
-  note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone', resource: 'anyone',
+  note: 'anyone', edit: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone', resource: 'anyone',
 }
 /** What a human can let an agent do (delegation scope). Approving, vetoing and delegating stay human. */
 export const AGENT_SCOPES = ['note', 'propose', 'vote', 'project', 'way', 'run', 'card', 'change']
 /** Kinds an agent may write under another kind's scope. Adding a source to the Resources tab, or a note on what one
  *  says, is speech with a link in it: any agent its person lets speak may do it (every agent here reads and adds to
  *  Resources), and a person who asked to see each note first sees these first too. */
-export const SCOPE_OF = { resource: 'note' }
+export const SCOPE_OF = { resource: 'note', edit: 'note' }
+/** An edit (input/edit) names the line it replaces (payload.of, the hash of the original line) and carries its new
+ *  words. Only the line's own side may edit it: the same person, or an agent acting for them (log.js). Empty text is
+ *  a delete, shown as "deleted by its author". Every version stays in the signed record; the page shows the newest. */
+export const EDIT_MAX = 2000
 export const scopeOf = (name) => SCOPE_OF[name] ?? name
 /** One resource per address: the same page with or without a trailing slash, a #fragment or a capital in the host is one. */
 export function resourceKey (u) {
@@ -281,6 +286,9 @@ export function checkPayload (name, doc) {
       if (p.pair !== undefined && (!Array.isArray(p.pair) || p.pair.length !== 2 || !p.pair.every((s) => SLUG_RE.test(s)))) return 'pair: two project slugs'
       if (p.scenario !== undefined && !SLUG_RE.test(p.scenario)) return 'scenario: a scenario id'
       return p.step === undefined ? null : checkStepSay(p.step)
+    case 'edit':
+      if (!HASH_RE.test(p.of ?? '')) return 'of: the hash of the line it replaces (the original line, not an earlier edit)'
+      return typeof p.text === 'string' && p.text.length <= EDIT_MAX && (p.text === '' || p.text.trim().length > 0) ? null : `text: the new words, at most ${EDIT_MAX} characters, or "" to delete the line`
     case 'propose':
       if (!PROPOSAL_KINDS.includes(p.kind)) return `kind: ${PROPOSAL_KINDS.join(' | ')}`
       if (!str(p.title, 1, 140)) return 'title: 1 to 140 characters'

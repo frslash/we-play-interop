@@ -286,6 +286,7 @@ function says (e) {
     case 'revoke': return 'revoked an agent.'
     case 'remove': return `removed ${nameOf(p.agent)}.`
     case 'note': return p.kind === 'message' ? p.text : `${p.kind}: ${p.text}`
+    case 'edit': return p.text === '' ? 'deleted one of their lines.' : `edited one of their lines: ${p.text}`
     case 'card': return `updated their card${p.goals?.length ? ': ' + p.goals.join(' · ') : ''}`
     case 'propose': return p.kind === 'goal' ? `proposed a goal: ${p.title}` : `proposed (${p.kind}): ${p.title}`
     case 'vote': return `${{ for: 'said yes to', against: 'said no to', abstain: 'abstained on' }[p.choice]} "${pr(p.proposal)}"${p.reason ? ': ' + p.reason : ''}${p.judgment ? ' (its own judgment, not its person’s words)' : ''}`
@@ -523,27 +524,50 @@ function linkLine (e) {
     canVouch ? h('button', { class: 'btn tiny', title: 'Only if you know this is the same person', onclick: async () => { if (confirm(`Vouch that ${nameOf(l.from)} is ${oldName}? Only if you know it’s the same person.`) && await post('vouch', { request: l.hash })) toast('Vouched.') } }, 'I know them: vouch') : null,
     host && l.vouches.length ? h('button', { class: 'btn tiny', onclick: async () => { if (confirm(`Mark ${oldName}’s old key replaced by ${nameOf(l.from)}? Its permissions for agents end now; the history stays.`) && await post('replace', { request: l.hash })) toast('Marked replaced.') } }, 'Mark the old key replaced') : null]
 }
+// Edits (input/edit): a signed new version of a line, from the line's own side. The newest shows; the earlier words
+// are one tap away; a delete is an edit to empty, shown as "deleted by its author". The record keeps every version.
+function versionsOf (e) {
+  const all = [...feed, ...(talk.older ?? [])].filter((x) => NAME_OF[x.type] === 'edit' && x.document.payload.of === e.hash && x.onBehalfOf === e.onBehalfOf)
+  return [...new Map(all.map((x) => [x.hash, x])).values()].sort((a, b) => a.seq - b.seq)
+}
+const canEdit = (e) => joined() && e.onBehalfOf === me.did
+async function editLine (e, now) {
+  const t = prompt('Change your line (the earlier words stay in the signed record, one tap away):', now)
+  if (t === null || !t.trim() || t.trim() === now) return
+  if (await post('edit', { of: e.hash, text: t.trim() })) toast('Edited.')
+}
+async function deleteLine (e) {
+  if (confirm('Delete this line? It shows as “deleted by its author”; the earlier words stay in the signed record.') && await post('edit', { of: e.hash, text: '' })) toast('Deleted.')
+}
+function editedNote (e, versions) {
+  const words = [e.document.payload.text, ...versions.slice(0, -1).map((v) => v.document.payload.text)].map((t, i) => h('li', null, t === '' ? h('em', null, 'deleted') : t, ' ', h('span', { class: 'time' }, ago(i ? versions[i - 1].timestamp : e.timestamp))))
+  return fold('versions-' + e.hash, { class: 'versions' }, h('summary', null, `earlier version${words.length > 1 ? 's' : ''} (${words.length})`), h('ol', null, words))
+}
 function chatItem (e) {
   const name = NAME_OF[e.type], d = e.document, p = d.payload
   const time = h('span', { class: 'time' }, ago(e.timestamp))
   const techLine = tech(h('div', { class: 'tech-line' }, `${name}${p.kind ? ':' + p.kind : ''} · #${e.seq} · ${e.hash.slice(0, 12)} · ${short(e.author)}`))
   const system = (text) => h('div', { class: 'sys' }, text, ' ', time, techLine)
   if (name === 'note') {
+    const versions = versionsOf(e), latest = versions.at(-1), text = latest ? latest.document.payload.text : p.text, deleted = latest && text === ''
     const parent = d.threadId ? feed.find((x) => x.document.id === d.threadId) : null
     const agent = e.author !== e.onBehalfOf
     // the text selects and copies like any text; replying is its own button, so a drag never starts a reply
     const actions = h('span', { class: 'msg-actions' },
       h('button', { class: 'btn tiny', title: 'Reply to this', onclick: () => setReply(e) }, 'Reply'),
-      h('button', { class: 'btn tiny', title: 'Copy this message', onclick: () => navigator.clipboard?.writeText(p.text ?? '').then(() => toast('Copied.'), () => toast('Select the text and copy it by hand.')) }, 'Copy'))
+      canEdit(e) && !deleted ? h('button', { class: 'btn tiny', title: 'Change your line: a signed new version', onclick: () => editLine(e, text) }, 'Edit') : null,
+      canEdit(e) && !deleted ? h('button', { class: 'btn tiny', title: 'Delete your line: shown as deleted by its author', onclick: () => deleteLine(e) }, 'Delete') : null,
+      h('button', { class: 'btn tiny', title: 'Copy this message', onclick: () => navigator.clipboard?.writeText(text ?? '').then(() => toast('Copied.'), () => toast('Select the text and copy it by hand.')) }, 'Copy'))
     const mineToAnswer = forMe(e)
     const weaver = e.author === S.workspace // every line the weaver signs reads as a notice, like its rounds: centred and quieter
     return h('div', { class: 'msg' + (weaver ? ' weaver' : '') + (e.author === me?.did ? ' mine' : '') + (agent && !weaver ? ' agent' : '') + (mineToAnswer ? ' for-me' : '') },
       h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${weaver ? 'var(--gold)' : colorFor(e.author)}` }), weaver ? 'The weaver' : nameOf(e.author), agent && !weaver ? listenDot(e.author) : null, agent && !weaver ? waitingBadge(e.author) : null, agent && !weaver && saysIt(e.author) ? h('span', { class: 'for', title: 'The agent’s own word: the room cannot check it' }, ` · ${saysIt(e.author)}`) : null, agent && !weaver && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
-        d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, mineToAnswer ? h('span', { class: 'badge for-me' }, 'for you') : null, ' ', time, actions),
+        d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, latest ? h('span', { class: 'badge edited', title: `Changed by its author ${ago(latest.timestamp)}` }, deleted ? 'deleted' : 'edited') : null, mineToAnswer ? h('span', { class: 'badge for-me' }, 'for you') : null, ' ', time, actions),
       parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${splitLayers(parent.document.payload.text ?? parent.document.payload.title ?? '').short.slice(0, 100)}`) : null,
       p.media?.length ? h('div', { class: 'photos' }, p.media.map((m) => h('a', { href: `/media/${m.sha256}`, target: '_blank', rel: 'noopener' }, h('img', { src: `/media/${m.sha256}`, loading: 'lazy', width: m.w, height: m.h, alt: 'a photo' })))) : null,
       p.files?.length ? h('div', { class: 'files' }, p.files.map((f) => h('a', { class: 'doc-chip', href: `/media/${f.sha256}?name=${encodeURIComponent(f.name)}`, download: f.name }, `📄 ${f.name} · ${sizeOf(f.bytes)}`))) : null,
-      (p.media?.length && p.text === '(a photo)') || (p.files?.length && p.text === '(a file)') ? null : layered(e.hash, p.text, p.tech), techLine)
+      deleted ? h('div', { class: 'text deleted' }, 'deleted by its author') : (p.media?.length && p.text === '(a photo)') || (p.files?.length && p.text === '(a file)') ? null : layered(e.hash + (latest ? ':' + latest.hash : ''), text, latest ? undefined : p.tech),
+      latest ? editedNote(e, versions) : null, techLine)
   }
   if (name === 'propose') return system([forMe(e) ? h('span', { class: 'badge for-me' }, 'for you') : null, forMe(e) ? ' ' : null, `${nameOf(e.author)} proposed: `, h('strong', null, p.title), ' · ', h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); go('decide') } }, 'decide')])
   if (name === 'round') {

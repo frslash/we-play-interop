@@ -56,6 +56,7 @@ export class State {
     // is not here for (it fades, see facilitator.js), and the steps it took, the results it posted and the checks it made
     this.notFor = new Map() // agent -> { kinds, onlyFor, at, because }
     this.doers = new Map() // agent -> { took, results, checks, code: { took, results, checks }, at }
+    this.edits = new Map() // a line's hash -> its later versions, oldest first: [{ hash, text, by, at }] (the log keeps them all)
     this.counts = {}
     this.seq = -1
   }
@@ -140,6 +141,7 @@ export class State {
         if (p.dive) this.dive(e)
         if (p.facilitator) this.facilitatorSaid(e)
         break
+      case 'edit': { const v = this.edits.get(p.of) ?? []; v.push({ hash: e.hash, text: p.text, by: e.author, at: e.timestamp }); this.edits.set(p.of, v); break }
       case 'step': this.step(e); break
       case 'propose': this.addProposal(e); break
       case 'vote': {

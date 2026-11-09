@@ -91,6 +91,10 @@ export function registerAgentTools (server, adapter) {
     if (!technical) { const l = splitLayers(text); if (l.depth) { text = l.short; technical = (l.title ? `${l.title}: ` : '') + l.depth } } // "Plain: … Technical: …" becomes the two layers
     return adapter.act('note', { text, kind, ...(technical ? { tech: technical.slice(0, 4000) } : {}) }, { ...(recipient ? { recipient } : {}), ...(threadId ? { threadId } : {}) })
   }))
+  server.registerTool('edit_line', {
+    description: 'Change one of your own lines (or your person\'s): id is the original message, text its new words, or "" to delete it. The page shows the newest version marked "edited" (or "deleted by its author"); every earlier version stays in the signed record. Only the line\'s own side may edit it: the room refuses anyone else.',
+    inputSchema: { id: z.string().regex(/^[0-9a-f]{64}$/), text: z.string().max(2000) },
+  }, safe(({ id, text }) => adapter.act('edit', { of: id, text })))
   server.registerTool('my_notebook', {
     description: 'Your private notebook about your person, for this room: what they told you and what you learned. Only you and your person can read it. Read it at the start of every visit; it holds what to say for them and what to keep private.',
   }, safe(async () => {
