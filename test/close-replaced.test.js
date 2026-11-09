@@ -24,7 +24,7 @@ function fakeGitHub (pulls) {
   return { gh, calls }
 }
 
-const open = (n, login = 'builder') => ({ number: n, user: { login }, state: 'open', merged: false, merged_at: null, head: { sha: SHA, ref: `branch-${n}` }, base: { ref: 'main' }, title: `pull ${n}` })
+const open = (n, login = 'shared-account') => ({ number: n, user: { login }, state: 'open', merged: false, merged_at: null, head: { sha: SHA, ref: `branch-${n}` }, base: { ref: 'main' }, title: `pull ${n}` })
 const proposal = (replaces) => ({ hash: 'h', principal: 'did:key:z1', change: { pr: 90, sha, ...(replaces ? { replaces } : {}) }, head: SHA })
 const sha = SHA
 const executor = (gh) => {
@@ -83,41 +83,62 @@ describe('a merged workspace-change closes the pull requests it replaces', () =>
   })
 })
 
-describe('a change merged without votes closes only its own side’s pull requests', () => {
-  const small = (replaces) => ({ ...proposal(replaces), lane: 'small' })
+describe('a change merged without votes closes only pull requests proposed for the same person', () => {
+  // the room's record: two people, Ann and Bo, each with an agent; every pull request below is opened by one GitHub account
+  const participants = new Map([
+    ['did:key:ann', { did: 'did:key:ann', kind: 'human' }],
+    ['did:key:bo', { did: 'did:key:bo', kind: 'human' }],
+    ['did:key:ann-agent', { did: 'did:key:ann-agent', kind: 'agent', principal: 'did:key:ann' }],
+    ['did:key:bo-agent', { did: 'did:key:bo-agent', kind: 'agent', principal: 'did:key:bo' }],
+  ])
+  const change = (hash, n, principal, extra = {}) => ({ hash, kind: 'workspace-change', principal, change: { pr: n, sha }, head: SHA, ...extra })
+  const room = (gh, proposals) => new Executor({ config, log: { state: { participants, proposals: new Map(proposals.map((p) => [p.hash, p])), holding: () => ({ dids: [] }), tally: () => ({}), nameOf: () => 'someone', mode: { mode: 'consensus' } } }, board: {}, gh })
+  const merging = (replaces, principal = 'did:key:ann') => change('m', 90, principal, { lane: 'small', change: { pr: 90, sha, replaces } })
 
-  test('a no-vote change that names another person’s open pull request leaves it open', async () => {
-    const pulls = { 90: open(90, 'builder'), 77: open(77, 'someone-else') }
+  test('same GitHub account, proposed for different people: the other person’s pull request stays open', async () => {
+    const pulls = { 90: open(90, 'shared-account'), 77: open(77, 'shared-account') }
     const { gh, calls } = fakeGitHub(pulls)
-    const result = await executor(gh).mergeChange(small([77]))
+    const me = merging([77])
+    const result = await room(gh, [me, change('p77', 77, 'did:key:bo')]).mergeChange(me)
     assert.equal(result.status, 'merged')
     assert.equal(pulls[77].state, 'open')
     assert.deepEqual(result.replaced.closed, [])
     assert.deepEqual(result.replaced.skipped.map((s) => s.pr), [77])
-    assert.match(result.replaced.skipped[0].why, /without votes/)
+    assert.match(result.replaced.skipped[0].why, /without votes.*someone else.*votes on/)
     assert.ok(!calls.some((c) => c.method === 'PATCH' || /comments$/.test(c.path)), 'no comment and no close on another person’s pull request')
     assert.match(result.detail, /left #77 open/)
   })
 
-  test('a no-vote change still closes a pull request by the same author', async () => {
-    const pulls = { 90: open(90, 'builder'), 77: open(77, 'builder'), 78: open(78, 'someone-else') }
+  test('the same person’s pull request closes, even when proposed through their agent', async () => {
+    const pulls = { 90: open(90, 'shared-account'), 77: open(77, 'shared-account'), 78: open(78, 'shared-account') }
     const { gh } = fakeGitHub(pulls)
-    const result = await executor(gh).mergeChange(small([77, 78]))
+    const me = merging([77, 78])
+    const result = await room(gh, [me, change('p77', 77, 'did:key:ann-agent'), change('p78', 78, 'did:key:bo-agent')]).mergeChange(me)
     assert.deepEqual(result.replaced.closed, [77])
     assert.equal(pulls[77].state, 'closed'); assert.equal(pulls[78].state, 'open')
   })
 
-  test('a no-vote change whose own author is unknown closes nothing', async () => {
-    const pulls = { 77: open(77, 'builder') }
+  test('a different GitHub account does not matter when the room’s record says it is the same person', async () => {
+    const pulls = { 90: open(90, 'one-account'), 77: open(77, 'another-account') }
     const { gh } = fakeGitHub(pulls)
-    const out = await executor(gh).closeReplaced(small([77]))
-    assert.deepEqual(out.closed, []); assert.equal(pulls[77].state, 'open')
+    const me = merging([77])
+    const result = await room(gh, [me, change('p77', 77, 'did:key:ann')]).mergeChange(me)
+    assert.deepEqual(result.replaced.closed, [77])
   })
 
-  test('a change the room voted on may still close another author’s pull request it names', async () => {
-    const pulls = { 90: open(90, 'builder'), 77: open(77, 'someone-else') }
+  test('a pull request the room has no proposal for, or one also proposed for someone else, stays open', async () => {
+    const pulls = { 77: open(77), 78: open(78) }
     const { gh } = fakeGitHub(pulls)
-    const result = await executor(gh).mergeChange(proposal([77]))
+    const me = merging([77, 78])
+    const out = await room(gh, [me, change('a78', 78, 'did:key:ann'), change('b78', 78, 'did:key:bo')]).closeReplaced(me)
+    assert.deepEqual(out.closed, []); assert.equal(pulls[77].state, 'open'); assert.equal(pulls[78].state, 'open')
+  })
+
+  test('a change the room voted on may still close another person’s pull request it names', async () => {
+    const pulls = { 90: open(90), 77: open(77) }
+    const { gh } = fakeGitHub(pulls)
+    const me = change('m', 90, 'did:key:ann', { change: { pr: 90, sha, replaces: [77] } })
+    const result = await room(gh, [me, change('p77', 77, 'did:key:bo')]).mergeChange(me)
     assert.deepEqual(result.replaced.closed, [77])
   })
 })
@@ -126,7 +147,7 @@ describe('Decide shows what a change will close', () => {
   test('a change that lists replaces shows "will close #n"', () => {
     assert.equal(willClose({ kind: 'workspace-change', change: { pr: 90, sha, replaces: [77] } }), ' · will close #77')
     assert.equal(willClose({ kind: 'workspace-change', change: { pr: 90, sha, replaces: [77, 78] } }), ' · will close #77, #78')
-    assert.match(willClose({ kind: 'workspace-change', lane: 'small', change: { pr: 90, sha, replaces: [77] } }), /^ · will close #77 \(only those its own side opened/)
+    assert.match(willClose({ kind: 'workspace-change', lane: 'small', change: { pr: 90, sha, replaces: [77] } }), /^ · will close #77 \(only those proposed for the same person/)
   })
   test('a change that lists none shows nothing', () => {
     assert.equal(willClose({ kind: 'workspace-change', change: { pr: 90, sha } }), '')

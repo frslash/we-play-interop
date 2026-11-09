@@ -1,7 +1,7 @@
-// What closeReplaced does today when a page-only change with no votes, authored by one person, names in its
-// replaces list an open pull request that a different person opened. closeReplaced checks no author: it closes
-// any open pull request the merged proposal names. This test pins that down. If the room adds an author check
-// (another person's pull request stays open), this test fails and should be replaced by one that expects that.
+// A page-only change with no votes, proposed by one person, names in its replaces list an open pull request
+// that the room's record shows was proposed for a different person. closeReplaced checks the person (not the
+// GitHub login), so the other person's pull request stays open. This replaces the test #96 added, which pinned
+// down the earlier behaviour (no check at all) and said to replace it once a check landed.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
@@ -29,27 +29,25 @@ function fakeGitHub (pulls) {
 
 const pull = (n, login) => ({ number: n, state: 'open', merged: false, merged_at: null, user: { login }, head: { sha: SHA, ref: `branch-${n}` }, base: { ref: 'main' }, title: `pull ${n}` })
 
-test("a page-only change with no votes closes another person's open pull request it names as replaced", async () => {
+test("a page-only change with no votes leaves another person's open pull request it names as replaced open", async () => {
   const files = ['public/index.html']
   assert.equal(laneOf(rules, files), 'small', 'the change touches the page only')
-  const pulls = { 91: pull(91, 'person-a'), 55: pull(55, 'person-b') }
+  const pulls = { 91: pull(91, 'one-account'), 55: pull(55, 'one-account') } // many agents open through one GitHub account
   const { gh, calls } = fakeGitHub(pulls)
-  const state = { holding: () => ({ dids: [] }), tally: () => ({}), votes: () => [], nameOf: () => 'person a', mode: { mode: 'consensus' } }
+  const proposal = { hash: 'h', kind: 'workspace-change', principal: 'did:key:zPersonA', change: { pr: 91, sha: SHA, replaces: [55] }, head: SHA, lane: 'small' }
+  const theirs = { hash: 'h55', kind: 'workspace-change', principal: 'did:key:zPersonB', change: { pr: 55, sha: SHA }, head: SHA }
+  const state = { participants: new Map(), proposals: new Map([[proposal.hash, proposal], [theirs.hash, theirs]]), holding: () => ({ dids: [] }), tally: () => ({}), votes: () => [], nameOf: () => 'person a', mode: { mode: 'consensus' } }
   const ex = new Executor({ config, log: { state }, board: {}, gh })
-  const proposal = { hash: 'h', principal: 'did:key:zPersonA', change: { pr: 91, sha: SHA, replaces: [55] }, head: SHA, lane: 'small' }
   assert.equal(state.holding(proposal).dids.length, 0, 'nobody approved it')
-  assert.notEqual(pulls[55].user.login, pulls[91].user.login, 'the named pull request is another person\'s')
+  assert.equal(pulls[55].user.login, pulls[91].user.login, 'the same GitHub account opened both')
 
   const result = await ex.mergeChange(proposal)
 
   assert.equal(result.status, 'merged')
-  assert.deepEqual(result.replaced.closed, [55], "the other person's pull request was closed: no author check")
-  assert.equal(pulls[55].state, 'closed')
-  assert.ok(calls.some((c) => c.method === 'POST' && c.path === '/repos/x/y/issues/55/comments' && c.body.body === 'Replaced by #91'))
-  // still reopenable: only its state changed, nothing was deleted and its branch was not touched
-  assert.ok(calls.filter((c) => c.method === 'PATCH').every((c) => JSON.stringify(c.body) === '{"state":"closed"}'))
+  assert.deepEqual(result.replaced.closed, [], "the other person's pull request was not closed")
+  assert.deepEqual(result.replaced.skipped.map((s) => s.pr), [55])
+  assert.equal(pulls[55].state, 'open')
+  assert.ok(!calls.some((c) => c.method === 'PATCH' || /\/issues\/55\/comments$/.test(c.path)), 'no comment and no close on it')
   assert.ok(!calls.some((c) => c.method === 'DELETE' || /git\/refs/.test(c.path)))
   assert.equal(pulls[55].head.ref, 'branch-55')
-  await gh('PATCH', '/repos/x/y/pulls/55', { state: 'open' })
-  assert.equal(pulls[55].state, 'open', 'reopening it is a plain state change')
 })
