@@ -682,7 +682,7 @@ function stepRow (s) {
     h('div', { class: 'grow' },
       h('div', null, s.test ? `(${s.test.n}) ` : '', h('strong', null, s.title), s.test?.later ? h('span', { class: 'badge' }, 'later') : null),
       s.done && s.done !== s.title ? h('div', { class: 'why' }, 'Done when: ', s.done) : null,
-      s.decision?.holds ? h('div', { class: 'why' }, s.decision.parked ? 'Parked' : 'Decided', ' by ', s.decision.byName ?? 'an agent', s.decision.asked ? ` (${s.decision.asked})` : '', s.decision.parked ? '' : `: ${s.decision.choice}`, s.decision.why ? ` · Why: ${s.decision.why}` : '', ' · a person’s line in its thread, or anyone disagreeing there, reopens it') : null,
+      s.decision?.holds ? h('div', { class: 'why' }, s.decision.parked ? 'Parked' : 'Decided', ' by ', s.decision.byName ?? 'an agent', s.decision.forName ? ` for ${s.decision.forName}` : '', s.decision.asked ? ` (${s.decision.asked})` : '', s.decision.parked ? '' : `: ${s.decision.choice}`, s.decision.why ? ` · Why: ${s.decision.why}` : '', ' · a person’s line in its thread, or anyone disagreeing there, reopens it') : null,
       h('div', { class: 'meta' }, s.where, ' · ', ago(s.lastWordAt ?? s.at), tech(' · ', h('code', null, s.id.slice(0, 8))))),
     buttons.length ? h('span', { class: 'step-actions' }, buttons) : null)
 }
