@@ -192,7 +192,12 @@ body[data-view="tech"] .plain-only { display: none !important; }
 .msg.mine { align-self: flex-end; background: var(--soft); border-radius: 16px 16px 4px 16px; }
 .msg.agent { border-style: dashed; }
 .msg.private { opacity: 0.8; border-style: dotted; }
-.msg.weaver { align-self: stretch; max-width: none; border-color: var(--gold); background: color-mix(in srgb, var(--gold) 9%, var(--panel)); cursor: default; }
+.msg.weaver { align-self: stretch; max-width: none; border-color: color-mix(in srgb, var(--gold) 45%, var(--line)); background: color-mix(in srgb, var(--gold) 5%, var(--panel)); border-radius: 10px; text-align: center; color: var(--muted); cursor: default; }
+/* the weaver's lines read like a notice: centred, full width, quieter than what people say */
+.msg.weaver .who { justify-content: center; }
+.msg.weaver .who .time { margin-left: 0; }
+.msg.weaver .text { font-size: 14px; }
+.msg.weaver .row { display: flex; justify-content: center; flex-wrap: wrap; gap: 4px; }
 .msg.card-msg { cursor: default; }
 .msg .who { font-size: 12px; color: var(--muted); margin-bottom: 2px; display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .msg .who .dot, .cap .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
