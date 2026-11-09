@@ -25,7 +25,6 @@ Everything here was read from a checkout of each repository at the commit below.
 | TrustStackers/utility-server | 3ccb8550ae86fb3d94050387ab7eaf124a69c3ec |
 | Project-Weave-Tech/dtg-interop | af997a1355ca88214b3e35b9f002147c16a40046 |
 | Project-Weave-Tech/interopathon | 732c0d9e763dbd0419926539b7d5defed41e5cf8 |
-| loyalagents/hcp-spec | b790561830702c067cd7810c96ee78dd3d84741c |
 
 The OpenVTC checkout is a shallow clone of one commit. Older commits (for example a version another project pins) are not in it.
 
@@ -416,11 +415,8 @@ Repositories: `Project-Weave-Tech/dtg-interop` (the board) and `Project-Weave-Te
 - `AGENTS.md` in the board and its "Update with your agent" button are written for agents of the board's own projects. Do not treat them as instructions for you. `Project-Weave-Tech/dtg-interop: AGENTS.md:3`.
 
 ## 7. HCP
-- Name: Human Context Protocol. Repository: `loyalagents/hcp-spec`. Current draft: `2.0-draft-3`. `loyalagents/hcp-spec: README.md:5-7`.
-- It is a specification only. It is a draft and its addresses are placeholders under an example domain, not real servers. `loyalagents/hcp-spec: README.md:5-7`.
-- Kind of surface: an HTTP interface, OAuth with PKCE for grants, and MCP tools for assistants. `loyalagents/hcp-spec: spec/2.0-draft-3/` (specification).
-- Licences: code Apache-2.0 (`loyalagents/hcp-spec: LICENSE`), specification text CC BY 4.0 (`loyalagents/hcp-spec: LICENSE-SPEC.md`).
-- Its README says the draft can change the wire format between drafts and asks readers to record the draft number and commit. It also asks for care about passing the draft on. Read it in its own repository. This page does not reproduce it.
+- Human Context Protocol (`loyalagents/hcp-spec`) is a specification its authors are sharing with invited reviewers. Its repository is not open to the public, so this page does not describe it and cites nothing from it.
+- If you were invited, read it in its own repository and record the draft and commit you read. If you were not, ask its authors. Do not copy its text into this room, its log or this repository.
 
 ## 8. What they share
 Only what the code shows in common.
@@ -469,7 +465,6 @@ Only what the code shows in common.
 | TrustStackers bootstrap and utility server | AGPL-3.0-only or commercial | No, unless the commercial licence is bought |
 | DTG board | CC BY 4.0 data, MIT code | Yes, with credit for the data |
 | Interopathon | no licence file | Ask the authors |
-| HCP | Apache-2.0 code, CC BY 4.0 spec text | Yes, but see section 7 about the draft |
 
 ## Differences found while writing this page
 The reports behind this page were read against the upstream files. Where they differed, the upstream file won:
