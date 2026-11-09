@@ -29,6 +29,7 @@ import { Media } from './media.js'
 import { Changes } from './changes.js'
 import { Workshop } from './workshop.js'
 import { Cursors } from './cursors.js'
+import { ActivityPub } from './activitypub.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { createResolver } from './resolver.js'
@@ -68,7 +69,7 @@ function workspaceIdentity (config) {
   return id
 }
 
-export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, awayGatherMs, hostWelcomeMs = 3000 } = {}) {
+export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, apFetch, awayGatherMs, hostWelcomeMs = 3000 } = {}) {
   const identity = workspaceIdentity(config)
   const db = await openDb(config)
   const log = new Log({ db, identity, resolver, config })
@@ -100,6 +101,9 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   log.on('entry', (e) => ctx.changes.onEntry(e))
   ctx.workshop = new Workshop({ ctx, gh: (...a) => executor.gh(...a) })
   log.on('entry', (e) => ctx.host.onEntry(e))
+  // the room's public lines, followable from Mastodon and the rest of the fediverse (read only: nothing flows back in)
+  ctx.activitypub = new ActivityPub({ ctx, dataDir: config.dataDir, ...(apFetch ? { fetch: apFetch } : {}) })
+  log.on('entry', (e) => ctx.activitypub.onEntry(e))
   ctx.drafts = new Drafts({ db, sealer: hosted })
   await ctx.drafts.load()
   ctx.never = new NeverLists({ db })
@@ -150,6 +154,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       let body; try { body = JSON.parse(raw) } catch { return send(res, 400, { jsonrpc: '2.0', error: { code: -32700, message: 'parse error' }, id: null }) }
       return handleMcp(ctx, req, res, body)
     }
+    if (path === '/.well-known/webfinger' || path.startsWith('/ap/')) return ctx.activitypub.handle(req, res, url)
     if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
     if (path === '/api/info') return send(res, 200, views.info(ctx))
     if (path === '/api/state') return send(res, 200, views.state(ctx))
@@ -345,7 +350,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     ctx.workshop.start()
     timers.push(setInterval(() => closeVotes(ctx).catch((e) => console.error('closing votes:', e)), 30_000))
   }
-  ctx.stop = async () => { timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.cursors.save(); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }
