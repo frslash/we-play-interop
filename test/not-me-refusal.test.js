@@ -84,9 +84,11 @@ const undecided = (r, s, why) => {
 
 describe('a "Not me…" line is a refusal, not an answer', () => {
   test('decisionOf gives nothing for it, whatever words it shares with the question; real answers still count', () => {
-    for (const [t, asked] of [[NOT_ME_CARRIER, CARRIER], [NOT_ME_KEY, DOC_KEY], ['Not me — I have no rights to decide which carrier.', CARRIER], ['I have no rights to pick the carrier, that is Person A’s call.', CARRIER], ['Not my call: the carrier is up to Person A.', CARRIER], ['I can’t decide which key signs it.', DOC_KEY], ['I’ll pass on the carrier.', CARRIER]]) {
+    for (const [t, asked] of [[NOT_ME_CARRIER, CARRIER], [NOT_ME_KEY, DOC_KEY], ['Not me — I have no rights to decide which carrier.', CARRIER], ['I have no rights to pick the carrier, that is Person A’s call.', CARRIER], ['Not my call: the carrier is up to Person A.', CARRIER]]) {
       assert.ok(BOWS_OUT.test(t), t); assert.equal(decisionOf(t, asked), null, t)
     }
+    // a shrug is no answer either (UNSURE, not a bow-out)
+    for (const [t, asked] of [['I can’t decide which key signs it.', DOC_KEY], ['I’ll pass on the carrier.', CARRIER]]) assert.equal(decisionOf(t, asked), null, t)
     for (const [t, asked] of [['TSP first, because RLTP already carries it.', CARRIER], ['Use a new key kept offline, because the room’s key is online.', DOC_KEY], ['Notary: a key kept offline signs it.', DOC_KEY], ['No rights issue there: use TSP first.', CARRIER]]) assert.ok(decisionOf(t, asked), t)
   })
 })

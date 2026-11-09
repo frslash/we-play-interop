@@ -79,7 +79,9 @@ const WORDS = (t) => new Set(String(t ?? '').toLowerCase().match(/[a-z0-9][a-z0-
  * that person's side, in the thread or naming at least two words of what was asked. Another person's agent can't settle it.
  */
 const answers = (st, e, s) => {
-  if (!s.waitingOn || e.document.payload?.facilitator || e.author === st.workspace || !decisionOf(e.document.payload?.text, s.waitingOn.decision)) return false
+  if (!s.waitingOn || e.document.payload?.facilitator || e.author === st.workspace) return false
+  const d = decisionOf(e.document.payload?.text, s.waitingOn.decision)
+  if (!d || (d.refused && !st.isHuman(e.author))) return false // a refusal ("I decline") is an answer only from a person
   if (!s.waitingOn.held && !mayDecide(st, e.author, s)) return false // an agent of another person alone can't settle the step's choice
   if (s.waitingOn.held && !s.waitingOn.who) return st.isHuman(e.author) && e.document.threadId === s.thread // held for the room's people: a person's own line
   if (!s.waitingOn.who) return e.document.threadId === s.thread // a choice for the agents: an answer in its own thread, from a person or the step's own agent
@@ -130,11 +132,17 @@ export function touches (decision) {
 export const PARKED = /^\W*(let['’]?s\s+|we\s+)?(park(ed|ing)?(\s+(it|this|that))?|set\s+(it|this)\s+aside|leave\s+(it|this)\s+for\s+later)\b(?!\s+(my|our|his|her|their|the|a|an)\b)/i
 const NOT_PARKED = /\b(not|don['’]?t|un)[\s-]*park/i
 /**
- * A line that bows out of the choice instead of answering it: "Not me: I have no rights…", "Not my call", "I have no
- * say in this", "I can't decide this", "I'll pass". A refusal is never a decision, whoever says it.
+ * A line that bows out of the choice instead of answering it: "Not me: I have no rights…", "Not mine", "Not my call",
+ * "I have no rights here", "I have no say in this". The speaker says the choice isn't theirs, so it stays undecided,
+ * whoever says it. Only these: a plain refusal of the choice itself ("I decline", "I won't sign") is an answer (REFUSAL).
  */
-export const BOWS_OUT = /^\W*(not me\b|not mine\b|not my (call|choice|decision|place|say)\b|i\s+(have|hold)\s+no\s+(rights?|say|authority|standing|mandate|power)\b|i\s+(have|hold)\s+(no|not the)\s+right\b|i['’]?m not (the one|allowed|authori[sz]ed|entitled|in a position)\b|i\s+(can['’]?t|cannot|won['’]?t|will not|may not|must not)\s+(decide|choose|pick|answer|settle|sign|speak)\b|i\s+(decline|pass)\b|i['’]ll pass\b|declin(e|ing)\b)/i
-const UNSURE = /^\W*(not sure|no idea|i don['’]?t know|dunno|maybe\b|it depends|depends\b|hmm+|thanks?\b|thank you)/i
+export const BOWS_OUT = /^\W*(not me\b|not mine\b|not my call\b|i\s+(have|hold)\s+no\s+(rights?|say)\b)/i
+/**
+ * A line that refuses what the choice asks: "I decline", "I refuse", "I won't sign that", "I will not sign". From a
+ * person it is their answer, and the answer is no. From an agent it settles nothing (an agent declining is not a no).
+ */
+export const REFUSAL = /^\W*(i\s+(decline|refuse)\b|i\s+(won['’]?t|will not|do not|don['’]?t)\s+sign\b|i['’]?m declining\b)/i
+const UNSURE = /^\W*(not sure|no idea|i don['’]?t know|i\s+(can['’]?t|cannot)\s+decide\b|i['’]?ll pass\b|dunno|maybe\b|it depends|depends\b|hmm+|thanks?\b|thank you)/i
 /**
  * A line that, as a whole, disagrees with a decision: it starts by disagreeing ("I disagree", "I object", "No, …",
  * "That's wrong", "Let's not", "Reopen this", "Not parked", "I don't agree"). A word inside a sentence is not enough,
@@ -154,7 +162,9 @@ const LEADS = /^\W*[^\s:]{2,60}:\s/ // the answer first, then a colon: "inwove.o
  */
 export function decisionOf (text, asked = null) {
   const t = String(text ?? '').replace(/\s+/g, ' ').trim()
-  if (!t || /\?$/.test(t) || UNSURE.test(t) || BOWS_OUT.test(t)) return null // a question, a shrug or a refusal is no answer
+  if (!t || /\?$/.test(t) || BOWS_OUT.test(t)) return null // a question or a bow-out ("not me", "not my call") is no answer
+  if (REFUSAL.test(t)) return { choice: 'no', parked: false, why: clip(t, 300), refused: true } // "I decline", "I won't sign that": no
+  if (UNSURE.test(t)) return null // a shrug is no answer
   const parked = PARKED.test(t) && !NOT_PARKED.test(t)
   if (!parked && t.split(' ').length < 2) return null
   if (!parked && asked && !CHOOSES.test(t) && !LEADS.test(t) && !sharesWord(asked, t)) return null
@@ -297,6 +307,7 @@ export class Facilitator {
     const asked = s.waitingOn?.decision ?? null, held = s.waitingOn?.held ?? null
     const d = decisionOf(text, asked)
     if (!d) return null // only a whole answer decides
+    if (d.refused && !st.isHuman(e.author)) return null // "I decline" or "I won't sign" is a person's no; from an agent it settles nothing
     if (held && s.waitingOn.who && e.author !== s.waitingOn.who) return null // a choice held for a person: only that person's own line settles it, not even their agent
     if (held && !s.waitingOn.who && !st.isHuman(e.author)) return null // held for the room's people (no person has the step): a person's line, never an agent's
     if (!held && !mayDecide(st, e.author, s)) return null // an agent of another person than the step's alone can't settle it
