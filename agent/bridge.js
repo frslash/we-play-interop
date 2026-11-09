@@ -6,6 +6,7 @@
 //   WPI_URL=https://your-workspace npx -y -p github:Project-Weave-Tech/we-play-interop wpi-agent
 //   wpi-agent link     prints the agent's DID and the delegation link + QR, then exits
 //   wpi-agent move-notebook   copies the notes the room's server holds into the sealed room, then exits
+//   wpi-agent join-community  joins COMMUNITY_DID as COMMUNITY_PERSONA through your own trust agent (agent/community-join.js; --status shows where it stands)
 //
 // Env: WPI_URL (required) · WPI_AGENT_KEY (64 hex) or WPI_AGENT_KEY_FILE
 // (default ~/.config/we-play-interop/agent-key, created on first run).
@@ -76,6 +77,7 @@ async function submitChange ({ title, why, base, patch }) {
 }
 
 if (process.argv[2] === 'link') { await showLink(); process.exit(0) }
+if (process.argv[2] === 'join-community') process.exit(await (await import('./community-join.js')).joinCommunityCommand(process.argv.slice(3), process.env, { say, roomUrl: base, stateDir: dirname(process.env.WPI_AGENT_KEY_FILE || join(homedir(), '.config/we-play-interop/agent-key')) }))
 
 // Where this agent's notebook lives. With the three settings it is a sealed room its person holds, reached through
 // their own trust agent from this machine; the credential for that trust agent stays here and is never sent to the room.
