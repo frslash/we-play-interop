@@ -194,7 +194,15 @@ export class LeafGate {
     } catch {}
     return 'unverified' // joins the group, never promoted by default
   }
-  dropMember (did) { for (const [leaf, d] of this.leafOwner) if (d === did) { this.verified.delete(leaf); this.leafOwner.delete(leaf) } this.epoch = (this.epoch ?? 0) + 1 }
+  /** Removing a member drops their leaf and moves to a NEW epoch key (Security P4 ask 2): the next key is derived one way
+   *  from the last plus the new epoch number, so a dropped leaf holding the old key can't compute it. Test-grade derivation;
+   *  the real group re-keys through MLS. */
+  dropMember (did) {
+    for (const [leaf, d] of this.leafOwner) if (d === did) { this.verified.delete(leaf); this.leafOwner.delete(leaf) }
+    this.epoch = (this.epoch ?? 0) + 1
+    const prev = typeof this.epochKey === 'string' ? utf8(this.epochKey) : this.epochKey
+    this.epochKey = sha256(new Uint8Array([...prev, ...utf8(`epoch:${this.epoch}`)]))
+  }
   /** The epoch key is released to a verified leaf only. */
   keyFor (leafKey) { return this.verified.has(leafKey) ? this.epochKey : null }
 }

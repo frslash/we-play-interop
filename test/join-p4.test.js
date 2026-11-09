@@ -154,4 +154,16 @@ describe('P4 wallet joins (test members only)', () => {
     assert.equal(gate.keyFor('leaf1'), null)
     await refused(() => s.desk.receive(s.request(newRoomPersona(), inv.token)), /invite not valid/)
   })
+
+  test('Security ask 2: after a removal the epoch key is a different key, and the dropped leaf gets none of it', async () => {
+    const s = setup(), gate = new LeafGate({ desk: s.desk, epochKey: new Uint8Array(32).fill(1) })
+    const other = newRoomPersona(); s.desk.members.add(other.did)
+    for (const [m, l] of [[s.member, 'leafA'], [other, 'leafB']]) assert.equal(await gate.register({ did: m.did, leafKey: l, binding: bindLeaf(m, { room: s.room.did, leaf: l }) }), 'verified')
+    const before = gate.keyFor('leafA')
+    s.desk.removeMember(s.member.did, { gate })
+    assert.equal(gate.keyFor('leafA'), null)
+    const after = gate.keyFor('leafB')
+    assert.ok(after && toHex(after) !== toHex(before), 'the next epoch key differs from the old one')
+    assert.equal(gate.epoch, 1)
+  })
 })
