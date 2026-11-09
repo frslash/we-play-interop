@@ -75,7 +75,8 @@ jobs:
           sleep 10; docker run --rm --network medtest --entrypoint bash inwove-mediator:ci -c 'exec 3<>/dev/tcp/med-boot/7037' 2>/dev/null && echo "the mediator listens on 7037" || { echo "NOTE: the mediator is not listening on 7037; its last lines:"; docker logs med-boot 2>&1 | tail -n 40; }
           docker rm -f med-boot >/dev/null
           # 2. every refused value stops it with exit 78 before the server starts
-          refused() { out=$($M "$@" inwove-mediator:ci 2>&1); code=$?; [ "$code" = 78 ] && printf '%s' "$out" | grep -q 'refusing to start' || fail "not refused ($code): $* :: $out"; echo "refused as it should be: $*"; }
+          # the step runs under `bash -e`: a refusal exits 78 by design, so its exit code is caught here, not left to end the step
+          refused() { code=0; out=$($M "$@" inwove-mediator:ci 2>&1) || code=$?; [ "$code" = 78 ] && printf '%s' "$out" | grep -q 'refusing to start' || fail "not refused ($code): $* :: $out"; echo "refused as it should be: $*"; }
           refused -e MEDIATOR_NETWORK_MODE=open
           refused -e MEDIATOR_NETWORK_MODE=opne
           refused -e GLOBAL_DEFAULT_ACL=ALLOW_ALL
