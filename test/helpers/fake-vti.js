@@ -455,7 +455,8 @@ export async function startFakeVti ({ vtaServes = {}, hostServes = {}, tokenMs =
       send(200, reply)
     } catch (e) {
       if (!(e instanceof Refuse)) return send(500, refusalTo(doc, { code: 'internalError', message: e.message }, issuer.did))
-      send(e.status ?? statusFor(e.code), e.code === 'unauthorized' ? { error: e.message } : refusalTo(doc, { code: e.code, message: e.message, details: e.details }, issuer.did)) // the 401 body's exact shape was not read; a client goes by the status
+      const refusal = refusalTo(doc, { code: e.code, message: e.message, details: e.details }, issuer.did)
+      send(e.status ?? statusFor(e.code), e.code === 'unauthorized' ? { error: e.message } : which === 'host' && fake.host.signs ? signTask(refusal, issuer) : refusal) // a host that signs its answers signs its refusals too; the 401 body's exact shape was not read, a client goes by the status
     }
   })
   const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)))

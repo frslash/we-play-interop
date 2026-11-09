@@ -339,7 +339,6 @@ describe('an older trust agent and host (the versions the openvti starter kit ta
       const { nb, host, vta } = w.device()
       host.resolver = w.fake.resolver; nb.host.resolver = w.fake.resolver // this host's DID can be read: its signature is checked
       await nb.add('Signed for.'); assert.ok(host.counts.signedAnswers > 0)
-      host.resolver = unreadableHost(w.fake) // the stand-in signs only its successes; a refusal is read on a host whose DID cannot be
       const key = [...nb.records.keys()][0], sealed = await vta.seal(w.room, key, 99, Buffer.from('x'))
       await assert.rejects(host.put(w.room, { key, sealed, expectedVersion: 0 }), (e) => isVersionConflict(e) && e.code === 'taskFailed')
       await assert.rejects(host.put(w.room, { key, sealed, expectedVersion: 7 }), isVersionConflict)
