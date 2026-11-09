@@ -1,4 +1,4 @@
-// The CI job "log-roundtrip" (.github/workflows/interop-tests.yml) runs agent/export-log.js against the live
+// The CI job "export-roundtrip" (.github/workflows/log-roundtrip.yml) runs agent/export-log.js against the live
 // room and then agent/import-log.js into an empty data dir. This runs the same two scripts, as separate
 // processes, against a local room, so the job's steps are known to work before it meets the network.
 import assert from 'node:assert/strict'
@@ -50,15 +50,17 @@ describe('log round trip: export-log.js from a running room, import-log.js into 
     }
   })
 
-  test('the CI job runs both scripts against inwove.org, into an empty dir, with no secrets', () => {
-    const wf = readFileSync('.github/workflows/interop-tests.yml', 'utf8')
-    const job = wf.slice(wf.indexOf('\n  log-roundtrip:'))
-    assert.ok(wf.includes('\n  log-roundtrip:'), 'the job exists')
-    const body = job.slice(0, (job.slice(1).search(/\n  [a-z][\w-]*:\n/) + 1) || job.length)
-    assert.match(body, /node agent\/export-log\.js https:\/\/inwove\.org/)
-    assert.match(body, /node agent\/import-log\.js /)
-    assert.match(body, /mkdir /, 'imports into a fresh, empty dir')
-    assert.match(body, /node agent\/roundtrip-summary\.js /, 'checks the unchecked-signature count (agent/roundtrip-summary.js, see test/roundtrip-notice.test.js)')
+  test('the CI job runs on every pull request and on main, export then round trip, into an empty dir, with no secrets', () => {
+    // The job moved to its own workflow (.github/workflows/log-roundtrip.yml) so it also runs on main.
+    const wf = readFileSync('.github/workflows/log-roundtrip.yml', 'utf8')
+    assert.ok(wf.includes('\n  export-roundtrip:'), 'the job exists')
+    assert.match(wf, /\n  pull_request:\n/, 'runs on every pull request')
+    assert.match(wf, /push:\n\s+branches: \[main\]/, 'and on main')
+    assert.match(wf, /ROOM_URL: https:\/\/inwove\.org/)
+    assert.match(wf, /node agent\/export-log\.js "\$ROOM_URL"/)
+    assert.match(wf, /node agent\/roundtrip-log\.js /, 're-imports, exports again and compares')
+    assert.match(wf, /mkdir /, 'imports into a fresh, empty dir')
+    assert.match(wf, /node agent\/roundtrip-summary\.js /, 'checks the unchecked-signature count (agent/roundtrip-summary.js, see test/roundtrip-notice.test.js)')
     const code = wf.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n')
     assert.doesNotMatch(code, /secrets\.|id-token|pull_request_target|environment:/, 'stays read-only')
     assert.doesNotMatch(code, /^\s+[\w-]+:\s*write\b/m, 'asks for no write permission')

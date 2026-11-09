@@ -1,0 +1,44 @@
+name: export-roundtrip
+# The room's export round trip (Goal 2, check 1): export the live room's public log, import it into an
+# empty data folder, export again from that copy and compare the two entry by entry.
+# Runs on every pull request and on main, so the latest main run shows whether it passes.
+# Read-only: no secrets, no environments, no id-token, no write permission, no pull_request_target.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  export-roundtrip:
+    name: export round trip (export inwove.org, re-import, compare)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ROOM_URL: https://inwove.org
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: export the live room's public log
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            node agent/export-log.js "$ROOM_URL" > "$RUNNER_TEMP/room-export.json" && exit 0
+            echo "export attempt $i failed; retrying"; sleep $((i * 10))
+          done
+          exit 1
+      - name: re-import into an empty data folder, export again, compare
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/wpi-empty-data"
+          rm -rf "$dir" && mkdir "$dir"
+          node agent/roundtrip-log.js "$RUNNER_TEMP/room-export.json" "$dir" "$RUNNER_TEMP/re-export.json" | tee "$RUNNER_TEMP/roundtrip.json"
+      - name: summary (ok, entries, head seq and hash, unchecked signatures)
+        if: always()
+        run: node agent/roundtrip-summary.js "$RUNNER_TEMP/roundtrip.json"

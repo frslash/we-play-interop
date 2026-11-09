@@ -5,6 +5,7 @@
 // never-say fingerprints, hosted keys): those are the person's, and moving them is a separate, reviewed step.
 // Hard gate: an import is accepted only if the chain verifies and its head equals the one the export claims.
 import { verifyChain } from '../shared/chain.js'
+import { canonicalize } from '../shared/crypto.js'
 import { insertEntry, loadEntries } from './db.js'
 
 export const EXPORT_FORMAT = 'we-play-interop-export'
@@ -40,4 +41,28 @@ export async function importExport (db, doc, { keyFor } = {}) {
   const back = await loadEntries(db), head = back.at(-1)
   if (back.length !== doc.count || head.hash !== doc.head.hash) throw new Error('import did not reproduce the chain head; nothing should move until it does')
   return { entries: back.length, head: { seq: head.seq, hash: head.hash }, signaturesNotChecked: checked.report.signaturesNotChecked }
+}
+
+/** Compare two exports entry by entry (canonical JSON), and their count and head. Says the first seq that differs. */
+export function compareExports (a, b) {
+  const n = Math.max(a?.entries?.length ?? 0, b?.entries?.length ?? 0)
+  let firstDifference = null
+  for (let i = 0; i < n; i++) {
+    const x = a?.entries?.[i], y = b?.entries?.[i]
+    if (!x || !y || canonicalize(x) !== canonicalize(y)) { firstDifference = x?.seq ?? y?.seq ?? i; break }
+  }
+  const sameCount = a?.count === b?.count && a?.entries?.length === b?.entries?.length
+  const sameHead = a?.head?.seq === b?.head?.seq && a?.head?.hash === b?.head?.hash
+  return { same: sameCount && sameHead && firstDifference === null, sameCount, sameHead, firstDifference }
+}
+
+/**
+ * The whole round trip: import the export into an EMPTY database (all of importExport's gates), export
+ * again from what was written, and compare the two. ok only if every entry comes back byte for byte.
+ */
+export async function roundTrip (db, doc, { keyFor } = {}) {
+  const imported = await importExport(db, doc, { keyFor })
+  const again = makeExport(await loadEntries(db))
+  const cmp = compareExports(doc, again)
+  return { ok: cmp.same, entries: imported.entries, head: imported.head, signaturesNotChecked: imported.signaturesNotChecked, reexport: { count: again.count, head: again.head }, ...cmp }
 }
