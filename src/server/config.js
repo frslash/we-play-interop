@@ -8,6 +8,7 @@ export const config = {
   port: int(env.PORT, 3000),
   production: env.NODE_ENV === 'production',
   publicUrl: (env.PUBLIC_URL || '').replace(/\/$/, ''),
+  activitypub: env.ACTIVITYPUB !== '0', // the room's public lines, followable from Mastodon as @room@<the host of PUBLIC_URL>; 0 turns it off
   workspaceName: env.WORKSPACE_NAME || 'We Play Interop',
   workspaceKey: env.WORKSPACE_KEY || '',
   databaseUrl: env.DATABASE_URL || '',
