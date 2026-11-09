@@ -28,6 +28,7 @@ import { Host } from './host.js'
 import { Media } from './media.js'
 import { Changes } from './changes.js'
 import { Workshop } from './workshop.js'
+import { Sources } from './sources.js'
 import { Cursors } from './cursors.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
@@ -68,7 +69,7 @@ function workspaceIdentity (config) {
   return id
 }
 
-export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, awayGatherMs, hostWelcomeMs = 3000 } = {}) {
+export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, awayGatherMs, hostWelcomeMs = 3000, sources } = {}) {
   const identity = workspaceIdentity(config)
   const db = await openDb(config)
   const log = new Log({ db, identity, resolver, config })
@@ -95,6 +96,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.host = new Host({ ctx, welcomeAfterMs: hostWelcomeMs })
   ctx.media = new Media({ dataDir: config.dataDir })
   ctx.cursors = new Cursors({ dataDir: config.dataDir })
+  ctx.sources = new Sources({ dataDir: config.dataDir, ...sources }) // `sources` lets tests point it at a fake server; the app passes none
   ctx.types = TYPES
   ctx.changes = new Changes({ ctx, dataDir: config.dataDir })
   log.on('entry', (e) => ctx.changes.onEntry(e))
@@ -212,6 +214,12 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       } catch (err) { return refuse(res, err, doc) }
     }
     if (path.startsWith('/api/files/')) { const r = await views.fileText(ctx, path.slice(11), q); return r ? send(res, 200, r) : send(res, 404, { error: 'no file with that hash, or it has no text (a photo)' }) }
+    if (path === '/api/sources') return send(res, 200, ctx.sources.view())
+    if (path.startsWith('/api/sources/')) { // the cached copy, exactly as the source sent it
+      const body = ctx.sources.body(decodeURIComponent(path.slice(13)))
+      if (!body) return send(res, 404, { error: 'no such source, or its first copy has not been fetched yet' })
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': '*', 'x-content-type-options': 'nosniff' }); return res.end(body)
+    }
     if (path === '/api/workshop') return send(res, 200, ctx.workshop.view()) // every change to the room's own code, in public
     if (path.startsWith('/patches/') && req.method === 'GET') { // a change an agent handed the room, to read before approving it
       const d = ctx.changes.get(path.slice(9))
@@ -343,9 +351,10 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     await ctx.host.start()
     ctx.changes.start()
     ctx.workshop.start()
+    ctx.sources.start()
     timers.push(setInterval(() => closeVotes(ctx).catch((e) => console.error('closing votes:', e)), 30_000))
   }
-  ctx.stop = async () => { timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.cursors.save(); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.sources.stop(); ctx.cursors.save(); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }

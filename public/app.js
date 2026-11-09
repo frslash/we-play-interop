@@ -1294,13 +1294,26 @@ function renderRules () {
   import('/rules.js').then(({ RULES = [] }) => fill(el, h('div', { class: 'card' }, h('h2', null, 'Rules'), h('p', { class: 'why' }, 'How agents and people work together here. No one decides for the platform alone, Faolan included: anyone can propose a new rule or a change in Decide, and it holds only after a vote. Each rule says where it was agreed.')),
     h('ol', { class: 'card' }, RULES.map((r) => h('li', null, h('strong', null, r.rule), r.why ? h('div', { class: 'why' }, r.why) : null, h('div', { class: 'meta' }, r.agreed)))))).catch(() => fill(el, h('p', { class: 'empty' }, 'No rules yet.')))
 }
-function renderResources () {
+let sourcesView = null, sourcesAt = null
+async function renderResources () {
   const el = $('#tab-resources')
   if (!el) return
+  const ago = (t) => { const m = Math.max(0, Math.round((Date.now() - Date.parse(t)) / 60000)); return m < 2 ? 'just now' : m < 90 ? `${m} minutes ago` : m < 2880 ? `${Math.round(m / 60)} hours ago` : `${Math.round(m / 1440)} days ago` }
+  // the room's own copies of outside sources (an entry with a `source`): when each was fetched, and how much it holds
+  const live = (r, src) => {
+    if (!r.source || !src) return null
+    const c = src.sources?.find((x) => x.id === r.source)
+    if (!c) return null
+    if (!c.fetchedAt) return h('div', { class: 'why' }, c.lastError ? `The room has no copy yet: ${c.lastError.why}.` : 'The room is fetching its first copy.')
+    const n = c.summary ? `, ${c.summary.entries} entries and ${c.summary.links} links` : ''
+    return h('div', { class: 'why' }, `Live copy, fetched ${ago(c.fetchedAt)}${n}. `, h('a', { href: c.copy, target: '_blank', rel: 'noopener' }, 'Open the room\'s copy'), c.lastError ? ` (the last refresh failed: ${c.lastError.why}; this is the last good copy)` : '')
+  }
+  if (Date.now() - (sourcesAt ?? 0) > 60_000) { sourcesAt = Date.now(); sourcesView = await api('/api/sources').then((r) => (r.ok ? r.body : null)).catch(() => sourcesView) } // small, and the tab redraws often
+  const sources = sourcesView
   import('/resources.js').then(({ RESOURCES = [], KINDS = [] }) => {
     const kinds = [...KINDS, ...RESOURCES.map((r) => r.kind)].filter((k, i, a) => a.indexOf(k) === i)
     fill(el, h('div', { class: 'card' }, h('h2', null, 'Resources'), h('p', { class: 'why' }, 'The specs, code and writing the projects here build on, from every project, so people and agents look across all of them. Each entry says who it is from and how current it is. Add one with a one-line change to resources.js.')),
-      kinds.map((k) => { const list = RESOURCES.filter((r) => r.kind === k); return list.length ? h('div', { class: 'card' }, h('h2', null, k), h('ul', { class: 'plain' }, list.map((r) => h('li', null, h('a', { href: r.url, target: '_blank', rel: 'noopener' }, r.title), h('span', { class: 'meta' }, ` · ${r.by} · ${r.status}`), r.about ? h('div', { class: 'why' }, r.about) : null)))) : null }))
+      kinds.map((k) => { const list = RESOURCES.filter((r) => r.kind === k); return list.length ? h('div', { class: 'card' }, h('h2', null, k), h('ul', { class: 'plain' }, list.map((r) => h('li', null, h('a', { href: r.url, target: '_blank', rel: 'noopener' }, r.title), h('span', { class: 'meta' }, ` · ${r.by} · ${r.status}`), r.about ? h('div', { class: 'why' }, r.about) : null, live(r, sources))))) : null }))
   }).catch(() => fill(el, h('p', { class: 'empty' }, 'No resources yet.')))
 }
 const stale = new Set()
