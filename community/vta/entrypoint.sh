@@ -8,10 +8,18 @@ umask 077
 ulimit -c 0
 : "${VTA_SEED_PASSPHRASE:?VTA_SEED_PASSPHRASE must be set as a sealed Railway variable}"
 [ "${#VTA_SEED_PASSPHRASE}" -ge 22 ] || { echo "VTA_SEED_PASSPHRASE is too short (machine-made, 128 bits or more)" >&2; exit 78; }
-[ "$(id -u)" = 0 ] || { echo "entrypoint must start as root to prepare the volume and the tmpfs, then drops itself" >&2; exit 78; }
 DATA="${VTA_DATA_DIR:-/var/lib/vta}"
 CREDS="${VTA_CREDS_DIR:-/dev/shm/vta-creds}"
 CONF="$DATA/setup.toml"
+
+# Step 10a6372f: no admin key is made before the room's log names who can read this Railway project's
+# secrets. ROOM_ACCESS_LINE is the hash of that signed log line (public, not a secret), set by the account
+# holder once they have posted it. Checked first, before anything is touched.
+if [ ! -f "$DATA/.initialised" ]; then
+  printf '%s' "${ROOM_ACCESS_LINE:-}" | grep -Eqx '[0-9a-f]{64}' || { echo "ROOM_ACCESS_LINE is not set to the hash of the room's signed line naming who can read this project's secrets: no first admin before it" >&2; exit 78; }
+fi
+# Only now root: the checks above read and refuse, and touch nothing.
+[ "$(id -u)" = 0 ] || { echo "entrypoint must start as root to prepare the volume and the tmpfs, then drops itself" >&2; exit 78; }
 
 # C: the volume belongs to the service user; no RAILWAY_RUN_UID=0.
 chown 10001:10001 "$DATA" && chmod 0700 "$DATA"
@@ -36,6 +44,7 @@ if [ ! -f "$DATA/.initialised" ]; then
     cat > "$CONF" <<EOF
 config_path = "$DATA/config.toml"
 data_dir    = "$DATA/data"
+vta_name    = "We Play Interop VTA (TEST, test keys)"
 public_url  = "${VTA_PUBLIC_URL:-https://vta.inwove.org}"
 admin_did   = "$VTA_ADMIN_DID"
 admin_label = "room-test-admin"
