@@ -10,7 +10,7 @@ import { canonicalize, fromBase58btc, sha256, toHex } from './crypto.js'
 import { credentialRefuses, grantMismatch, verifyPermissionCredential } from './credential.js'
 import { multikeyToEd25519, resolveDidKey, SIGNING_RELATIONSHIPS } from './did.js'
 import { verifySignature } from './proof.js'
-import { NAME_OF, TYPES } from './types.js'
+import { NAME_OF, scopeOf, TYPES } from './types.js'
 
 export const entryCore = ({ hash, witness, ...core }) => core
 export const hashCore = (core) => toHex(sha256(canonicalize(core)))
@@ -81,7 +81,9 @@ export async function verifyChain (entries, { keyFor = didKeyOnly } = {}) {
       if (!d) bad(e.seq, 'names a delegation that is not earlier in the log')
       else {
         if (d.issuer !== doc.onBehalfOf || d.delegate !== doc.issuer) bad(e.seq, 'delegation is not from this human to this agent')
-        if (!d.scope.includes(name)) bad(e.seq, `delegation does not cover ${name}`)
+        // The same scope the room checked on the way in (src/server/log.js): a resource is written under note
+        // (SCOPE_OF), and an agent's approve, where the room lets agents approve, under vote.
+        if (!d.scope.includes(name === 'approve' ? 'vote' : scopeOf(name))) bad(e.seq, `delegation does not cover ${name}`)
         if (Date.parse(e.timestamp) >= Date.parse(d.expiresAt)) bad(e.seq, 'delegation had expired')
         if (d.revokedAt && d.revokedAt <= e.seq) bad(e.seq, 'delegation had been revoked')
         // the grant is earlier in the log than the write, so only the end of the window is checked against the time
