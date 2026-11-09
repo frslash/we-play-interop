@@ -200,7 +200,7 @@ function says (e) {
     case 'note': return p.kind === 'message' ? p.text : `${p.kind}: ${p.text}`
     case 'card': return `updated their card${p.goals?.length ? ': ' + p.goals.join(' · ') : ''}`
     case 'propose': return p.kind === 'goal' ? `proposed a goal: ${p.title}` : `proposed (${p.kind}): ${p.title}`
-    case 'vote': return `${{ for: 'said yes to', against: 'said no to', abstain: 'abstained on' }[p.choice]} "${pr(p.proposal)}"${p.reason ? ': ' + p.reason : ''}`
+    case 'vote': return `${{ for: 'said yes to', against: 'said no to', abstain: 'abstained on' }[p.choice]} "${pr(p.proposal)}"${p.reason ? ': ' + p.reason : ''}${p.judgment ? ' (its own judgment, not its person’s words)' : ''}`
     case 'approve': return `approved "${pr(p.proposal)}"`
     case 'veto': return `vetoed "${pr(p.target)}": ${p.reason}`
     case 'mode': return `set the mode to ${p.mode}${p.reason ? ': ' + p.reason : ''}`
@@ -738,10 +738,16 @@ function modeChoice (a) {
     const t = new Date(), until = a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString()
     await post('delegate', { delegate: a.did, scope: AGENT_SCOPES, ask: ASK_OF[m], label: a.name }, { issuedAt: t.toISOString(), expiresAt: until })
   }
+  const setVoting = async (ev) => {
+    const ask = (a.ask ?? []).filter((x) => x !== 'vote'); if (!ev.target.checked) ask.push('vote')
+    const t = new Date()
+    await post('delegate', { delegate: a.did, scope: a.scope?.length ? a.scope : AGENT_SCOPES, ask, label: a.name }, { issuedAt: t.toISOString(), expiresAt: a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString() })
+  }
   const regrant = async () => { const t = new Date(); await post('delegate', { delegate: a.did, scope: AGENT_SCOPES, ask: a.ask ?? [], label: a.name }, { issuedAt: t.toISOString(), expiresAt: a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString() }) }
   const missing = AGENT_SCOPES.filter((x) => !(a.scope ?? []).includes(x))
   return h('div', { class: 'mode' },
     missing.includes('change') ? h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'It can’t hand the room changes to its code yet: its permission is from before that existed.'), h('button', { class: 'btn small primary', onclick: regrant }, 'Let it hand in code changes')) : null,
+    h('label', { class: 'row', title: 'When off, its votes wait for your OK, like any line it asks you about.' }, h('input', { type: 'checkbox', checked: !(a.ask ?? []).includes('vote'), disabled: !(a.scope ?? []).includes('vote'), onchange: setVoting }), h('span', { class: 'grow meta' }, 'It votes for you by its own judgment (it says when it does; your own vote always outweighs it)')),
     h('div', { class: 'seg small' }, Object.entries(MODES_OF).map(([k, [label]]) => h('button', { class: now === k ? 'on' : '', title: MODES_OF[k][1], onclick: () => set(k) }, label))),
     h('p', { class: 'meta' }, MODES_OF[now][1], a.until ? ` It may act for you until ${new Date(a.until).toLocaleDateString([], { day: 'numeric', month: 'short' })}.` : '', a.hosted ? '' : ' (It holds its own key, so lines that need your OK are refused and it asks you instead.)'))
 }
@@ -767,6 +773,33 @@ function cardPanel (mine) {
         if (await post('card', { goals: g, workingOn: working.value.trim(), lookingFor: looking.value.trim() })) forget('card.goals', 'card.working', 'card.looking')
       } }, 'Save')))
 }
+// ---------- join on your phone: a short link for this visit only, as a QR code ----------
+// The room makes the link (POST /api/visit); it opens once and runs out after ten minutes. A phone camera
+// opens it into this page's join flow; a wallet reads the room's DID and a DIDComm invitation behind it.
+const visit = { url: null, until: 0, asking: null, timer: null, img: null, failed: 0 }
+const visitFresh = () => visit.url && visit.until - (Date.now() + serverOffset) > 30_000
+function askVisit (again) {
+  if ((visitFresh() && !again) || visit.asking || Date.now() - visit.failed < 60_000) return // refused: wait a minute, not every redraw
+  visit.asking = api('/api/visit', { method: 'POST' }).then((r) => {
+    if (!r.ok) { visit.failed = Date.now(); return }
+    visit.url = r.body.url; visit.until = Date.parse(r.body.expiresAt)
+    if (visit.img?.isConnected) visit.img.src = `/api/qr.svg?text=${encodeURIComponent(visit.url)}`
+    clearTimeout(visit.timer) // a fresh code shortly before this one runs out, while the page is still showing it
+    visit.timer = setTimeout(() => { if (visit.img?.isConnected && !joined()) askVisit(true) }, Math.max(5_000, visit.until - (Date.now() + serverOffset) - 30_000))
+  }).catch(() => {}).finally(() => { visit.asking = null })
+}
+function phoneCard () {
+  if (window.matchMedia?.('(hover: none) and (pointer: coarse)').matches) return null // already on a phone: nothing to scan
+  visit.img = h('img', { class: 'qr small', alt: 'QR code: scan it to join on your phone', src: visitFresh() ? `/api/qr.svg?text=${encodeURIComponent(visit.url)}` : null })
+  askVisit()
+  const did = S.workspace
+  return h('div', { class: 'card join-qr' },
+    h('p', { class: 'why' }, 'Scan to join on your phone.'), visit.img,
+    h('div', { class: 'row' }, h('span', { class: 'meta grow' }, 'For this visit only.'), h('button', { class: 'btn tiny', onclick: () => askVisit(true) }, 'New code')),
+    fold('join-did', null, h('summary', null, 'Show the plain DID code'),
+      h('p', { class: 'why' }, 'For a wallet that reads the room’s DID itself. The same for everyone, and it does not run out.'),
+      h('img', { class: 'qr small', src: `/api/qr.svg?text=${encodeURIComponent(did)}`, alt: 'QR code of the room’s DID' }), h('p', null, h('code', null, did))))
+}
 function renderYou () {
   const el = $('#tab-you')
   const origin = S.publicUrl || location.origin // the address others can reach (PUBLIC_URL), not necessarily this one
@@ -787,7 +820,7 @@ function renderYou () {
         h('label', null, 'Name', name),
         h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: join }, 'Join')),
         h('details', null, h('summary', null, 'I already have a key'), h('label', null, 'Your key', seedIn), h('button', { class: 'btn', onclick: () => { try { me = identityFromSeedHex(seedIn.value); store.set('wpi.seed', me.seedHex); toast('Key loaded.'); refresh() } catch (err) { toast(err.message) } } }, 'Use this key'))),
-      invite)
+      phoneCard())
   }
   const mine = person(me.did)
   const myAgents = S.people.filter((p) => p.kind === 'agent' && p.principal === me.did && !p.removed)
