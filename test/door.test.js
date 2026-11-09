@@ -377,6 +377,11 @@ describe('a door on its own: each step, in order', () => {
     assert.deepEqual(await list([TYPES.note]), [TYPES.note]) // a type outside the registry is matched whole
     assert.equal((await ask(DISCOVERY, { patterns: 'messaging/*' })).payload.code, 'malformedRequest')
     assert.equal((await ask(DISCOVERY, { patterns: [7] })).payload.code, 'malformedRequest')
+    const some = (n, p = 'test/*') => Array.from({ length: n }, () => p)
+    assert.deepEqual(await list(some(16)), [ECHO]) // sixteen is allowed, seventeen is not, an empty pattern is not, nor one over 300 characters
+    for (const bad of [some(17), [''], ['a'.repeat(301)]]) assert.equal((await ask(DISCOVERY, { patterns: bad })).payload.code, 'malformedRequest')
+    assert.equal((await ask(DISCOVERY_0_3, { patterns: some(17) })).payload.code, 'malformedRequest')
+    assert.deepEqual(await list(['a'.repeat(300)]), [])
     // the older version: the same list, and a window without the horizon it cannot state
     const older = await ask(DISCOVERY_0_3, { patterns: ['messaging/*'] })
     assert.equal(older.type, `${DISCOVERY_0_3}#response`); assert.deepEqual(older.payload, { supportedTypes: [PING], acceptanceWindow: { maxAgeSeconds: 600, clockSkewSeconds: 60 }, frameworkVersion: '0.6.0' })

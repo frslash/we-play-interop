@@ -44,6 +44,7 @@ export const FRAMEWORK_VERSION = '0.6.0'
 // (acceptanceWindow.expiryHorizonSeconds) and writes a fresh document instead of sending one older than that.
 export const HORIZON_MS = 3600_000
 const MINUTE = 60_000
+const MAX_PATTERNS = 16 // discovery's request schema: at most 16 patterns
 // Answers kept for a redelivery, all together: about 4 MB of the room's memory (a small container). Past it an
 // answer is not kept, and a redelivery of its document gets 204: done, nothing to send again.
 const MAX_RECORDED_BYTES = 4 * 1024 * 1024
@@ -353,6 +354,11 @@ export function serveRoomTasks (door, ctx) {
   const discovery = (horizon) => ({ payload }) => {
     const patterns = payload.patterns ?? []
     if (!Array.isArray(patterns) || !patterns.every((p) => typeof p === 'string')) throw new Refusal('malformedRequest', 'payload: patterns is a list of strings ("*", "<prefix>/*", or one whole slug such as messaging/ping/0.2)')
+    // The discovery schema allows at most 16 patterns, each at least one character (taken from the schema as the review notes give it;
+    // the schema bundle itself is not in the pinned sources). They protect the work: every pattern is tried against every
+    // served type, so an unbounded list is unbounded work for a document that costs nothing to send. 300 characters
+    // is the longest type address the door takes (register), so no honest pattern is longer.
+    if (patterns.length > MAX_PATTERNS || patterns.some((p) => !p || p.length > 300)) throw new Refusal('malformedRequest', `payload: patterns holds at most ${MAX_PATTERNS} patterns, each 1 to 300 characters`, { maxPatterns: MAX_PATTERNS })
     const supportedTypes = door.serves().filter((uri) => !patterns.length || patterns.some((p) => matchSlug(p, slugOf(uri))))
     const acceptanceWindow = { maxAgeSeconds: Math.floor(ACCEPT_MS / 1000), clockSkewSeconds: Math.floor(SKEW_MS / 1000), ...(horizon ? { expiryHorizonSeconds: Math.floor(HORIZON_MS / 1000) } : {}) }
     return { supportedTypes, acceptanceWindow, frameworkVersion: FRAMEWORK_VERSION }
