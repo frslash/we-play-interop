@@ -226,12 +226,17 @@ export class SignIn {
 
   #end (r, state, t = this.seconds()) { r.state = state; r.startNetwork = null; r.endedAt ??= t; this.#wake(r.requestId) } // the page's address is dropped the moment a request ends
   #wake (id) { const ws = this.waiters.get(id); if (!ws) return; this.waiters.delete(id); for (const w of ws) w(true) }
-  /** Resolves true when the request changes, false after ms. The timer never keeps the process alive. */
+  /**
+   * Resolves true when the request changes, false after ms. The timer is a real, referenced one: a held poll is a
+   * person's browser waiting for an answer, and it is answered when the hold ends, never dropped because nothing
+   * else happened to keep the room running (an unref'd timer here let Node 22's test runner see an empty event loop
+   * under a poll that was still waiting). At shutdown, stop() answers every held poll at once, so no hold delays it.
+   */
   #wait (id, ms) {
     return new Promise((resolve) => {
       const ws = this.waiters.get(id) ?? new Set(); this.waiters.set(id, ws)
       const done = (v) => { clearTimeout(timer); ws.delete(done); if (!ws.size && this.waiters.get(id) === ws) this.waiters.delete(id); resolve(v) }
-      const timer = setTimeout(() => done(false), Math.max(0, ms)); timer.unref?.()
+      const timer = setTimeout(() => done(false), Math.max(0, ms))
       ws.add(done)
     })
   }

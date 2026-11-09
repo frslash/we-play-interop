@@ -195,6 +195,18 @@ describe('every refusal in the upstream tests (vtc-service/tests/it/member_porta
     }
   })
 
+  test('a held poll keeps the room running until it is answered, and stop() answers it at once', async () => {
+    // Node 22's test runner cancels a test whose only pending work is an unref'd timer ("the event loop has already
+    // resolved"); Node 26 does not. Checked here on any Node: while a poll is held, a referenced timer is active.
+    const h = await room({ holdMs: 5000 }), kb = newIdentity(), id = await h.start(kb)
+    const timers = () => process.getActiveResourcesInfo().filter((x) => x === 'Timeout').length
+    const before = timers(), held = h.redeem(kb, id)
+    await new Promise((resolve) => setImmediate(resolve)); await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(h.signIn.polls.open.has(id), true, 'the poll is held'); assert.ok(timers() > before, 'its timer is referenced')
+    const t0 = Date.now(); h.signIn.stop()
+    assert.equal(code(await held), 'auth/oob/redeem:pending'); assert.ok(Date.now() - t0 < 1000, 'stop() answered the held poll at once')
+  })
+
   test('a bystander who scans first locks the request and cannot get past the person\'s proof', async () => {
     const h = await room(), kb = newIdentity(), id = await h.start(kb)
     const stranger = newIdentity() // not someone this room lets in
