@@ -8,6 +8,7 @@ import { AGENT_SCOPES, DEFAULT_WAKE_ON, MODES, NAME_OF, TYPES, WAKE_ON, signedDo
 import { createGraph } from '/graph.js'
 import { neverKey, phrases, secretIn, textsOf } from '/shared/guard.js'
 import { splitLayers } from '/shared/layers.js'
+import { mentionOptions } from '/shared/mentions.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
 import { KINDS, RESOURCES } from '/resources.js'
 
@@ -66,7 +67,7 @@ const joined = () => me && person(me.did)?.kind === 'human'
 // the room check (a test person and agent walking the newcomer's path) stays out of the room's own view; the Log keeps it
 const isCheck = (did) => Boolean(did && S?.check?.dids?.includes(did))
 const checkEntry = (e) => isCheck(e.author) || isCheck(e.onBehalfOf)
-const projectName = (slug) => B?.projects?.find((p) => p.slug === slug)?.name ?? slug
+const projectName = (slug) => B?.projects?.find((p) => p.slug === (B?.aliases?.[slug] ?? slug))?.name ?? slug // a project added twice keeps one name
 
 let serverOffset = 0 // the room's clock minus this one's, from each answer's Date header, so a line's age is the room's
 const ageOf = (e) => Math.max(0, Date.now() + serverOffset - Date.parse(e.timestamp))
@@ -199,7 +200,7 @@ function says (e) {
     case 'note': return p.kind === 'message' ? p.text : `${p.kind}: ${p.text}`
     case 'card': return `updated their card${p.goals?.length ? ': ' + p.goals.join(' · ') : ''}`
     case 'propose': return p.kind === 'goal' ? `proposed a goal: ${p.title}` : `proposed (${p.kind}): ${p.title}`
-    case 'vote': return `${{ for: 'said yes to', against: 'said no to', abstain: 'abstained on' }[p.choice]} "${pr(p.proposal)}"${p.reason ? ': ' + p.reason : ''}`
+    case 'vote': return `${{ for: 'said yes to', against: 'said no to', abstain: 'abstained on' }[p.choice]} "${pr(p.proposal)}"${p.reason ? ': ' + p.reason : ''}${p.judgment ? ' (its own judgment, not its person’s words)' : ''}`
     case 'approve': return `approved "${pr(p.proposal)}"`
     case 'veto': return `vetoed "${pr(p.target)}": ${p.reason}`
     case 'mode': return `set the mode to ${p.mode}${p.reason ? ': ' + p.reason : ''}`
@@ -269,6 +270,8 @@ const tile = (n, label) => h('div', { class: 'tile', role: 'button', tabindex: 0
 const talk = { to: 'room', replyTo: null, notes: [], readUpTo: null, notesFor: null }
 // how an agent can be reached right now (the room says, in /api/state)
 const LISTEN = { waiting: 'listening now', 'wake link': 'listening: the room wakes it', 'room answers': 'the room answers for it' }
+// what an agent says it runs on: its own word, never checked by the room
+const saysIt = (did) => { const m = person(did)?.runsOnSaid; return m && (m.model || m.runsOn) ? `says it runs on ${[m.model, m.runsOn && `(${m.runsOn})`].filter(Boolean).join(' ')}` : null }
 const listeningOf = (did) => person(did)?.listening ?? null
 function listenDot (did) {
   const how = listeningOf(did)
@@ -425,7 +428,7 @@ function chatItem (e) {
       h('button', { class: 'btn tiny', title: 'Reply to this', onclick: () => setReply(e) }, 'Reply'),
       h('button', { class: 'btn tiny', title: 'Copy this message', onclick: () => navigator.clipboard?.writeText(p.text ?? '').then(() => toast('Copied.'), () => toast('Select the text and copy it by hand.')) }, 'Copy'))
     return h('div', { class: 'msg' + (e.author === me?.did ? ' mine' : '') + (agent ? ' agent' : '') },
-      h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${colorFor(e.author)}` }), nameOf(e.author), agent ? listenDot(e.author) : null, agent && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
+      h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${colorFor(e.author)}` }), nameOf(e.author), agent ? listenDot(e.author) : null, agent && saysIt(e.author) ? h('span', { class: 'for', title: 'The agent’s own word: the room cannot check it' }, ` · ${saysIt(e.author)}`) : null, agent && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
         d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, ' ', time, actions),
       parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${splitLayers(parent.document.payload.text ?? parent.document.payload.title ?? '').short.slice(0, 100)}`) : null,
       p.media?.length ? h('div', { class: 'photos' }, p.media.map((m) => h('a', { href: `/media/${m.sha256}`, target: '_blank', rel: 'noopener' }, h('img', { src: `/media/${m.sha256}`, loading: 'lazy', width: m.w, height: m.h, alt: 'a photo' })))) : null,
@@ -488,11 +491,30 @@ function renderTalk (scrollDown) {
     talk.toggle = h('div', { class: 'seg small' })
     talk.input = keep(h('textarea', { rows: 1, maxlength: 2000, placeholder: 'Say something…' }), 'chat.text')
     talk.input.addEventListener('input', autoGrow)
-    // @mentions: type @ and a few letters to pick a person or agent; the room wakes whoever is named
-    talk.mentions = h('div', { class: 'row', hidden: true })
-    const mentionFor = () => { const m = /(^|\s)@([^@\n]{0,30})$/.exec(talk.input.value.slice(0, talk.input.selectionStart)); return m ? m[2].toLowerCase() : null }
-    const pickMention = (name) => { const end = talk.input.selectionStart, before = talk.input.value.slice(0, end).replace(/@([^@\n]{0,30})$/, '@' + name + ' '); talk.input.value = before + talk.input.value.slice(end); talk.input.focus(); talk.input.setSelectionRange(before.length, before.length); talk.input.dispatchEvent(new Event('input')) }
-    talk.input.addEventListener('input', () => { const q = mentionFor(), names = q == null ? [] : (S?.people ?? []).filter((p) => p.name && !isCheck(p.did) && p.name.toLowerCase().startsWith(q)).map((p) => p.name).slice(0, 6); talk.mentions.hidden = !names.length; fill(talk.mentions, names.map((n) => h('button', { class: 'btn tiny', type: 'button', onclick: () => pickMention(n) }, '@' + n))) })
+    // @mentions: type @ and a few letters, and a small list opens above the box: people first, each with their
+    // agents under them, so "@F" finds a person and their agent. Tap a row, or use the arrows and Enter.
+    // The room wakes whoever a line names.
+    talk.mentions = h('div', { class: 'mention-list', role: 'listbox', id: 'mention-list', 'aria-label': 'People and agents to name', hidden: true })
+    talk.mention = { rows: [], at: 0 }
+    const mentionFor = () => { const m = /(^|\s)@([^@\n]{0,30})$/.exec(talk.input.value.slice(0, talk.input.selectionStart)); return m ? m[2] : null }
+    const closeMentions = () => { talk.mentions.hidden = true; talk.mention.rows = []; talk.input.removeAttribute('aria-activedescendant') }
+    const pickMention = (name) => { const end = talk.input.selectionStart, before = talk.input.value.slice(0, end).replace(/@([^@\n]{0,30})$/, '@' + name + ' '); talk.input.value = before + talk.input.value.slice(end); closeMentions(); talk.input.focus(); talk.input.setSelectionRange(before.length, before.length); talk.input.dispatchEvent(new Event('change')); autoGrow() } // change keeps the draft, without reopening the list
+    const drawMentions = () => {
+      const { rows, at } = talk.mention
+      fill(talk.mentions, rows.map((r, i) => h('button', { type: 'button', role: 'option', id: `mention-${i}`, class: `mention${r.under ? ' under' : ''}${i === at ? ' active' : ''}`, 'aria-selected': String(i === at), onmousedown: (ev) => ev.preventDefault(), onclick: () => pickMention(r.name) }, r.label)))
+      talk.mentions.hidden = !rows.length
+      if (rows.length) talk.input.setAttribute('aria-activedescendant', `mention-${at}`); else talk.input.removeAttribute('aria-activedescendant')
+    }
+    talk.input.setAttribute('aria-controls', 'mention-list')
+    talk.input.addEventListener('input', () => { const q = mentionFor(); talk.mention = { rows: q == null ? [] : mentionOptions(S?.people, q, { skip: isCheck }), at: 0 }; drawMentions() })
+    talk.input.addEventListener('blur', () => setTimeout(closeMentions, 150))
+    talk.input.addEventListener('keydown', (ev) => { // while the list is open, the arrows move in it and Enter or Tab picks
+      const m = talk.mention
+      if (talk.mentions.hidden || !m.rows.length) return
+      if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); m.at = (m.at + (ev.key === 'ArrowDown' ? 1 : m.rows.length - 1)) % m.rows.length; drawMentions() }
+      else if (ev.key === 'Enter' || ev.key === 'Tab') { ev.preventDefault(); ev.stopImmediatePropagation(); pickMention(m.rows[m.at].name) }
+      else if (ev.key === 'Escape') { ev.preventDefault(); closeMentions() }
+    })
     talk.input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && matchMedia('(min-width: 760px)').matches) { ev.preventDefault(); sendChat() } })
     talk.picker = h('input', { type: 'file', accept: 'image/*,.pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv', multiple: true, hidden: true, onchange: (ev) => addPhotos([...ev.target.files]).finally(() => { ev.target.value = '' }) })
     talk.tray = h('div', { class: 'photo-tray', hidden: true })
@@ -718,10 +740,16 @@ function modeChoice (a) {
     const t = new Date(), until = a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString()
     await post('delegate', { delegate: a.did, scope: AGENT_SCOPES, ask: ASK_OF[m], label: a.name }, { issuedAt: t.toISOString(), expiresAt: until })
   }
+  const setVoting = async (ev) => {
+    const ask = (a.ask ?? []).filter((x) => x !== 'vote'); if (!ev.target.checked) ask.push('vote')
+    const t = new Date()
+    await post('delegate', { delegate: a.did, scope: a.scope?.length ? a.scope : AGENT_SCOPES, ask, label: a.name }, { issuedAt: t.toISOString(), expiresAt: a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString() })
+  }
   const regrant = async () => { const t = new Date(); await post('delegate', { delegate: a.did, scope: AGENT_SCOPES, ask: a.ask ?? [], label: a.name }, { issuedAt: t.toISOString(), expiresAt: a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString() }) }
   const missing = AGENT_SCOPES.filter((x) => !(a.scope ?? []).includes(x))
   return h('div', { class: 'mode' },
     missing.includes('change') ? h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'It can’t hand the room changes to its code yet: its permission is from before that existed.'), h('button', { class: 'btn small primary', onclick: regrant }, 'Let it hand in code changes')) : null,
+    h('label', { class: 'row', title: 'When off, its votes wait for your OK, like any line it asks you about.' }, h('input', { type: 'checkbox', checked: !(a.ask ?? []).includes('vote'), disabled: !(a.scope ?? []).includes('vote'), onchange: setVoting }), h('span', { class: 'grow meta' }, 'It votes for you by its own judgment (it says when it does; your own vote always outweighs it)')),
     h('div', { class: 'seg small' }, Object.entries(MODES_OF).map(([k, [label]]) => h('button', { class: now === k ? 'on' : '', title: MODES_OF[k][1], onclick: () => set(k) }, label))),
     h('p', { class: 'meta' }, MODES_OF[now][1], a.until ? ` It may act for you until ${new Date(a.until).toLocaleDateString([], { day: 'numeric', month: 'short' })}.` : '', a.hosted ? '' : ' (It holds its own key, so lines that need your OK are refused and it asks you instead.)'))
 }
@@ -747,6 +775,33 @@ function cardPanel (mine) {
         if (await post('card', { goals: g, workingOn: working.value.trim(), lookingFor: looking.value.trim() })) forget('card.goals', 'card.working', 'card.looking')
       } }, 'Save')))
 }
+// ---------- join on your phone: a short link for this visit only, as a QR code ----------
+// The room makes the link (POST /api/visit); it opens once and runs out after ten minutes. A phone camera
+// opens it into this page's join flow; a wallet reads the room's DID and a DIDComm invitation behind it.
+const visit = { url: null, until: 0, asking: null, timer: null, img: null, failed: 0 }
+const visitFresh = () => visit.url && visit.until - (Date.now() + serverOffset) > 30_000
+function askVisit (again) {
+  if ((visitFresh() && !again) || visit.asking || Date.now() - visit.failed < 60_000) return // refused: wait a minute, not every redraw
+  visit.asking = api('/api/visit', { method: 'POST' }).then((r) => {
+    if (!r.ok) { visit.failed = Date.now(); return }
+    visit.url = r.body.url; visit.until = Date.parse(r.body.expiresAt)
+    if (visit.img?.isConnected) visit.img.src = `/api/qr.svg?text=${encodeURIComponent(visit.url)}`
+    clearTimeout(visit.timer) // a fresh code shortly before this one runs out, while the page is still showing it
+    visit.timer = setTimeout(() => { if (visit.img?.isConnected && !joined()) askVisit(true) }, Math.max(5_000, visit.until - (Date.now() + serverOffset) - 30_000))
+  }).catch(() => {}).finally(() => { visit.asking = null })
+}
+function phoneCard () {
+  if (window.matchMedia?.('(hover: none) and (pointer: coarse)').matches) return null // already on a phone: nothing to scan
+  visit.img = h('img', { class: 'qr small', alt: 'QR code: scan it to join on your phone', src: visitFresh() ? `/api/qr.svg?text=${encodeURIComponent(visit.url)}` : null })
+  askVisit()
+  const did = S.workspace
+  return h('div', { class: 'card join-qr' },
+    h('p', { class: 'why' }, 'Scan to join on your phone.'), visit.img,
+    h('div', { class: 'row' }, h('span', { class: 'meta grow' }, 'For this visit only.'), h('button', { class: 'btn tiny', onclick: () => askVisit(true) }, 'New code')),
+    fold('join-did', null, h('summary', null, 'Show the plain DID code'),
+      h('p', { class: 'why' }, 'For a wallet that reads the room’s DID itself. The same for everyone, and it does not run out.'),
+      h('img', { class: 'qr small', src: `/api/qr.svg?text=${encodeURIComponent(did)}`, alt: 'QR code of the room’s DID' }), h('p', null, h('code', null, did))))
+}
 function renderYou () {
   const el = $('#tab-you')
   const origin = S.publicUrl || location.origin // the address others can reach (PUBLIC_URL), not necessarily this one
@@ -767,7 +822,7 @@ function renderYou () {
         h('label', null, 'Name', name),
         h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: join }, 'Join')),
         h('details', null, h('summary', null, 'I already have a key'), h('label', null, 'Your key', seedIn), h('button', { class: 'btn', onclick: () => { try { me = identityFromSeedHex(seedIn.value); store.set('wpi.seed', me.seedHex); toast('Key loaded.'); refresh() } catch (err) { toast(err.message) } } }, 'Use this key'))),
-      invite)
+      phoneCard())
   }
   const mine = person(me.did)
   const myAgents = S.people.filter((p) => p.kind === 'agent' && p.principal === me.did && !p.removed)
@@ -802,7 +857,7 @@ function renderYou () {
       h('p', { class: 'why' }, 'Your agent acts only with the permission you signed: what it may do, until when. Approving, vetoing and bringing agents stay with you.'),
       myAgents.length ? myAgents.map((a) => h('div', { class: 'agent-row' },
         a.delegation ? modeChoice(a) : null,
-        h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), h('br'), h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'holds its own key'), tech(' ', h('code', null, short(a.did))), a.delegation ? h('br') : null, a.delegation ? h('span', { class: 'meta' }, listenDot(a.did), ' ', a.listening ? LISTEN[a.listening] : 'not listening right now: see “Keep it around” to have it answer') : null),
+        h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), h('br'), saysIt(a.did) ? h('span', { class: 'meta', title: 'The agent’s own word: the room cannot check it' }, saysIt(a.did), h('br')) : null, h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'holds its own key'), tech(' ', h('code', null, short(a.did))), a.delegation ? h('br') : null, a.delegation ? h('span', { class: 'meta' }, listenDot(a.did), ' ', a.listening ? LISTEN[a.listening] : 'not listening right now: see “Keep it around” to have it answer') : null),
           a.hosted && savedLinks()[a.did] ? h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(savedLinks()[a.did]).then(() => toast('Link copied.')) }, 'Copy link') : null,
           a.delegation ? h('button', { class: 'btn small danger', onclick: () => post('revoke', { delegation: a.delegation }) }, 'Stop') : h('span', { class: 'badge warn' }, 'stopped'),
           h('button', { class: 'btn small danger', title: 'Deletes its key, notebook and wake link; the record of what it said stays', onclick: () => { if (confirm(`Remove ${a.name}? Its key, notebook and wake link are deleted and its link stops working for good. What it already said stays in the record.`)) post('remove', { agent: a.did }) } }, 'Remove')),

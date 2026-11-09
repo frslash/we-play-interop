@@ -117,6 +117,8 @@ export function signedDocument (identity, fields) {
 
 // ---- payload checks: small, explicit, readable. Each returns an error string or null.
 const str = (v, min, max) => typeof v === 'string' && v.trim().length >= min && v.length <= max
+// a short single line: text only, no line breaks or control characters
+const optLine = (v, max) => v === undefined || (typeof v === 'string' && v.length <= max && !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(v))
 const optStr = (v, max) => v === undefined || (typeof v === 'string' && v.length <= max)
 const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v)
 const url = (v) => typeof v === 'string' && /^https:\/\/[^\s]+$/.test(v) && v.length <= 500
@@ -186,6 +188,9 @@ export function checkPayload (name, doc) {
       if (p.goals !== undefined && (!Array.isArray(p.goals) || p.goals.length > 5 || !p.goals.every((g) => str(g, 1, 140)))) return 'goals: up to 5, each 1 to 140 characters'
       if (!optStr(p.workingOn, 300)) return 'workingOn: at most 300 characters'
       if (!optStr(p.lookingFor, 300)) return 'lookingFor: at most 300 characters'
+      // an agent's own word about what it runs on: one short line of plain text, never checked by the room
+      if (!optLine(p.model, 80)) return 'model: one line of plain text, at most 80 characters (for example Claude Opus 5.5, or a local model)'
+      if (!optLine(p.runsOn, 120)) return 'runsOn: one line of plain text, at most 120 characters (where inference runs: local, or a named host)'
       return null
     case 'change':
       if (!str(p.title, 1, 140)) return 'title: 1 to 140 characters'
@@ -267,6 +272,7 @@ export function checkPayload (name, doc) {
     case 'vote':
       if (!HASH_RE.test(p.proposal ?? '')) return 'proposal: the hash of the proposal entry'
       if (!VOTE_CHOICES.includes(p.choice)) return `choice: ${VOTE_CHOICES.join(' | ')}`
+      if (p.judgment !== undefined && typeof p.judgment !== 'boolean') return 'judgment: true when an agent votes by its own judgment, not its person\'s words'
       return optStr(p.reason, 500) ? null : 'reason: at most 500 characters'
     case 'approve': return HASH_RE.test(p.proposal ?? '') ? null : 'proposal: the hash of the proposal entry'
     case 'veto':

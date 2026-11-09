@@ -29,6 +29,8 @@ import { Media } from './media.js'
 import { Changes } from './changes.js'
 import { Workshop } from './workshop.js'
 import { Cursors } from './cursors.js'
+import { ActivityPub } from './activitypub.js'
+import { CODE_RE, Visits, interaction } from './visits.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { createResolver } from './resolver.js'
@@ -69,7 +71,7 @@ function workspaceIdentity (config) {
   return id
 }
 
-export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, awayGatherMs, hostWelcomeMs = 3000 } = {}) {
+export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, apFetch, awayGatherMs, hostWelcomeMs = 3000 } = {}) {
   const identity = workspaceIdentity(config)
   const db = await openDb(config)
   const log = new Log({ db, identity, resolver, config })
@@ -96,11 +98,15 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.host = new Host({ ctx, welcomeAfterMs: hostWelcomeMs })
   ctx.media = new Media({ dataDir: config.dataDir })
   ctx.cursors = new Cursors({ dataDir: config.dataDir })
+  ctx.visits = new Visits() // join links for one visit each, in memory
   ctx.types = TYPES
   ctx.changes = new Changes({ ctx, dataDir: config.dataDir })
   log.on('entry', (e) => ctx.changes.onEntry(e))
   ctx.workshop = new Workshop({ ctx, gh: (...a) => executor.gh(...a) })
   log.on('entry', (e) => ctx.host.onEntry(e))
+  // the room's public lines, followable from Mastodon and the rest of the fediverse (read only: nothing flows back in)
+  ctx.activitypub = new ActivityPub({ ctx, dataDir: config.dataDir, ...(apFetch ? { fetch: apFetch } : {}) })
+  log.on('entry', (e) => ctx.activitypub.onEntry(e))
   ctx.drafts = new Drafts({ db, sealer: hosted })
   await ctx.drafts.load()
   ctx.never = new NeverLists({ db })
@@ -127,6 +133,25 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     req.on('error', reject)
   })
   const ipOf = (req) => String(req.headers['fly-client-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim()
+  const baseOf = (req) => config.publicUrl || `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`
+  const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+
+  /** A join link opened: a browser goes to the page's join flow, a wallet asking for JSON gets what the room offers. Once. */
+  function openVisit (req, res, code) {
+    const accept = String(req.headers.accept ?? '').toLowerCase(), json = accept.search(/application\/([\w.-]+\+)?json/), html = accept.indexOf('text/html')
+    const wallet = json >= 0 && (html < 0 || json < html) // asked for JSON before a web page: software, not a person's browser
+    const headers = { 'cache-control': 'no-store', vary: 'accept', 'referrer-policy': 'no-referrer' }
+    if (req.method === 'HEAD') { const st = CODE_RE.test(code) ? ctx.visits.peek(code) : 'gone'; res.writeHead(st === 'live' ? 200 : st === 'used' ? 410 : 404, headers); return res.end() }
+    const got = CODE_RE.test(code) ? ctx.visits.open(code, wallet ? 'wallet' : 'page') : { why: 'gone' }
+    if (got.visit) {
+      if (wallet) return send(res, 200, interaction({ base: baseOf(req), did: identity.did, name: config.workspaceName, visit: got.visit }), headers)
+      return send(res, 303, '', { ...headers, location: '/#tab=you' }) // the page starts a newcomer on You, where joining is
+    }
+    const status = got.why === 'used' ? 410 : 404, why = got.why === 'used' ? 'This code was for one visit, and it has been used.' : 'This code has run out, or there is no such code.'
+    if (wallet) return send(res, status, { error: why }, headers)
+    return send(res, status, `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(config.workspaceName)}</title><p>${why} <a href="/">Open the room</a> to join, or show its page again on the other screen for a fresh code.</p>`,
+      { ...headers, 'content-type': TYPES_OF['.html'], 'content-security-policy': "default-src 'none'", 'x-content-type-options': 'nosniff' })
+  }
 
   async function route (req, res) {
     const url = new URL(req.url, 'http://local')
@@ -153,6 +178,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       let body; try { body = JSON.parse(raw) } catch { return send(res, 400, { jsonrpc: '2.0', error: { code: -32700, message: 'parse error' }, id: null }) }
       return handleMcp(ctx, req, res, body)
     }
+    if (path === '/.well-known/webfinger' || path.startsWith('/ap/')) return ctx.activitypub.handle(req, res, url)
     if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
     if (path === '/api/info') return send(res, 200, views.info(ctx))
     if (path === '/api/state') return send(res, 200, views.state(ctx))
@@ -172,6 +198,14 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       if (!t || t.length > 600) return send(res, 400, 'text: 1 to 600 characters')
       return send(res, 200, await QRCode.toString(t, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' }), { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=3600' })
     }
+    if (path === '/api/visit') { // a join link for this visit (POST), or how the links have been used (GET)
+      if (req.method === 'GET') return send(res, 200, ctx.visits.view())
+      if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' })
+      const v = ctx.visits.make(ipOf(req))
+      if (!v) return send(res, 429, { error: 'too many join links from this address; try again in a minute' }, { 'retry-after': '60' })
+      return send(res, 201, { url: `${baseOf(req)}/j/${v.code}?iuv=1`, expiresAt: new Date(v.expiresAt).toISOString() }, { 'cache-control': 'no-store' })
+    }
+    if (path.startsWith('/j/') && (req.method === 'GET' || req.method === 'HEAD')) return openVisit(req, res, path.slice(3))
     if (path === '/api/events') {
       // no-transform and no buffering, so proxies and tunnels pass each event on at once; the padding pushes past buffers that wait for a first chunk
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no', connection: 'keep-alive', 'access-control-allow-origin': '*' })
@@ -215,7 +249,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
         return send(res, 201, stored)
       } catch (err) { return refuse(res, err, doc) }
     }
-    if (path.startsWith('/api/files/')) { const r = await views.fileText(ctx, path.slice(11), q); return r ? send(res, 200, r) : send(res, 404, { error: 'no file with that hash, or it has no text (a photo)' }) }
+    if (path.startsWith('/api/files/')) { const r = await views.fileText(ctx, path.slice(11), q); return r ? send(res, 200, r) : send(res, 404, { error: 'no file in this room has that sha256, or it has no text (a photo). The path is /api/files/<the sha256 a message lists under files>' }) }
     if (path === '/api/workshop') return send(res, 200, ctx.workshop.view()) // every change to the room's own code, in public
     if (path.startsWith('/patches/') && req.method === 'GET') { // a change an agent handed the room, to read before approving it
       const d = ctx.changes.get(path.slice(9))
@@ -349,7 +383,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     ctx.workshop.start()
     timers.push(setInterval(() => closeVotes(ctx).catch((e) => console.error('closing votes:', e)), 30_000))
   }
-  ctx.stop = async () => { ctx.waits.stop(); timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.cursors.save(); waker.stop(); ctx.away.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { ctx.waits.stop(); timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }
