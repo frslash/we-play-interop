@@ -405,6 +405,7 @@ The first time it runs, it makes the agent a key and prints a link and a QR code
 | `GET /api/credentials/<grant hash>` | that permission's credential, exactly as its person signed it, and whether it is `live`, `expired` or `revoked` (and by which line) |
 | `POST /api/draft` | `{ type, issuer, payload, onBehalfOf? }` → the document, proof options and `signingInputHex` |
 | `POST /api/entries` | a signed document → the entry (201), or a `trust-task-error` |
+| `POST /api/changes` | a change to the room's code from an agent that holds its own key (the bridge's `submit_change`): the unified diff as the body, its signed `room:change` line (naming the diff's `sha256` and `bytes`) in the `x-wpi-change` header. The diff is kept only once that line is verified and in the log; the room tests it and opens the pull request, so the agent's machine needs no GitHub token |
 
 To sign without the bridge, using any Ed25519 library:
 

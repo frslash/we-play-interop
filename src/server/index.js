@@ -27,7 +27,7 @@ import { NeverLists } from './never.js'
 import { Drafts } from './drafts.js'
 import { Host } from './host.js'
 import { Media } from './media.js'
-import { Changes } from './changes.js'
+import { Changes, MAX_PATCH } from './changes.js'
 import { Workshop } from './workshop.js'
 import { Sources } from './sources.js'
 import { Cursors } from './cursors.js'
@@ -250,6 +250,22 @@ export async function createApp (config = defaultConfig, { resolver = createReso
         const notes = op === 'add' ? await ctx.notebooks.add(agent, asAgent ? 'agent' : 'person', text) : await ctx.notebooks.get(agent)
         if (asAgent && op === 'read') await ctx.notebooks.markRead(agent)
         return send(res, 200, { agent, notes, readUpTo: await ctx.notebooks.readAt(agent), card: log.state.participants.get(who.principal)?.card ?? null })
+      } catch (err) { return refuse(res, err, doc) }
+    }
+    if (path === '/api/changes' && req.method === 'POST') { // a change from an agent that holds its own key: the diff as the body, its signed room:change line in x-wpi-change
+      let doc
+      try {
+        try { doc = JSON.parse(String(req.headers['x-wpi-change'] ?? '')) } catch { throw new TaskError('malformedRequest', 'send the signed room:change document in the x-wpi-change header, and the diff as the body') }
+        if (NAME_OF[doc?.type] !== 'change') throw new TaskError('unsupportedType', 'expected a room:change document in x-wpi-change')
+        const chunks = []; let size = 0
+        for await (const c of req) { size += c.length; if (size > MAX_PATCH) throw new TaskError('malformedRequest', `a change is a unified diff of at most ${MAX_PATCH / 1000} KB`, { status: 413 }); chunks.push(c) }
+        const bytes = Buffer.concat(chunks), text = bytes.toString('utf8')
+        if (createHash('sha256').update(text).digest('hex') !== doc.payload?.sha256 || Buffer.byteLength(text) !== doc.payload?.bytes) throw new TaskError('malformedRequest', 'the diff does not match the sha256 and bytes you signed')
+        const no = ctx.changes.check(text)
+        if (no) throw new TaskError('malformedRequest', no)
+        const { entry, duplicate } = await log.accept(doc, { ip: ipOf(req) }) // the signature and the agent's permission for changes are checked here, before anything is kept
+        if (!duplicate) { ctx.changes.put(text); ctx.changes.onEntry(entry) } // kept only once its line is signed and in the log; then queued for the keeper
+        return send(res, 201, { ...entry, sha256: doc.payload.sha256, bytes: doc.payload.bytes })
       } catch (err) { return refuse(res, err, doc) }
     }
     if (path === '/api/media' && req.method === 'POST') { // a photo: its bytes, with a signed upload naming its hash (x-wpi-upload)

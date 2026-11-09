@@ -19,14 +19,23 @@ export class Changes {
     this.timer = null
   }
 
-  /** Keep a diff; its sha256 is what the agent signs. */
-  put (text) {
-    const s = String(text ?? '')
+  /** Why the room would not keep this diff (null: it would). Writes nothing. */
+  check (text) {
+    try { this.#refuse(String(text ?? '')); return null } catch (err) { return err.message }
+  }
+
+  #refuse (s) {
     if (!s.trim() || Buffer.byteLength(s) > MAX_PATCH) throw new Error(`a change is a unified diff of at most ${MAX_PATCH / 1000} KB`)
     if (!/^(diff --git |--- |\+\+\+ |@@ )/m.test(s)) throw new Error('a change is a unified diff (as git diff prints it)')
     if (/^(?:\+\+\+|---) (?:a|b)\/(?:package(?:-lock)?\.json)\b/m.test(s)) throw new Error('changes to the room\'s dependencies (package.json, package-lock.json) go through a person')
     const leak = findSecret(s)
     if (leak) throw new Error(`this change contains what looks like ${leak.what}, so the room did not take it: everything here is public. Take it out and hand it in again`)
+  }
+
+  /** Keep a diff; its sha256 is what the agent signs. */
+  put (text) {
+    const s = String(text ?? '')
+    this.#refuse(s)
     const sha256 = createHash('sha256').update(s).digest('hex')
     writeFileSync(join(this.dir, `${sha256}.diff`), s)
     return { sha256, bytes: Buffer.byteLength(s) }
