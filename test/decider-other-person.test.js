@@ -1,6 +1,7 @@
-// Before #57 merges (step d791a9bb): the deciding agent belongs to a different person than the step's; a choice that
-// names no one is held for the step's owner and never for its proposer; and only a clear disagreement, or a person's
-// plain new answer, reopens a decision, a limited number of times (src/server/facilitator.js).
+// Steps d791a9bb and 6885c5bc: one agent of another person alone can't settle a step's unheld choice; the step's own
+// person's agent settles it for now, and that person or any person can reopen it; a choice that names no one is held for
+// the step's owner and never for its proposer; and only a clear disagreement, or a person's plain new answer, reopens a
+// decision, a limited number of times (src/server/facilitator.js).
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -74,26 +75,48 @@ describe('what reopens a decision', () => {
   })
 })
 
-describe('the deciding agent belongs to another person than the step’s', () => {
-  test('the step’s own agent can’t settle its choice, in the thread or through the round; another person’s agent can', async () => {
+describe('who settles a step’s choice', () => {
+  test('one agent of Person C alone can’t settle Person A’s unheld choice; Person A’s own agent settles it for now, and A or any person can reopen it', async () => {
     const r = await room()
     try {
       const f = r.ctx.facilitator
       const p = await blockOn(r, 'Run the carrier test', `${CARRIER}?`)
       let s = r.stepFrom(p)
-      assert.equal(s.owner, r.builder); assert.equal(s.waitingOn.who, null, 'a choice for the agents')
-      // the builder (Person A's agent, the step's own) answers its own question: nothing is decided
-      const own = (await builderSays(r, 'TSP first, because RLTP already carries it.', s.thread)).hash
+      assert.equal(s.owner, r.builder); assert.equal(s.waitingOn.who, null, 'a choice for the agents'); assert.equal(s.waitingOn.held, undefined)
+      assert.match(r.said('decide').at(-1).payload.text, /for now from Person A’s own agent; other agents can suggest/)
+      // East Agent (Person C's) answers: refused, in the thread and through the round's "answered" move
+      const east = (await r.as('c', 'note', { text: 'TSP first, because RLTP already carries it.', kind: 'message' }, { threadId: s.thread })).body.hash
       await f.tick(r.at(17))
-      assert.ok(r.stepFrom(p).waitingOn, 'the step’s own agent cannot settle it in the thread')
-      roundSays(r, [{ entry: own, step: s.id, kind: 'answered' }])
+      assert.ok(r.stepFrom(p).waitingOn, 'one agent of another person alone cannot settle it in the thread')
+      roundSays(r, [{ entry: east, step: s.id, kind: 'answered' }])
       assert.equal((await r.ctx.weaver.round()).document.payload.facilitate.moved.length, 0, 'nor through the round')
       assert.ok(r.stepFrom(p).waitingOn); assert.equal(r.said('decided').length, 0)
-      // an agent of another person settles it
-      await r.as('c', 'note', { text: 'TSP first, because RLTP already carries it.', kind: 'message' }, { threadId: s.thread })
+      // the builder (Person A's own agent) settles it, provisionally
+      await builderSays(r, 'TSP first, because RLTP already carries it.', s.thread)
       await f.tick(r.at(18))
       s = r.stepFrom(p)
-      assert.equal(s.waitingOn, undefined); assert.equal(s.decision.by, r.agents.c.did)
+      assert.equal(s.waitingOn, undefined); assert.ok(decided(s))
+      assert.equal(s.decision.by, r.builder); assert.equal(s.decision.provisional, true)
+      assert.match(r.said('decided').at(-1).payload.text, /^Decided for now by Person A['’]s builder[\s\S]*Person A, or any person, can reopen it here/)
+      assert.match(f.view().steps.find((x) => x.id === s.id).where, /\(for now: any person can reopen it\)/)
+      // Person A reopens it
+      await r.send(r.people.a, 'note', { text: 'I disagree: DIDComm first, because Geb speaks it.', kind: 'message' }, { threadId: s.thread })
+      await f.tick(r.at(19))
+      s = r.stepFrom(p)
+      assert.ok(s.waitingOn, 'reopened by Person A'); assert.ok(!decided(s)); assert.equal(r.said('reopened').length, 1)
+      // settled again for now; any other person (here Person B) reopens it too
+      await builderSays(r, 'TSP first, because RLTP already carries it.', s.thread)
+      await f.tick(r.at(20))
+      assert.equal(r.stepFrom(p).decision.provisional, true)
+      await r.send(r.people.b, 'note', { text: 'DIDComm first, because Geb speaks it.', kind: 'message' }, { threadId: s.thread })
+      await f.tick(r.at(21))
+      s = r.stepFrom(p)
+      assert.ok(s.waitingOn, 'reopened by any person'); assert.equal(r.said('reopened').length, 2)
+      // a person settles it outright: not provisional
+      await r.send(r.people.c, 'note', { text: 'TSP first, because RLTP already carries it.', kind: 'message' }, { threadId: s.thread })
+      await f.tick(r.at(22))
+      s = r.stepFrom(p)
+      assert.equal(s.decision.by, r.people.c.did); assert.equal(s.decision.provisional, undefined)
     } finally { await r.stop() }
   })
 
@@ -137,7 +160,7 @@ describe('only a clear disagreement or a person’s plain line reopens a decisio
       const thread = r.stepFrom(p).thread
       let t = 17
       const tick = () => f.tick(r.at(t++))
-      const settle = async () => { await r.as('c', 'note', { text: 'TSP first, because RLTP already carries it.', kind: 'message' }, { threadId: thread }); await tick(); assert.ok(decided(r.stepFrom(p)), 'decided') }
+      const settle = async () => { await builderSays(r, 'TSP first, because RLTP already carries it.', thread); await tick(); assert.ok(decided(r.stepFrom(p)), 'decided') }
       await settle()
       for (const [who, text] of [['person', 'Nice work'], ['agent', 'I don’t disagree'], ['agent', 'Nice work, thanks'], ['person', 'I don’t disagree'], ['person', 'Thanks, that works for me']]) {
         if (who === 'person') await r.send(r.people.b, 'note', { text, kind: 'message' }, { threadId: thread })

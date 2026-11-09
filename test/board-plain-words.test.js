@@ -64,7 +64,11 @@ describe('the board hears plain words', () => {
       await r.send(r.people.b, 'note', { text: 'the permanent domain should be inwove.org', kind: 'message' })
       await r.ctx.facilitator.tick()
       assert.ok(five().waitingOn, 'talk elsewhere is not the answer')
+      // check (5) is Person A's (the goal's): one agent of Person C alone can't settle it; a person can
       await r.say('c', 'inwove.org: it is bought and already reaches the room.', { threadId: five().thread })
+      await r.ctx.facilitator.tick()
+      assert.ok(five().waitingOn, 'another person’s agent alone does not settle it')
+      await r.send(r.people.c, 'note', { text: 'inwove.org: it is bought and already reaches the room.', kind: 'message' }, { threadId: five().thread })
       await r.ctx.facilitator.tick()
       assert.equal(five().waitingOn, undefined); assert.equal(five().change, 'answered')
       // an older step that still waits on a person: after a restart it goes to the agents, in one line that wakes them
@@ -84,7 +88,7 @@ describe('the board hears plain words', () => {
     try {
       const g = await q.goal2()
       const f = q.ctx.facilitator, five = f.testOf(g).find((x) => x.test.n === 5)
-      const answer = (await q.say('b', 'decided: inwove.org', { threadId: five.thread })).body
+      const answer = (await q.send(q.people.b, 'note', { text: 'decided: inwove.org', kind: 'message' }, { threadId: five.thread })).body
       f.heard = answer.seq // as if an older board had read past it without knowing
       await f.tick()
       assert.ok(f.testOf(g).find((x) => x.test.n === 5).waitingOn, 'not heard yet')
