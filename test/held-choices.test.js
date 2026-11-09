@@ -93,9 +93,9 @@ describe('a choice that touches a person is held for them', () => {
       const f = r.ctx.facilitator
       const p = await blockOn(r, 'Publish the room’s DID document', `${ASK}?`)
       let s = r.stepFrom(p)
-      assert.deepEqual({ who: s.waitingOn.who, held: s.waitingOn.held }, { who: r.people.b.did, held: 'keys' }, 'held for the person whose agreement it is')
+      assert.deepEqual({ who: s.waitingOn.who, held: s.waitingOn.held }, { who: r.people.a.did, held: 'keys' }, 'held for the step’s owner’s person, never its proposer')
       const ask = r.said('decide').at(-1).payload.text
-      assert.match(ask, /^A choice held for Person B: Which key signs/); assert.match(ask, /can’t settle it/)
+      assert.match(ask, /^A choice held for Person A: Which key signs/); assert.match(ask, /can’t settle it/)
       // another person's agent answers, in the thread and through the round's judgment: nothing is decided
       const line = (await r.as('c', 'note', { text: 'The room’s own key. Because it already signs the log.', kind: 'message' }, { threadId: s.thread })).body.hash
       await f.tick(r.at(17))
@@ -104,18 +104,18 @@ describe('a choice that touches a person is held for them', () => {
       assert.equal(round.facilitate.moved.length, 0, 'the round cannot settle it for another person either')
       s = r.stepFrom(p)
       assert.ok(s.waitingOn); assert.equal(s.decision, undefined); assert.equal(r.said('decided').length, 0)
-      assert.match(f.roundContext().steps.find((x) => x.id === s.id).waitingOn, /^held for Person B \(their keys\)/)
+      assert.match(f.roundContext().steps.find((x) => x.id === s.id).waitingOn, /^held for Person A \(their keys\)/)
       // a restart does not hand a held choice to the agents
       const { Facilitator } = await import('../src/server/facilitator.js')
       r.ctx.facilitator = new Facilitator({ ctx: r.ctx }); await r.ctx.facilitator.tick(r.at(18))
-      assert.equal(r.stepFrom(p).waitingOn.who, r.people.b.did)
-      // the person's own agent answers for them: decided, and the decision records for whom
-      await r.as('b', 'note', { text: 'Use a new key kept offline, because the room’s key is online.', kind: 'message' }, { threadId: s.thread })
+      assert.equal(r.stepFrom(p).waitingOn.who, r.people.a.did)
+      // the person answers in their own plain line: decided, and the decision records for whom
+      await r.send(r.people.a, 'note', { text: 'Use a new key kept offline, because the room’s key is online.', kind: 'message' }, { threadId: s.thread })
       await r.ctx.facilitator.tick(r.at(19))
       s = r.stepFrom(p)
       assert.equal(s.waitingOn, undefined)
-      assert.equal(s.decision.by, r.agents.b.did); assert.equal(s.decision.for, r.people.b.did); assert.equal(s.decision.held, 'keys')
-      assert.match(r.said('decided').at(-1).payload.text, /^Decided by South Agent for Person B \(Which key signs/)
+      assert.equal(s.decision.by, r.people.a.did); assert.equal(s.decision.for, r.people.a.did); assert.equal(s.decision.held, 'keys')
+      assert.match(r.said('decided').at(-1).payload.text, /^Decided by Person A for Person A \(Which key signs/)
     } finally { await r.stop() }
   })
 

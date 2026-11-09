@@ -1,7 +1,7 @@
 // A choice answered once stays answered (the room's agreement "Stop the repeat loop: a decided or parked step stays
 // decided until its state changes"). The first clear answer in a step's thread is saved on the step as its decision,
 // with who and why; the weaver doesn't ask it again, the builder doesn't report the same "stuck" again, a parked step
-// is not chased or reported, and a person's line in the thread (or anyone disagreeing) reopens it.
+// is not chased or reported, and a clear disagreement (or a person's plain new answer) reopens it.
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -85,8 +85,8 @@ describe('a choice answered once stays answered', () => {
       assert.ok(r.stepFrom(p1).waitingOn, 'the choice is put to the agents')
       assert.equal(r.said('decide').length, 1); assert.equal(r.stuckLines(), 1)
 
-      // which key signs is a person's keys: held for the person whose agreement it is (Person B), not for the agents
-      assert.equal(r.stepFrom(p1).waitingOn.who, r.people.b.did); assert.equal(r.stepFrom(p1).waitingOn.held, 'keys')
+      // which key signs is a person's keys: held for the step's owner's person (Person A, the builder's), never the proposer
+      assert.equal(r.stepFrom(p1).waitingOn.who, r.people.a.did); assert.equal(r.stepFrom(p1).waitingOn.held, 'keys')
       // a shrug is not an answer, and neither is another person's agent: the choice stays undecided on the board
       await r.as('b', 'note', { text: 'Not sure, which would you pick?', kind: 'message' }, { threadId: s1.thread })
       await f.tick(r.at(17))
@@ -95,18 +95,22 @@ describe('a choice answered once stays answered', () => {
       await f.tick(r.at(17) + 30_000)
       assert.ok(r.stepFrom(p1).waitingOn, 'one agent cannot settle another person’s step alone')
       assert.equal(r.stepFrom(p1).decision, undefined); assert.equal(r.said('decided').length, 0)
-      assert.match(f.view().steps.find((x) => x.id === s1.id).where, /^Waiting on Person B: Which key signs.*Held for Person B: it touches their keys/)
-      // that person answers: now it is decided, with who, for whom and why
+      assert.match(f.view().steps.find((x) => x.id === s1.id).where, /^Waiting on Person A: Which key signs.*Held for Person A: it touches their keys/)
+      // nor the proposer: the hold is the owner's person's
       await r.send(r.people.b, 'note', { text: 'The room’s own key. Because it already signs the log.', kind: 'message' }, { threadId: s1.thread })
+      await f.tick(r.at(17) + 45_000)
+      assert.ok(r.stepFrom(p1).waitingOn, 'the proposer cannot settle a hold either')
+      // that person answers: now it is decided, with who, for whom and why
+      await r.send(r.people.a, 'note', { text: 'The room’s own key. Because it already signs the log.', kind: 'message' }, { threadId: s1.thread })
       await f.tick(r.at(18))
       let s = r.stepFrom(p1)
       assert.equal(s.waitingOn, undefined)
-      assert.equal(s.decision.by, r.people.b.did); assert.equal(s.decision.for, r.people.b.did); assert.equal(s.decision.held, 'keys')
+      assert.equal(s.decision.by, r.people.a.did); assert.equal(s.decision.for, r.people.a.did); assert.equal(s.decision.held, 'keys')
       assert.equal(s.decision.choice, 'The room’s own key'); assert.match(s.decision.why, /already signs the log/)
       assert.match(s.decision.asked, /Which key signs the DID document/)
       const card = f.view().steps.find((x) => x.id === s.id)
-      assert.equal(card.decision.byName, 'Person B'); assert.equal(card.decision.forName, 'Person B'); assert.equal(card.decision.holds, true)
-      assert.match(card.where, /Decided by Person B for Person B: The room’s own key/)
+      assert.equal(card.decision.byName, 'Person A'); assert.equal(card.decision.forName, 'Person A'); assert.equal(card.decision.holds, true)
+      assert.match(card.where, /Decided by Person A for Person A: The room’s own key/)
       assert.equal(r.said('decided').length, 1)
       assert.ok(f.roundContext().steps.find((x) => x.id === s.id).decided, 'the weaver’s round sees it as decided')
 
@@ -119,20 +123,20 @@ describe('a choice answered once stays answered', () => {
       assert.equal(r.said('decide').length, 1, 'the choice is not asked again')
       assert.ok(decided(r.stepFrom(p1)))
 
-      // another person's line in the thread reopens it, and it is held for its person again
-      await r.send(r.people.c, 'note', { text: 'I’d use a new key just for the DID', kind: 'message' }, { threadId: s1.thread })
+      // a clear disagreement in the thread reopens it, and it is held for its person again
+      await r.send(r.people.c, 'note', { text: 'I disagree: I’d use a new key just for the DID', kind: 'message' }, { threadId: s1.thread })
       await f.tick(r.at(18) + 5 * BUILD_MS)
       s = r.stepFrom(p1)
-      assert.equal(s.decision, undefined); assert.match(s.waitingOn.decision, /Which key signs/); assert.equal(s.waitingOn.who, r.people.b.did)
+      assert.equal(s.decision, undefined); assert.match(s.waitingOn.decision, /Which key signs/); assert.equal(s.waitingOn.who, r.people.a.did)
       assert.equal(r.said('reopened').length, 1); assert.match(r.said('reopened')[0].payload.text, /reopened the choice/)
 
       // parked: on the board as parked, nobody chased, never in the stuck reports
-      await r.as('b', 'note', { text: 'Parked: until Person A says which key.', kind: 'message' }, { threadId: s1.thread })
+      await r.send(r.people.a, 'note', { text: 'Parked: until the key ceremony.', kind: 'message' }, { threadId: s1.thread })
       await f.tick(r.at(18) + 5 * BUILD_MS + MIN)
       s = r.stepFrom(p1)
-      assert.equal(isParked(s), true); assert.equal(s.decision.by, r.agents.b.did); assert.equal(s.decision.for, r.people.b.did)
+      assert.equal(isParked(s), true); assert.equal(s.decision.by, r.people.a.did); assert.equal(s.decision.for, r.people.a.did)
       const parkedCard = f.view().steps.find((x) => x.id === s.id)
-      assert.equal(parkedCard.parked, true); assert.match(parkedCard.where, /^Parked by South Agent: until Person A says which key/)
+      assert.equal(parkedCard.parked, true); assert.match(parkedCard.where, /^Parked by Person A: until the key ceremony/)
       const before = { stuck: r.stuckLines(), decide: r.said('decide').length, chase: r.said('chase').length, lines: r.ctx.log.entries.length }
       r.pulls[0].body += '\n\nUpdated.' // even a changed Blocked: pull request is not reported for a parked step
       for (let i = 1; i <= 6; i++) { b.reported.clear(); await f.tick(r.at(18) + 5 * BUILD_MS + i * BUILD_MS) }

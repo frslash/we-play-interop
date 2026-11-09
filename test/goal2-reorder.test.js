@@ -70,7 +70,7 @@ describe('Goal 2’s done-test: reworded, with (1), (2) and (5) first and (3), (
       assert.deepEqual(new Set(t.map((s) => s.id)), new Set(old.map((s) => s.id)), 'the same steps, not new ones')
       assert.equal(t[0].title, SEED_TESTS[0].checks[0].text)
       assert.equal(t[1].title, SEED_TESTS[0].checks[1].text)
-      assert.ok(t[2].waitingOn, 'check (5) still waits on its choice'); assert.equal(t[2].waitingOn.held, 'money', 'which costs money, so it is held for the goal’s person')
+      assert.ok(t[2].waitingOn, 'check (5) still waits on its choice'); assert.equal(t[2].waitingOn.who, null, 'the agents’ to make: a hold is never for the goal’s proposer')
       assert.ok(t.slice(3).every((s) => s.test.later && s.title === V1[s.test.n - 1].text), 'the later checks keep their words')
       const note = r.said('reworded')
       assert.equal(note.length, 1)
