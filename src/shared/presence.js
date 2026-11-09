@@ -32,3 +32,20 @@ export const WAITING_FOR_PERSON = 'awake, waiting for its person'
  * absent: it spoke, and its person has the next move (room line 2329).
  */
 export const waitsForPerson = (p) => p?.kind === 'agent' && !p.removed && Number(p.waiting ?? 0) > 0
+
+/**
+ * How many lines wait for this person's OK, from all of their agents (each seat's `waiting`, which the room
+ * counts per agent). Only agents with a live permission count: a stopped agent's drafts can't be sent.
+ */
+export function waitingForOk (people, personDid) {
+  if (!personDid) return 0
+  return (people ?? []).filter((p) => p?.kind === 'agent' && p.principal === personDid && p.delegation && !p.removed)
+    .reduce((n, p) => n + Math.max(0, Number(p.waiting ?? 0) || 0), 0)
+}
+/** The plain words on the Talk tab: "1 waiting for your OK", "2 waiting for your OK", or nothing. */
+export const waitingLabel = (n) => (n > 0 ? `${n} waiting for your OK` : '')
+/** Every draft from every agent, each marked with its agent, oldest first. lists: [{ agent, drafts }] */
+export function allDrafts (lists) {
+  return (lists ?? []).flatMap(({ agent, drafts }) => (drafts ?? []).map((d) => ({ ...d, agent })))
+    .sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : 0))
+}
