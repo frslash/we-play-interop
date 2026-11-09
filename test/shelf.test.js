@@ -46,7 +46,7 @@ const REPO_FILES = (sha) => [
   ['LICENSE', 'Apache License, Version 2.0\n'],
   ['notes.txt', `someone left this in a text file: ${PLANTED}\n`],
   ['.env', `TOKEN=${PLANTED}\n`],
-  ['.env.example', 'TOKEN=\n'],
+  ['.env.example', `TOKEN=${PLANTED}\n`], // a kept example file: public, so it reads as itself, and still never reaches a log line
   ['deploy/server.key', '-----BEGIN PRIVATE KEY-----\n'],
   ['.ssh/config', 'Host x\n'],
   ['src/main.rs', 'fn main() {\n    let features = "cli-synthesis";\n    serve(8100);\n}\n'],
@@ -98,8 +98,8 @@ describe('the projects shelf', () => {
     assert.equal(repoOf('https://github.com/o/r.git'), 'o/r')
     assert.equal(pinOf(`https://github.com/o/r/tree/${A}`), A); assert.equal(pinOf(`https://github.com/o/r/commit/${A}`), A); assert.equal(pinOf(`https://github.com/o/r/blob/${A}/src/x.rs`), A)
     for (const no of ['https://github.com/o/r', 'https://github.com/o/r/tree/main', 'https://github.com/o/r/tree/v1.2.3', `https://github.com/o/r/tree/${A.slice(0, 12)}`, `https://github.com/o/r/releases/tag/${A}`, `https://gitlab.com/o/r/tree/${A}`, `https://github.com/o/r/tree/${A.toUpperCase()}`]) assert.equal(pinOf(no), null, no) // a branch, a tag or a short commit is not a pin
-    for (const yes of ['.env', '.env.production', 'a/b/.npmrc', 'deploy/server.key', 'certs/site.pem', '.ssh/config', 'home/.aws/credentials', 'id_ed25519', '.git-credentials']) assert.equal(secretPath(yes), true, yes)
-    for (const no of ['.env.example', '.env.sample', 'src/env.rs', 'docs/keys.md', 'id_ed25519.pub', '.github/workflows/ci.yml', 'src/key.rs']) assert.equal(secretPath(no), false, no)
+    for (const yes of ['.env', '.env.production', 'a/b/.npmrc', 'deploy/server.key', 'certs/site.pem', '.ssh/config', 'home/.aws/credentials', 'id_ed25519', '.git-credentials', '.env.local', '.env.dist', '.env.defaults', '.env.default', '.env.production.local', 'app/.env.example.bak']) assert.equal(secretPath(yes), true, yes)
+    for (const no of ['.env.example', '.env.sample', '.env.template', 'app/.ENV.EXAMPLE', 'src/env.rs', 'docs/keys.md', 'id_ed25519.pub', '.github/workflows/ci.yml', 'src/key.rs']) assert.equal(secretPath(no), false, no)
     for (const no of ['https://github.com/TrustStackers', 'https://github.com/orgs/x/repositories', 'http://github.com/o/r', 'https://gitlab.com/o/r', 'https://github.com.evil.example/o/r', 'https://user:pw@github.com/o/r', 'https://github.com/o/..', 'not a url', null]) assert.equal(repoOf(no), null, String(no))
   })
 
@@ -201,7 +201,8 @@ describe('the projects shelf', () => {
     const list = await s.files('o/demo')
     for (const gone of ['.env', 'deploy/server.key', '.ssh/config']) { assert.equal(list.files.some((f) => f.path === gone), false, gone); await assert.rejects(s.read('o/demo', gone), /no file/) }
     assert.match((await s.read('o/demo', 'notes.txt')).text, new RegExp(PLANTED)) // the text file that holds it is public code, and reads as itself…
-    assert.equal((await s.search('o/demo', PLANTED)).found, 1)
+    assert.match((await s.read('o/demo', '.env.example')).text, new RegExp(PLANTED)) // the kept example file reads as itself too
+    assert.equal((await s.search('o/demo', PLANTED)).found, 2) // notes.txt and .env.example
     await assert.rejects(s.read('o/demo', `${PLANTED}.txt`), /no file/)
     s.flush()
     const kept = [readFileSync(join(s.dir, 'fetch-log.jsonl'), 'utf8'), readFileSync(join(s.dir, 'use.json'), 'utf8'), JSON.stringify(s.view()), JSON.stringify(s.logLines())].join('\n')

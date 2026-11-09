@@ -98,8 +98,9 @@ const BINARY = new Set(['png', 'jpg', 'jpeg', 'gif', 'ico', 'webp', 'bmp', 'icns
 const SKIP_DIRS = /(^|\/)(node_modules|\.git)\//
 // Names that usually hold a secret. The code here is public already, so this is not what keeps anyone's secret
 // safe: it keeps the shelf from being the easy place to look for one somebody committed by mistake. An example
-// file (.env.example) is kept: it names a project's settings, which is what agents come here to get right.
-const ENV_EXAMPLE = /^\.env\.(example|sample|template|dist|defaults?)$/i
+// file is kept, by exactly three names (.env.example, .env.sample, .env.template): it names a project's settings, which
+// is what agents come here to get right. Every other .env or .env.* (.env.local, .env.dist, .env.default…) is refused.
+const ENV_EXAMPLE = /^\.env\.(example|sample|template)$/i
 const SECRET_NAME = /^(\.env(\..*)?|\.npmrc|\.netrc|\.pypirc|\.git-credentials|\.htpasswd|\.dockercfg|id_(rsa|dsa|ecdsa|ed25519)|.*\.(pem|key|jks|kdbx))$/i
 const SECRET_DIR = /^\.(ssh|aws|gnupg|docker|kube)$/i
 // The shelf shows these files on the room's public address, so it keeps only projects whose owners said how their
