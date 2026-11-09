@@ -24,6 +24,22 @@ const BRIEF_MAX = 12_000 // what a routine's start can carry: the step, its line
 export const branchOf = (step) => `claude/builder-${step.id.slice(0, 12)}`
 const same = (s) => String(s ?? '').toLowerCase().replace(/[’`]/g, "'")
 
+/**
+ * What a stuck builder says in its "Blocked:" pull request: what would unblock it (Needs:, or the body's first line),
+ * why (Why:, or the first paragraph under a "Why" heading), and who could give it (From:, or a "Who could help" heading).
+ */
+export function stuckOf (pr) {
+  const body = String(pr.body ?? '').replace(/\r/g, ''), lines = body.split('\n').map((l) => l.trim())
+  const field = (k) => lines.find((l) => new RegExp(`^\\**${k}\\**\\s*:`, 'i').test(l))?.replace(/^[^:]*:\s*/, '').replace(/\*\*/g, '').trim() || null
+  const section = (k) => { const m = new RegExp(`^#+\\s*${k}[^\\n]*\\n+([\\s\\S]*?)(\\n#+\\s|$)`, 'im').exec(body); return m ? m[1].split(/\n\s*\n/)[0].replace(/\s+/g, ' ').trim() : null }
+  const first = lines.find((l) => l && !/^#|^JOB\b/i.test(l)) ?? ''
+  return {
+    needs: clip(field('needs') ?? first ?? pr.title, 280) || 'how to go on with this step',
+    why: field('why') ? clip(field('why'), 400) : section('why') ? clip(section('why'), 400) : null,
+    from: field('from') ? clip(field('from'), 120) : section('who could help') ? clip(section('who could help'), 120) : null,
+  }
+}
+
 export class Builder {
   constructor ({ ctx }) { this.ctx = ctx; this.lookedAt = 0; this.lastError = null; this.fired = [] }
   get st () { return this.ctx.log.state }
@@ -109,9 +125,11 @@ export class Builder {
       if (!pr) continue
       const builder = s.owner, link = pr.html_url ?? `https://github.com/${repo}/pull/${pr.number}`
       if (/^blocked\b/i.test(pr.title ?? '')) {
-        const decision = clip(String(pr.body ?? '').split('\n').find((l) => l.trim()) ?? pr.title, 280) || 'how to go on with this step'
-        await this.say(builder, { text: `I’m stuck on this one: ${clip(pr.title, 200)} (${link}).`, kind: 'message', step: { of: s.id, say: 'blocked', decision: decision.length >= 3 ? decision : 'how to go on with this step' } }, { threadId: s.thread })
-        done.push({ step: s.id, pr: pr.number, blocked: true })
+        const stuck = stuckOf(pr)
+        const asks = stuck.from && !/^(any|the) agents?\b/i.test(stuck.from) ? `${stuck.from}: can you help?` : 'Any agent here: can you help?'
+        const text = [`I’m stuck on ${s.test ? `check (${s.test.n})` : `“${clip(s.title, 120)}”`}.`, stuck.why ? `Why: ${stuck.why}` : null, `What would unblock it: ${stuck.needs}`, asks, `(Pull request #${pr.number}: ${link})`].filter(Boolean).join(' ')
+        await this.say(builder, { text: clip(text, 2000), kind: 'message', step: { of: s.id, say: 'blocked', decision: stuck.needs.length >= 3 ? clip(stuck.needs, 280) : 'how to go on with this step' } }, { threadId: s.thread })
+        done.push({ step: s.id, pr: pr.number, blocked: true, from: stuck.from ?? null })
         continue
       }
       // proposed like any change to the room's code, pinned to the commit it was built at: the room's rules decide

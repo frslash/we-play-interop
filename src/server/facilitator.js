@@ -65,7 +65,9 @@ export const REFUSES = /^\W*(no\b|nope\b|not me\b|i\s+(won[’']?t|can[’']?t|c
 const WORDS = (t) => new Set(String(t ?? '').toLowerCase().match(/[a-z0-9][a-z0-9.-]{3,}/g) ?? [])
 /** Whether a line gives the decision a step waits on: by that person's side, and naming at least two words of what was asked. */
 const answers = (st, e, s) => {
-  if (!s.waitingOn?.who || !sameSide(st, e.author, s.waitingOn.who) || e.document.payload?.facilitator) return false
+  if (!s.waitingOn || e.document.payload?.facilitator || e.author === st.workspace) return false
+  if (!s.waitingOn.who) return e.document.threadId === s.thread // a choice for the agents: any answer in its own thread
+  if (!sameSide(st, e.author, s.waitingOn.who)) return false
   const asked = WORDS(s.waitingOn.decision), said = WORDS(e.document.payload?.text)
   return [...asked].filter((w) => said.has(w) && !['which', 'what', 'whether', 'room', 'room’s', "room's"].includes(w)).length >= 2
 }
@@ -146,10 +148,13 @@ export class Facilitator {
     const st = this.st
     if (this.heard == null) {
       this.heard = st.stepsHeard >= 0 ? st.stepsHeard : (st.steps.size || st.stepsDone.length ? -1 : st.seq)
-      for (const s of this.steps().filter((x) => x.waitingOn?.who)) { // after a restart: a decision given while the room was not listening
+      for (const s of this.steps().filter((x) => x.waitingOn)) { // after a restart: a decision given while the room was not listening
         const e = this.log.entries.slice((s.waitingSince ?? s.seq) + 1).find((x) => NAME_OF[x.type] === 'note' && answers(st, x, s))
         if (e) { await this.write(s, { waitingOn: null, lastWordAt: e.timestamp }, 'answered', e); did.heard++ }
       }
+      const toAgents = this.steps().filter((x) => x.waitingOn?.who) // older choices put to a person: the agents decide now
+      for (const s of toAgents) await this.write(s, { waitingOn: { who: null, decision: s.waitingOn.decision } }, 'waiting', null)
+      if (toAgents.length) await this.speak(['These choices were put to a person. The agents decide them now: answer each in its own thread, and the first clear answer moves it on.', ...toAgents.map((s) => `${this.label(s)}: ${clip(s.waitingOn.decision, 200).replace(/[.?]$/, '')}?`)].join('\n'), 'decide', toAgents)
     }
     const from = this.heard, skip = this.skip()
     for (const e of this.log.entries.slice(Math.max(0, from + 1))) {
@@ -242,7 +247,7 @@ export class Facilitator {
   async openTest (goal, checks, { by = null, seed = null } = {}, because = null, how = {}) {
     const out = []
     for (const [i, c] of checks.entries()) {
-      const waitingOn = c.needs ? { who: this.personFor({ goal: goal.hash }), decision: c.needs } : null
+      const waitingOn = c.needs ? { who: null, decision: c.needs } : null // the agents decide (see escalate)
       out.push(await this.write(null, { goal: goal.hash, title: c.text, done: c.text, state: 'open', test: { goal: goal.hash, n: i + 1, ...(by ? { by } : {}), ...(seed ? { seed: seed.id, seedVersion: seed.version ?? 1 } : {}), ...(c.later ? { later: true } : {}) }, ...(c.needs ? { needs: c.needs } : {}), ...(waitingOn ? { waitingOn } : {}) }, 'opened', because, how))
     }
     return out
@@ -263,7 +268,7 @@ export class Facilitator {
         `“${clip(goal.title, 160)}” now has a done-test: ${opened.length} checks anyone can rerun. Each one is a step on the board (the Steps tab).`,
         ...opened.map((x) => this.label(x)),
         'Agents: claim a check with the step tool, and post what shows it (the link, the command and what it printed, or the test value). Someone of another side checks it.',
-        ...waiting.map((x) => `Check (${x.test.n}) needs a person first. ${st.nameOf(x.waitingOn.who)}: one decision for you: ${x.waitingOn.decision}.`),
+        ...waiting.map((x) => `Check (${x.test.n}) waits on a choice first, for the agents here: ${x.waitingOn.decision}? Answer in its thread.`),
       ].join('\n'), 'seed', opened, { seed: seed.id })
       did.escalated.push(...waiting.map((x) => x.id))
     }
@@ -455,12 +460,16 @@ export class Facilitator {
   }
 
   /** Name the person and the one decision, once; the step then waits on them and is not chased. */
+  /**
+   * A choice the step waits on goes to the agents in the room, never to a person by name: the people here asked the
+   * agents to decide (room line 1446: "I don't want to make decisions … you guys decide"). The first clear answer in the
+   * step's thread moves it on; the other steps keep moving meanwhile. (`who` is kept for older lines; it is not used.)
+   */
   async escalate (step, who, decision, did) {
-    const st = this.st, d = clip(decision, 300).replace(/\.$/, '')
-    const next = step.waitingOn?.who === who && step.waitingOn?.decision === d ? step : await this.write(step, { waitingOn: { who, decision: d } }, 'waiting', null)
-    const name = who ? st.nameOf(who) : (this.ctx.config.operator || 'Whoever runs the room')
-    await this.speak(`${name}: one decision for you: ${d}. (${this.label(next)}.) Everything else keeps moving.`, 'escalate', [next], { thread: next.thread, ...(who ? { person: who } : {}) })
-    did.escalated.push(next.id)
+    const d = clip(decision, 300).replace(/[.?]$/, '')
+    const next = !step.waitingOn?.who && step.waitingOn?.decision === d ? step : await this.write(step, { waitingOn: { who: null, decision: d } }, 'waiting', null)
+    await this.speak(`A choice for the agents here: ${d}? (${this.label(next)}.) Decide it in this thread: the first clear answer moves it on, and everything else keeps moving.`, 'decide', [next], { thread: next.thread })
+    did?.escalated.push(next.id)
   }
 
   /** A posted result gets someone of another side to check it; if they stay quiet, one more, then it waits in the report. */
@@ -527,7 +536,7 @@ export class Facilitator {
   where (s) {
     const st = this.st, n = (d) => st.nameOf(d)
     if (s.state === 'checked') return `Checked by ${n(s.checkedBy)}.`
-    if (s.waitingOn) return `Waiting on ${s.waitingOn.who ? n(s.waitingOn.who) : 'a person'}: ${s.waitingOn.decision}.`
+    if (s.waitingOn) return `Waiting on ${s.waitingOn.who ? n(s.waitingOn.who) : 'the agents'}: ${s.waitingOn.decision}.`
     if (s.state === 'result posted') return `Result posted by ${n(s.owner)}, waiting for a check.`
     if (s.state === 'in progress' || s.state === 'claimed') return `${s.state === 'claimed' ? 'Claimed' : 'In progress'}: ${n(s.owner)}.`
     if (s.offeredTo) return `Offered to ${n(s.offeredTo)}.`
@@ -568,7 +577,7 @@ export class Facilitator {
       const s = this.find(m.step), e = this.log.byHash.get(m.entry)
       if (!s || !e || s.state === 'checked' || e.seq < s.seq) continue
       const asked = s.owner ?? s.offeredTo, from = s.from && st.proposals.get(s.from), goal = s.goal && st.proposals.get(s.goal)
-      if (m.kind === 'answered' && s.waitingOn?.who && sameSide(st, e.author, s.waitingOn.who)) { await this.write(s, { waitingOn: null, lastWordAt: e.timestamp }, 'answered', e); moved.push(m) }
+      if (m.kind === 'answered' && s.waitingOn && (!s.waitingOn.who || sameSide(st, e.author, s.waitingOn.who))) { await this.write(s, { waitingOn: null, lastWordAt: e.timestamp }, 'answered', e); moved.push(m) }
       if (m.kind === 'declined' && asked && sameSide(st, e.author, asked) && ['open', 'claimed'].includes(s.state)) { await this.decline(s, e, m.to ?? this.ctx.builder?.named(e.document.payload.text) ?? null, Date.now()); moved.push(m) }
       // who may hand a step on: whoever has it, the person it waits on, or the person whose goal or agreement it serves
       const mayHand = [asked, s.waitingOn?.who, goal?.principal, from?.principal].some((d) => d && sameSide(st, e.author, d))
