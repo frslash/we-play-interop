@@ -17,13 +17,13 @@ export function makeExport (entries, { now = new Date() } = {}) {
 }
 
 /** Check an export without touching anything: shape, claimed head, then the whole chain. */
-export async function checkExport (doc, { keyFor } = {}) {
+export async function checkExport (doc, { keyFor, agentsMayApprove = false } = {}) {
   const fail = (problem) => ({ ok: false, problem })
   if (doc?.format !== EXPORT_FORMAT) return fail('not a We Play Interop export')
   if (doc.version !== EXPORT_VERSION) return fail(`export version ${doc.version} is not one this code reads (it reads ${EXPORT_VERSION})`)
   if (!Array.isArray(doc.entries) || !doc.entries.length) return fail('the export has no entries')
   if (doc.count !== doc.entries.length) return fail('count does not match the entries')
-  const report = await verifyChain(doc.entries, keyFor ? { keyFor } : undefined)
+  const report = await verifyChain(doc.entries, { ...(keyFor ? { keyFor } : {}), agentsMayApprove })
   if (!report.ok) return { ok: false, problem: 'the chain does not verify', report }
   // The gate's pass test: a signature that could not be checked (a DID method nobody resolved) is a fail, never a pass.
   if (report.signaturesNotChecked > 0) return { ok: false, problem: `${report.signaturesNotChecked} signature(s) could not be checked (is every author's DID method resolvable?)`, report }
@@ -32,9 +32,9 @@ export async function checkExport (doc, { keyFor } = {}) {
 }
 
 /** Import into an EMPTY database. Refuses a non-empty one, and anything that does not verify; then reads it back and compares heads. */
-export async function importExport (db, doc, { keyFor } = {}) {
+export async function importExport (db, doc, { keyFor, agentsMayApprove = false } = {}) {
   if ((await loadEntries(db)).length) throw new Error('refusing to import: this database already has a log')
-  const checked = await checkExport(doc, { keyFor })
+  const checked = await checkExport(doc, { keyFor, agentsMayApprove })
   if (!checked.ok) throw new Error(`refusing to import: ${checked.problem}`)
   for (const e of doc.entries) await insertEntry(db, e)
   const back = await loadEntries(db), head = back.at(-1)
