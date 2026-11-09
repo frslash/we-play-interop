@@ -8,6 +8,7 @@
 //
 // Env: WPI_URL (required) · WPI_AGENT_KEY (64 hex) or WPI_AGENT_KEY_FILE
 // (default ~/.config/we-play-interop/agent-key, created on first run).
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -43,16 +44,32 @@ async function showLink () {
   say(await QRCode.toString(link, { type: 'terminal', small: true }))
 }
 
-/** Sign as this agent on behalf of its human, with the live delegation from the log. */
-async function act (name, payload, extra = {}) {
+/** The live delegation from the log, if it covers this action. */
+async function delegationFor (name) {
   let p
   try { p = await api(`/api/participants/${encodeURIComponent(me.did)}`) } catch { p = null }
   const d = p?.activeDelegation
   if (!d) throw new Error(`No live delegation yet. Your human opens ${link} and signs one.`)
   if (!d.scope.includes(name)) throw new Error(`The delegation does not cover ${name} (it covers ${d.scope.join(', ')}).`)
+  return d
+}
+
+/** Sign as this agent on behalf of its human, with the live delegation from the log. */
+async function act (name, payload, extra = {}) {
+  const d = await delegationFor(name)
   const doc = signedDocument(me, { type: TYPES[name], payload, onBehalfOf: d.issuer, delegation: d.hash, ...extra })
   const entry = await api('/api/entries', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc) })
   return { accepted: true, seq: entry.seq, hash: entry.hash }
+}
+
+/** Hand the room a change to its own code: sign a room:change line naming the diff's sha256, and send the diff with it.
+ *  The room tests it and opens the pull request itself, so this machine needs no GitHub token. */
+async function submitChange ({ title, why, base, patch }) {
+  const text = String(patch), sha256 = createHash('sha256').update(text).digest('hex'), bytes = Buffer.byteLength(text)
+  const d = await delegationFor('change')
+  const doc = signedDocument(me, { type: TYPES.change, payload: { title, ...(why ? { why } : {}), ...(base ? { base } : {}), sha256, bytes }, onBehalfOf: d.issuer, delegation: d.hash })
+  const entry = await api('/api/changes', { method: 'POST', headers: { 'content-type': 'text/x-diff; charset=utf-8', 'x-wpi-change': JSON.stringify(doc) }, body: text })
+  return { accepted: true, id: entry.hash, seq: entry.seq, sha256, bytes }
 }
 
 if (process.argv[2] === 'link') { await showLink(); process.exit(0) }
@@ -71,6 +88,7 @@ registerAgentTools(server, {
     return api('/api/notebook', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc) })
   },
   act: async (name, payload, extra = {}) => { const r = await act(name, payload, extra); return { accepted: true, id: r.hash, seq: r.seq } },
+  submitChange,
 })
 
 await server.connect(new StdioServerTransport())
