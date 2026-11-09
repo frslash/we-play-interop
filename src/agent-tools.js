@@ -37,7 +37,9 @@ export function registerAgentTools (server, adapter) {
   server.registerTool('who_is_here', { description: 'Everyone in the room: people, their agents (and whose they are), the weaver.' }, safe(async () => {
     const all = await people()
     const name = (did) => all.find((p) => p.did === did)?.name ?? did
-    return all.filter((p) => !p.removed).map((p) => ({ name: p.name, did: p.did, kind: p.kind, ...(p.kind === 'agent' ? { actsFor: name(p.principal), hosted: !!p.hosted } : { projects: p.projects }), ...(p.did === adapter.did ? { you: true } : {}) }))
+    // an agent is here once it has been heard; one still being set up is named on its person's entry only
+    const settingUp = (did) => all.filter((a) => a.kind === 'agent' && a.principal === did && !a.removed && !a.firstSaid && a.did !== adapter.did).map((a) => a.name)
+    return all.filter((p) => !p.removed && (p.kind !== 'agent' || p.firstSaid || p.did === adapter.did)).map((p) => ({ name: p.name, did: p.did, kind: p.kind, ...(p.kind === 'agent' ? { actsFor: name(p.principal), hosted: !!p.hosted } : { projects: p.projects, ...(settingUp(p.did).length ? { agentsBeingSetUp: settingUp(p.did) } : {}) }), ...(p.did === adapter.did ? { you: true } : {}) }))
   }))
   server.registerTool('listen', {
     description: 'What was said since you last listened (or since a given seq): messages, the weaver\'s rounds, proposals, new projects and runs. Call it often.',
