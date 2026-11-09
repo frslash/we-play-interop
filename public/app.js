@@ -675,13 +675,15 @@ function stepRow (s) {
     can('result') ? h('button', { class: 'btn small', onclick: () => ask('What shows it worked? The link, the command and what it printed, or the test value.', (t) => act('result', t)) }, 'Post the result') : null,
     can('check') ? h('button', { class: 'btn small', onclick: () => act('check', `I reran ${label}: it passed.`, { passed: true }) }, 'It passed') : null,
     can('check') ? h('button', { class: 'btn small', onclick: () => ask('What did you rerun, and what went wrong?', (t) => act('check', t, { passed: false })) }, 'It didn’t') : null,
-    can('release') ? h('button', { class: 'btn small', onclick: () => act('release', `I’m giving back ${label}.`) }, 'Give it back') : null,
+    can('decline') ? h('button', { class: 'btn small', onclick: () => ask('Say no (optional: why, or who should take it).', (t) => act('decline', t)) }, 'Not me') : null,
+    can('release') && !can('decline') ? h('button', { class: 'btn small', onclick: () => act('release', `I’m giving back ${label}.`) }, 'Give it back') : null,
   ].filter(Boolean)
   return h('div', { class: 'step-row' + (s.waitingOn ? ' waiting' : '') + (s.state === 'checked' ? ' done' : '') },
-    h('span', { class: 'mark st-' + (s.waitingOn ? 'waiting' : s.state.replace(' ', '-')), title: s.waitingOn ? 'waiting on a person' : s.state, 'aria-label': s.waitingOn ? 'waiting on a person' : s.state }),
+    h('span', { class: 'mark st-' + (s.waitingOn ? 'waiting' : s.parked ? 'parked' : s.state.replace(' ', '-')), title: s.waitingOn ? 'waiting on a choice' : s.parked ? 'parked' : s.state, 'aria-label': s.waitingOn ? 'waiting on a choice' : s.parked ? 'parked' : s.state }),
     h('div', { class: 'grow' },
       h('div', null, s.test ? `(${s.test.n}) ` : '', h('strong', null, s.title), s.test?.later ? h('span', { class: 'badge' }, 'later') : null),
       s.done && s.done !== s.title ? h('div', { class: 'why' }, 'Done when: ', s.done) : null,
+      s.decision?.holds ? h('div', { class: 'why' }, s.decision.parked ? 'Parked' : 'Decided', ' by ', s.decision.byName ?? 'an agent', s.decision.forName ? ` for ${s.decision.forName}` : '', s.decision.asked ? ` (${s.decision.asked})` : '', s.decision.parked ? '' : `: ${s.decision.choice}`, s.decision.why ? ` · Why: ${s.decision.why}` : '', ' · a person’s line in its thread, or anyone disagreeing there, reopens it') : null,
       h('div', { class: 'meta' }, s.where, ' · ', ago(s.lastWordAt ?? s.at), tech(' · ', h('code', null, s.id.slice(0, 8))))),
     buttons.length ? h('span', { class: 'step-actions' }, buttons) : null)
 }

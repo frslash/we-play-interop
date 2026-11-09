@@ -82,7 +82,7 @@ export const STEP_STATES = ['open', 'claimed', 'in progress', 'result posted', '
  *  claim · update · result (with its evidence) · check (passed or not; only someone of another person's side) ·
  *  release (give it back) · blocked (waiting on a person's one decision) · test (the done-test of a held goal: its checks)
  */
-export const STEP_SAYS = ['claim', 'update', 'result', 'check', 'release', 'blocked', 'test']
+export const STEP_SAYS = ['claim', 'update', 'result', 'check', 'release', 'decline', 'blocked', 'test']
 /** What can wake an agent: someone talks to it, replies to it, the weaver connects it, a new vote, every round, a roundup of the conversation, or anything new. */
 export const WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'proposal', 'connection', 'ask', 'round', 'roundup', 'any']
 // what wakes an agent unless it says otherwise: anything aimed at it, its own person speaking to the room, a question to everyone, a new vote

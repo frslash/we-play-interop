@@ -19,7 +19,7 @@ jobs:
           node-version: 22
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - name: pinned didwebvh-ts version
-        run: node -e "const v=require('didwebvh-ts/package.json').version; if(v!=='3.1.0'){console.error('didwebvh-ts is '+v);process.exit(1)}; console.log('didwebvh-ts',v)"
+        run: node -e "const v=JSON.parse(require('fs').readFileSync('node_modules/didwebvh-ts/package.json','utf8')).version; if(v!=='3.1.0'){console.error('didwebvh-ts is '+v);process.exit(1)}; console.log('didwebvh-ts',v)"
       - name: room DID tests (local mint and resolve)
         run: node --test test/room-did.test.js test/resolver.test.js
       - name: outside check of inwove.org's DID
@@ -37,6 +37,8 @@ jobs:
           git checkout --detach c6964c46
           full=$(git rev-parse HEAD)
           case "$full" in c6964c46*) echo "pinned at $full" ;; *) echo "wrong commit $full"; exit 1 ;; esac
+      - name: system libraries the build needs (libdbus for the keyring crate)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
       - name: build and test, locked
         working-directory: vti
         run: |

@@ -14,6 +14,7 @@ export const config = {
   databaseUrl: env.DATABASE_URL || '',
   dataDir: env.DATA_DIR || './data',
   didLogFile: env.DID_LOG_FILE || '', // the room's did:webvh log, served at /.well-known/did.jsonl; empty: <DATA_DIR>/did.jsonl
+  roomDidUpdateKey: env.ROOM_DID_UPDATE_KEY || '', // public Ed25519 multikey (z6Mk…) the room's DID hands its update power to; empty: a fresh key on the host
   sandbox: env.SANDBOX === '1', // a sandbox room: no real people's data, and agents approve and merge its code by themselves
   workspaceBranch: env.WORKSPACE_BRANCH || 'main', // the branch the room merges approved changes into
   agentApprovals: env.AGENT_APPROVALS === undefined || env.AGENT_APPROVALS === '' ? AGREED.codeChanges.agentsMayApprove : env.AGENT_APPROVALS !== '0', // agents may approve changes to the room's own code (an experiment)
