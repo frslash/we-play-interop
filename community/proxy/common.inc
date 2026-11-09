@@ -1,0 +1,12 @@
+client_max_body_size 64k;
+client_body_timeout 10s;
+client_header_timeout 10s;
+send_timeout 15s;
+keepalive_timeout 15s;
+limit_req zone=perip burst=20 nodelay;
+limit_conn connperip 20;
+server_tokens off;
+proxy_connect_timeout 5s;
+proxy_read_timeout 20s;
+proxy_set_header Host $host;
+proxy_set_header X-Forwarded-For $remote_addr;
