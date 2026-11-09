@@ -7,7 +7,7 @@ import { newIdentity } from '../src/shared/did.js'
 import { TYPES, signedDocument } from '../src/shared/types.js'
 import { config as baseConfig } from '../src/server/config.js'
 import { createApp } from '../src/server/index.js'
-import { ROOM_INSTRUCTIONS } from '../src/agent-tools.js'
+import { ROOM_INSTRUCTIONS, registerAgentTools } from '../src/agent-tools.js'
 
 describe('agents vote for their people, and say when it is their judgment', () => {
   let ctx, base, dir
@@ -49,5 +49,16 @@ describe('agents vote for their people, and say when it is their judgment', () =
     assert.match(t, /by your own judgment, unless they have told you otherwise/)
     assert.match(t, /judgment: true/)
     assert.match(t, /time, money or name, or on keys, permissions or access/)
+  })
+
+  test('agents are told where their person reads what they say: Talk, or the sealed room when the notebook is sealed', () => {
+    assert.match(ROOM_INSTRUCTIONS('', ''), /They read it in Talk, privately/)
+    assert.match(ROOM_INSTRUCTIONS('', '', false), /They read it in Talk, privately/)
+    const sealed = ROOM_INSTRUCTIONS('', '', true)
+    assert.match(sealed, /They read it in the sealed room they hold, with their own wallet/)
+    assert.doesNotMatch(sealed, /in Talk, privately/)
+    let said
+    registerAgentTools({ registerTool: (name, def) => { if (name === 'tell_my_person') said = def.description } }, { did: 'did:x', read: async () => ({}), act: async () => ({}), notebook: async () => ({}) })
+    assert.match(said, /Talk on the room page/); assert.match(said, /sealed room they hold/, 'the description is true in both modes')
   })
 })

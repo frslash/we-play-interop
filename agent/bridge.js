@@ -106,7 +106,7 @@ const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js')
 const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js')
 const { ROOM_INSTRUCTIONS, registerAgentTools } = await import('../src/agent-tools.js')
 
-const server = new McpServer({ name: 'we-play-interop-agent', version: '0.1.0' }, { instructions: ROOM_INSTRUCTIONS(base) })
+const server = new McpServer({ name: 'we-play-interop-agent', version: '0.1.0' }, { instructions: ROOM_INSTRUCTIONS(base, '', !!sealed) })
 registerAgentTools(server, {
   did: me.did,
   delegateLink: link,
