@@ -204,7 +204,7 @@ export class VtiNotebook {
     const other = o.body.author !== this.member
     const from = other ? 'another-member' : !mine || tagOf(tags, 'from:') === 'person' ? 'person' : tagOf(tags, 'agent:') === this.agentTag ? 'agent' : 'another-agent'
     const moved = tagOf(tags, 'moved:')
-    return { v: o.version, key, at: (mine && tagOf(tags, 'at:')) || o.at, from, ...(other ? { author: o.body.author } : {}), text: mine ? String(o.body.body ?? '') : [o.body.title, o.body.body].filter(Boolean).join('\n'), ...(moved ? { moved } : {}) }
+    return { v: o.version, key, at: (mine && tagOf(tags, 'at:')) || o.at, from, ...(other ? { author: o.body.author } : {}), text: (mine ? String(o.body.body ?? '') : [o.body.title, o.body.body].filter(Boolean).join('\n')).slice(0, MAX_NOTE_CHARS), ...(moved ? { moved } : {}) }
   }
 
   /**
@@ -220,7 +220,10 @@ export class VtiNotebook {
       if (size >= chars) { older++; continue }
       const o = await this.#open(m)
       if (o.why) { unreadable[o.why] = (unreadable[o.why] ?? 0) + 1; continue }
-      const n = this.#note(m.key, o); notes.push(n); size += n.text.length
+      const n = this.#note(m.key, o); notes.push(n)
+      // Each record costs a fetch and an open even when it is empty; 200 stands for that cost in the same budget, so thousands of empty records
+      // cannot be opened one after another on every read.
+      size += n.text.length + 200
     }
     return { notes: notes.reverse(), older, unreadable }
   }

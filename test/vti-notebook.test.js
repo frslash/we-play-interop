@@ -19,7 +19,7 @@ import { config as baseConfig } from '../src/server/config.js'
 import { createApp } from '../src/server/index.js'
 import { Vta, VtiError, decodeCredential, readCredential } from '../agent/vta.js'
 import { RoomHost, isVersionConflict } from '../agent/room-host.js'
-import { NOTE_TAG, VtiNotebook, notebookFromEnv } from '../agent/vti-notebook.js'
+import { MAX_NOTE_CHARS, NOTE_TAG, VtiNotebook, notebookFromEnv } from '../agent/vti-notebook.js'
 import { startFakeVti } from './helpers/fake-vti.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -269,6 +269,22 @@ describe('a second member of the room', () => {
       await put(mine.nb.markerKey, { title: 'Read up to here', body: 'x', tags: [NOTE_TAG, 'read-marker', 'read:9999'] })
       const fresh = w.device(); await fresh.nb.get()
       assert.equal(await fresh.nb.status().records >= 0 && await fresh.nb.unread().then(() => fresh.nb.mark.upTo), 0, 'a marker another member wrote counts for nothing')
+    } finally { await w.fake.close() }
+  })
+})
+
+describe('reading a notebook full of empty records', () => {
+  test('stops opening records once the budget is used (each costs a fetch and an open), and cuts what is read to a note\'s length', async () => {
+    const w = await world()
+    try {
+      const wallet = w.device(); await wallet.host.info(w.room)
+      await walletPut(wallet, w.room, { body: 'x'.repeat(MAX_NOTE_CHARS + 500) }) // the oldest
+      for (let i = 0; i < 12; i++) await walletPut(wallet, w.room, { title: '', body: '' })
+      const { nb } = w.device()
+      const r = await nb.get({ chars: 1000 }) // 200 apiece: five records fill it
+      assert.equal(nb.counts.opened, 5); assert.equal(r.older, 8); assert.equal(r.notes.length, 5)
+      const all = await nb.get({ chars: Infinity }); assert.equal(all.notes.length, 13)
+      assert.equal(all.notes[0].text.length, MAX_NOTE_CHARS, 'a very long one is cut to what a note may be')
     } finally { await w.fake.close() }
   })
 })
