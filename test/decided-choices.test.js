@@ -85,7 +85,7 @@ describe('a choice answered once stays answered', () => {
       assert.ok(r.stepFrom(p1).waitingOn, 'the choice is put to the agents')
       assert.equal(r.said('decide').length, 1); assert.equal(r.stuckLines(), 1)
 
-      // which key signs is a person's keys: held for the step's owner's person (Person A, the builder's), never the proposer
+      // which key signs is a person's keys: held for the step's owner's person (Person A, the builder's), before the proposer
       assert.equal(r.stepFrom(p1).waitingOn.who, r.people.a.did); assert.equal(r.stepFrom(p1).waitingOn.held, 'keys')
       // a shrug is not an answer, and neither is another person's agent: the choice stays undecided on the board
       await r.as('b', 'note', { text: 'Not sure, which would you pick?', kind: 'message' }, { threadId: s1.thread })
