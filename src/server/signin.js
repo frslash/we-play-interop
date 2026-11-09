@@ -177,8 +177,8 @@ export class SignIn {
    */
   portalOrigin (http) {
     if (this.config.publicUrl) { try { return new URL(this.config.publicUrl).origin } catch { return null } }
-    if (!http?.pageOrigin || !http?.host) return null
-    let o; try { o = new URL(http.pageOrigin) } catch { return null }
+    if (!http?.origin || !http?.host) return null
+    let o; try { o = new URL(http.origin) } catch { return null }
     return o.host.toLowerCase() === String(http.host).toLowerCase() ? o.origin : null
   }
 
@@ -345,7 +345,7 @@ export class SignIn {
     // only the room's own page may open a request, so another website cannot start one through a person's browser;
     // the origin kept here is the one the wallet is shown and compares with the room's SignInPortal
     const origin = this.portalOrigin(http)
-    if (!origin || origin !== http.pageOrigin) throw new Refusal('permissionDenied', 'auth/oob/request is accepted only from this room\'s own page')
+    if (!origin || origin !== http.origin) throw new Refusal('permissionDenied', 'auth/oob/request is accepted only from this room\'s own page')
     const t = this.seconds(), address = String(http.ip ?? '')
     let open = 0
     for (const r of this.requests.values()) if (r.startNetwork === address && this.stateOf(r, t) === 'pending') open++

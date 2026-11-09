@@ -174,3 +174,17 @@ test('when the room\'s people hold the update key, the host cannot add the door 
   assert.equal(readFileSync(join(dir, 'did.jsonl'), 'utf8'), before) // their signature is needed for that entry
   assert.equal((await roomDidStatus({ dataDir: dir })).trustTasks, null) // and /api/info's door.inDid stays false until then
 })
+
+test('wallet sign-in reads the grown DID: the door, the sign-in page and the room key are all there', async () => {
+  const { SignIn } = await import('../src/server/signin.js')
+  const { createResolver } = await import('../src/server/resolver.js')
+  const { dir } = await rehearsal(); const room = newIdentity()
+  assert.equal((await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, log: quiet })).grown, true)
+  const signIn = new SignIn({ identity: room, resolver: createResolver(), config: { publicUrl: 'https://inwove.org', dataDir: dir, didLogFile: '' } })
+  await signIn.refresh(true)
+  assert.match(signIn.status.did, /^did:webvh:/); assert.ok(signIn.status.document, 'roomDidStatus hands sign-in the whole document')
+  assert.deepEqual(signIn.didDocument(), { status: 'ok' })
+  signIn.stop()
+  const none = mkdtempSync(join(tmpdir(), 'wpi-no-did-'))
+  assert.deepEqual(await roomDidStatus({ dataDir: none }), { did: null, didcomm: null, trustTasks: null, roomKey: null, document: null })
+})

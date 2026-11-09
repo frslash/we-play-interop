@@ -308,7 +308,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (DOOR_PATHS.has(path)) { // the Trust Task door: a signed standard document in, a signed answer out
       if (req.method !== 'POST') return send(res, 405, { error: 'POST a signed Trust Task document here (application/json). /api/info says what this door serves and which DID to address.' }, { allow: 'POST' })
       const { raw, bytes, cut } = await readDoorBody(req)
-      return sendDoor(res, await ctx.door.handle(raw, { origin: baseOf(req), pageOrigin: String(req.headers.origin ?? '').slice(0, 300), host: String(req.headers.host ?? ''), ip: ipOf(req), userAgent: String(req.headers['user-agent'] ?? '').slice(0, 300), https: (req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http')) === 'https', bytes, cut }))
+      return sendDoor(res, await ctx.door.handle(raw, { origin: String(req.headers.origin ?? '').slice(0, 300), base: baseOf(req), host: String(req.headers.host ?? ''), ip: ipOf(req), userAgent: String(req.headers['user-agent'] ?? '').slice(0, 300), https: (req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http')) === 'https', bytes, cut }))
     }
     if (await ctx.community.handle(req, res, path, readBody, send)) return
     if (await ctx.signIn.handle(req, res, path, q, send)) return // ── wallet sign-in: what a page reads to start one, and what the room holds for a browser key (reads only)

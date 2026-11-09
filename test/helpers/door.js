@@ -9,6 +9,7 @@ import { createServer } from 'node:http'
 import { canonicalize } from '../../src/shared/crypto.js'
 import { MAX_DOCUMENT_BYTES, checkTask, refusalTo, responseTo, signTask, statusFor, verifyTask } from '../../src/shared/trusttask.js'
 import { Refusal, SIGNED } from '../../src/server/signin.js'
+import { Door } from '../../src/server/door.js'
 
 /** me(): the identity the door answers as ({ did, seed, verificationMethod }). keyFor: a resolver's key lookup. */
 export function standInDoor ({ me, keyFor, now = Date.now }) {
@@ -19,7 +20,6 @@ export function standInDoor ({ me, keyFor, now = Date.now }) {
     register (type, handler, opts = {}) { handlers.set(type, { handler, ...opts }) },
     /** One document in (text, or an object), one answer out: { status, body }. `http` is absent for a document that did not come over the web. */
     async receive (raw, http) {
-      if (http && http.pageOrigin === undefined) http = { ...http, pageOrigin: http.origin } // these tests name the browser's Origin header `origin`; the real door hands it to a task as pageOrigin
       const text = typeof raw === 'string' ? raw : JSON.stringify(raw)
       if (Buffer.byteLength(text) > MAX_DOCUMENT_BYTES) return refuse(null, { code: 'malformedRequest', message: `a document is at most ${MAX_DOCUMENT_BYTES} bytes`, details: { maxBytes: MAX_DOCUMENT_BYTES } })
       let doc; try { doc = JSON.parse(text) } catch { return refuse(null, { code: 'malformedRequest', message: 'the body is not JSON' }) }
@@ -46,6 +46,23 @@ export function standInDoor ({ me, keyFor, now = Date.now }) {
         if (e instanceof Refusal) return refuse(doc, e)
         throw e
       }
+    },
+  }
+}
+
+/**
+ * The room's real door (src/server/door.js) with the stand-in's interface, for tests that move a clock: me() is the
+ * identity it answers as, keyFor a resolver's key lookup. receive() gives { status, body } with body parsed.
+ */
+export function realDoor ({ me, keyFor, now = Date.now }) {
+  const ctx = { get identity () { return me() }, log: { resolver: { keyFor } }, config: { ratePerMinute: 10_000 } } // limits far out of the way: these tests are about sign-in, the door's own are in door.test.js
+  const door = new Door({ ctx, now })
+  return {
+    door, path: '/trust-tasks',
+    register: (type, handler, opts) => door.register(type, handler, opts),
+    async receive (raw, http) {
+      const out = await door.handle(Buffer.from(typeof raw === 'string' ? raw : JSON.stringify(raw)), http)
+      return { status: out.status, body: out.body ? JSON.parse(out.body) : null, headers: out.headers }
     },
   }
 }

@@ -10,14 +10,14 @@ import { after, before, describe, test } from 'node:test'
 import { resolveDIDFromLog } from 'didwebvh-ts'
 import { mintRoomDid } from '../agent/mint-room-did.js'
 import { config as baseConfig } from '../src/server/config.js'
-import { DISCOVERY, DISCOVERY_0_3, Door, FRAMEWORK_VERSION, HORIZON_MS, PING, Refusal, serveRoomTasks } from '../src/server/door.js'
+import { DISCOVERY, DISCOVERY_0_3, Door, FRAMEWORK_VERSION, HORIZON_MS, PING, Refusal, SIGNED, serveRoomTasks } from '../src/server/door.js'
 import { createApp } from '../src/server/index.js'
 import { TaskError } from '../src/server/log.js'
 import { createResolver } from '../src/server/resolver.js'
 import { growRoomDid, roomDidDocument } from '../src/server/roomdid.js'
 import { keyFromDidDocument } from '../src/shared/chain.js'
 import { didPeer4FromDocument, ed25519Multikey, newIdentity } from '../src/shared/did.js'
-import { ACCEPT_MS, ERROR_TYPE, MAX_DOCUMENT_BYTES, SKEW_MS, classify, instant, postTask, serviceEndpoint, signTask, signedTask, taskDocument, typeUri, verifyTask } from '../src/shared/trusttask.js'
+import { ACCEPT_MS, ERROR_TYPE, MAX_DOCUMENT_BYTES, SKEW_MS, classify, instant, postTask, responseTo, serviceEndpoint, signTask, signedTask, taskDocument, typeUri, verifyTask } from '../src/shared/trusttask.js'
 import { TYPES, signedDocument } from '../src/shared/types.js'
 
 const ECHO = typeUri('test/echo', '0.1') // a task of the test's own, to see what a handler is given and what its outcomes become
@@ -65,9 +65,39 @@ describe('a door on its own: each step, in order', () => {
     await signedBy(out.reply, room.did, person.did)
     assert.equal(out.reply.proof.proofPurpose, 'authentication'); assert.equal(out.reply.proof.created, out.reply.issuedAt); assert.doesNotMatch(out.reply.issuedAt, /\.\d+Z$/)
     assert.equal(runs.length, 1); assert.deepEqual(runs[0].doc, d); assert.equal(runs[0].signer, person.did)
-    assert.deepEqual(runs[0].http, { origin: 'https://room.example', pageOrigin: '', host: 'room.example', ip: '203.0.113.7', userAgent: 'test/1', https: true })
+    assert.deepEqual(runs[0].http, { origin: 'https://room.example', base: '', host: 'room.example', ip: '203.0.113.7', userAgent: 'test/1', https: true })
     assert.equal(classify(out.reply, ECHO).kind, 'response')
     assert.equal(door.counts.received, 1); assert.equal(door.counts.answered, 1); assert.deepEqual(door.counts.answeredByType, { [ECHO]: 1 })
+  })
+
+  test('a task\'s precheck runs before the proof is read, and only for a fresh document addressed to the room', async () => {
+    const { door, doc, send } = make()
+    const GATED = typeUri('test/gated', '0.1'), seen = []
+    door.register(GATED, async () => ({ ran: true }), { precheck: (d) => { seen.push(d.id); return d.payload.no ? new Refusal('test/gated:keyUnsupported', 'not this kind of key') : undefined } })
+    const { proof: _p, ...unsigned } = doc({ type: GATED, payload: { no: true } })
+    assert.equal((await send(unsigned)).reply.payload.code, 'test/gated:keyUnsupported', 'refused by the gate, not for its missing proof')
+    assert.equal((await send(doc({ type: GATED, payload: { no: true }, recipient: other.did }))).reply.payload.code, 'wrongRecipient', 'the gate never sees a document for someone else')
+    assert.equal(seen.length, 1)
+    assert.deepEqual((await send(doc({ type: GATED }))).reply.payload, { ran: true })
+  })
+
+  test('an answer the task signed itself (marked SIGNED) goes out byte for byte, is kept for a redelivery, and must be the room\'s answer to this document', async () => {
+    const { door, doc, send } = make()
+    const ATTEST = typeUri('test/attest', '0.1'), odd = { forged: false }
+    door.register(ATTEST, async ({ doc: d }) => {
+      const answer = signTask(responseTo(odd.forged ? { ...d, issuer: other.did } : d, { step: 1 }, room.did), room, { purpose: 'assertionMethod' })
+      return Object.defineProperty(answer, SIGNED, { value: true })
+    })
+    const d = doc({ type: ATTEST })
+    const out = await send(d)
+    assert.equal(out.status, 200)
+    assert.equal(out.reply.proof.proofPurpose, 'assertionMethod', 'not signed again by the door'); assert.deepEqual(out.reply.payload, { step: 1 })
+    assert.equal((await verifyTask(out.reply, { keyFor: resolver.keyFor, me: person.did, purposes: ['assertionMethod'] })).ok, true)
+    const again = await send(d)
+    assert.equal(again.body, out.body, 'the same bytes for the same document')
+    odd.forged = true
+    const wrong = await send(doc({ type: ATTEST }))
+    assert.equal(wrong.reply.payload.code, 'internalError', 'a marked answer addressed to someone else is never sent')
   })
 
   test('step 1, size: a body over 64 KiB is refused before it is parsed, by a refusal that answers no document', async () => {

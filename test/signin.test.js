@@ -22,7 +22,7 @@ import { createApp } from '../src/server/index.js'
 import { createResolver } from '../src/server/resolver.js'
 import { roomDidDocument, signInPortalEndpoint } from '../src/server/roomdid.js'
 import { ENDED_RETENTION_SECONDS, MAX_PENDING_PER_ADDRESS, MAX_POLLS_PER_ADDRESS, SESSION_MAX_SECONDS, SIGNED, SignIn, browserAndOs, registerSignIn, sameNetwork } from '../src/server/signin.js'
-import { serve, standInDoor } from './helpers/door.js'
+import { realDoor, serve, standInDoor } from './helpers/door.js'
 import { playSignIn } from './helpers/play.js'
 import { testWallet } from './helpers/wallet.js'
 
@@ -46,7 +46,7 @@ async function room ({ approvers = [ALICE], gate = null, scope = [SCOPE], did = 
     readDid: async () => (did ? { did, document: docs.get(did) } : { did: null }),
     ...(gate ? { gate } : approvers ? { gate: (stage, d) => (approvers.includes(d) ? { ok: true } : { ok: false, reason: 'not a network member' }) } : {}),
   })
-  const door = standInDoor({ me: () => signIn.me, keyFor: resolver.keyFor, now })
+  const door = (process.env.SIGNIN_STANDIN_DOOR ? standInDoor : realDoor)({ me: () => signIn.me, keyFor: resolver.keyFor, now }) // the room's own door; SIGNIN_STANDIN_DOOR=1 plays the same tests on the stand-in
   registerSignIn(door, { signIn })
   await signIn.refresh(true)
   const h = {
@@ -74,7 +74,7 @@ async function room ({ approvers = [ALICE], gate = null, scope = [SCOPE], did = 
   return h
 }
 const attestedByRoom = async (h, doc) => {
-  assert.equal(doc.proof.proofPurpose, 'assertionMethod'); assert.ok(doc.proof.verificationMethod.startsWith(h.signIn.did)); assert.equal(doc[SIGNED], true)
+  assert.equal(doc.proof.proofPurpose, 'assertionMethod'); assert.ok(doc.proof.verificationMethod.startsWith(h.signIn.did)) // signed by sign-in itself, not again by the door
   assert.equal((await verifyTask(doc, { keyFor: h.resolver.keyFor, me: doc.recipient, now: h.now(), purposes: ['assertionMethod'] })).ok, true, 'the room\'s signature verifies against its DID document')
 }
 

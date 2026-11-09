@@ -21,7 +21,7 @@
 import { canonicalize, sha256, toHex } from '../shared/crypto.js'
 import { SIGNING_RELATIONSHIPS, ed25519Multikey } from '../shared/did.js'
 import { TYPES, WHO } from '../shared/types.js'
-import { ACCEPT_MS, CODES, MAX_DOCUMENT_BYTES, SKEW_MS, SPEC, acceptedUntil, instant, refusalTo, responseTo, sameDid, signTask, statusFor, typeUri, verifyTask } from '../shared/trusttask.js'
+import { ACCEPT_MS, CODES, MAX_DOCUMENT_BYTES, SKEW_MS, SPEC, acceptedUntil, checkTask, instant, refusalTo, responseTo, sameDid, signTask, statusFor, typeUri, verifyTask } from '../shared/trusttask.js'
 import { TaskError } from './log.js'
 import { trustTaskBase } from './roomdid.js'
 
@@ -150,21 +150,25 @@ export class Door {
   }
 
   /**
-   * Serve a task. `typeUri` is its full address. `handler({ doc, payload, signer, http: { origin, pageOrigin, host, ip,
+   * Serve a task. `typeUri` is its full address. `handler({ doc, payload, signer, http: { origin, base, host, ip,
    * userAgent, https } })` returns the answer's payload (an object), or a whole answer it signed itself and marked
-   * with SIGNED, or throws new Refusal(code, message, details). `origin` is the room's own address; `pageOrigin` is
-   * the Origin header the sender's browser put on the request ('' when there was none: wallets and servers send none). `signer` is
+   * with SIGNED, or throws new Refusal(code, message, details). `origin` is the Origin header the sender's browser put on
+   * the request ('' when there was none: wallets and servers send none); `base` is the room's own address. `signer` is
    * the DID whose proof verified; it is the document's issuer. `purposes`: the proof purposes this task takes
    * (a request is signed for authentication; something a person attests, an approval or a grant, for assertionMethod).
    * `record: false` for an answer that must not be kept or sent twice (it carries a secret): a redelivery gets 204.
    * `listed: false` keeps the address out of serves() and discovery (a type that is only ever refused here).
+   * `precheck(doc)`: the task's own gate before any proof is read (and so before a signer's DID is fetched), after the
+   * document is known to be fresh and for the room; it returns a Refusal to refuse, or nothing (OpenVTC's sign-in
+   * refuses any signer but an Ed25519 did:key there, vti-oob-server T21).
    */
-  register (typeUri, handler, { purposes = PURPOSES, record = true, listed = true } = {}) {
+  register (typeUri, handler, { purposes = PURPOSES, record = true, listed = true, precheck = null } = {}) {
     if (typeof typeUri !== 'string' || !typeUri || typeUri.length > 300 || typeUri.includes('#')) throw new Error('a task is registered under its full type address, without a #fragment')
     if (typeof handler !== 'function') throw new Error(`${typeUri}: a task needs a handler`)
     if (!Array.isArray(purposes) || !purposes.length || !purposes.every((p) => SIGNING_RELATIONSHIPS.includes(p))) throw new Error(`${typeUri}: purposes are some of ${SIGNING_RELATIONSHIPS.join(', ')}`)
     if (this.handlers.has(typeUri)) throw new Error(`${typeUri} is already served`) // two parts of the room claiming one task is a mistake to see at start, not at the first document
-    this.handlers.set(typeUri, { handler, purposes, record, listed })
+    if (precheck !== null && typeof precheck !== 'function') throw new Error(`${typeUri}: precheck is a function`)
+    this.handlers.set(typeUri, { handler, purposes, record, listed, precheck })
     return this
   }
 
@@ -212,7 +216,7 @@ export class Door {
   /**
    * One document in, one answer out: { status, body, headers? }. `raw` is the body exactly as it arrived (a Buffer);
    * `body` is the signed answer as JSON text, or '' for the answers that carry no document (202, 204, 429).
-   * `http`: { origin, pageOrigin, host, ip, userAgent, https } for the task, and `bytes` / `cut` when the caller stopped reading
+   * `http`: { origin, base, host, ip, userAgent, https } for the task, and `bytes` / `cut` when the caller stopped reading
    * a body that was too large (the size is then what it counted, and "more than" that).
    */
   async handle (raw, http = {}) {
@@ -237,6 +241,12 @@ export class Door {
     // 3. its shape, that it is fresh, that it names the room; 4. its proof, by a key its issuer lists for the purpose
     const type = routed(doc?.type), task = typeof type === 'string' ? this.handlers.get(type) : undefined
     const as = mine.find((i) => sameDid(i.did, doc?.recipient)) ?? first // the room answers as the DID it was addressed by
+    if (task?.precheck) { // the task's own gate, before the proof: only for a document that is fresh and for the room
+      const basic = checkTask(doc, { me: mine.map((i) => i.did), now, horizonMs: HORIZON_MS })
+      if (!basic.ok) return this.#refuse(doc, basic, as)
+      const pre = task.precheck(doc)
+      if (pre) return this.#refuse(doc, this.#refusalOf(pre, type), as)
+    }
     let v
     try { v = await verifyTask(doc, { keyFor: (did, vm, purpose) => this.ctx.log.resolver.keyFor(did, vm, purpose), me: mine.map((i) => i.did), now, horizonMs: HORIZON_MS, purposes: task?.purposes ?? PURPOSES }) } catch (err) {
       if (!(err instanceof RangeError)) throw err
@@ -266,9 +276,9 @@ export class Door {
     // 7. the task; 8. its answer, signed. A refusal gives the id back, so a corrected document may use it.
     let body
     try {
-      const said = await task.handler({ doc, payload: doc.payload, signer, http: { origin: String(http.origin ?? ''), pageOrigin: String(http.pageOrigin ?? ''), host: String(http.host ?? ''), ip: String(http.ip ?? ''), userAgent: String(http.userAgent ?? ''), https: Boolean(http.https) } }) ?? {} // a task with nothing to say acknowledges with {}
+      const said = await task.handler({ doc, payload: doc.payload, signer, http: { origin: String(http.origin ?? ''), base: String(http.base ?? ''), host: String(http.host ?? ''), ip: String(http.ip ?? ''), userAgent: String(http.userAgent ?? ''), https: Boolean(http.https) } }) ?? {} // a task with nothing to say acknowledges with {}
       if (said?.[SIGNED]) { // signed by the task itself: sent as it is, if it is this document's answer and the room's own
-        if (said.type !== `${type}#response` || said.threadId !== responseTo(doc, {}, as.did).threadId || !said.proof || !mine.some((i) => sameDid(i.did, said.issuer))) throw new Error('a task signed an answer that is not the room\'s answer to this document')
+        if (said.type !== `${type}#response` || said.threadId !== responseTo(doc, {}, as.did).threadId || said.recipient !== doc.issuer || !said.proof || !mine.some((i) => sameDid(i.did, said.issuer))) throw new Error('a task signed an answer that is not the room\'s answer to this document')
         body = JSON.stringify(said)
       } else {
         const payload = plain(said)
@@ -340,7 +350,7 @@ export function serveRoomTasks (door, ctx) {
   // room writes, private ones and wake links are refused in the log's own words, which say where they do go; they
   // are not listed. The answer to agent/host carries the new agent's connector link, a secret: it is not kept.
   const line = async ({ doc, http }) => {
-    const { entry: { document, ...entry }, duplicate, hosted } = await ctx.acceptEntry(doc, { ip: http.ip, origin: http.origin })
+    const { entry: { document, ...entry }, duplicate, hosted } = await ctx.acceptEntry(doc, { ip: http.ip, origin: http.base || undefined }) // the room's own address: the hosted agent's connector link is built from it
     return { entry, duplicate, ...(hosted ? { hosted } : {}) }
   }
   for (const [name, uri] of Object.entries(TYPES)) door.register(uri, line, { record: name !== 'host', listed: (WHO[name] === 'human' || WHO[name] === 'anyone') && name !== 'wake' })

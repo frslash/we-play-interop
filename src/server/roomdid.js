@@ -118,7 +118,7 @@ export function roomDidDocument ({ did, roomPublicKey, publicUrl }) {
  * when there is no log or it does not verify. Never throws.
  */
 export async function roomDidStatus ({ dataDir, file = '' }) {
-  const none = { did: null, didcomm: null, trustTasks: null, roomKey: null }
+  const none = { did: null, didcomm: null, trustTasks: null, roomKey: null, document: null }
   try {
     const text = readRoomDidLog({ dataDir, file })
     if (text === null) return none
