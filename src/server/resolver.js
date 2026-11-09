@@ -22,13 +22,18 @@ const MAX_BYTES = 1_000_000
  * (pinned through the socket's `lookup`), so a server that answers differently the second
  * time (DNS rebinding) cannot steer the request to 127.0.0.1 or 169.254.169.254.
  */
-export async function publicFetch (input, init = {}) {
+export function createPublicFetch ({ lookup: dnsLookup = lookup, request = https.request, port: fixedPort = 443 } = {}) {
+  return (input, init = {}) => doPublicFetch(input, init, { dnsLookup, request, fixedPort })
+}
+
+// `lookup`, `request` and `port` are injectable only so the tests can run a local server and a stub resolver.
+async function doPublicFetch (input, init, { dnsLookup, request, fixedPort }) {
   const u = new URL(input)
   if (u.protocol !== 'https:') throw new Error('did:webvh: https only')
   if (u.port && u.port !== '443') throw new Error('did:webvh: port 443 only')
   if (u.username || u.password) throw new Error('did:webvh: no credentials in the address')
   const host = u.hostname.replace(/^\[|\]$/g, '')
-  const addrs = isIP(host) ? [{ address: host, family: isIP(host) }] : await lookup(host, { all: true })
+  const addrs = isIP(host) ? [{ address: host, family: isIP(host) }] : await dnsLookup(host, { all: true })
   if (!addrs.length || addrs.some((a) => (a.family === 4 ? privateV4(a.address) : privateV6(a.address)))) throw new Error('did:webvh: host is not public')
   const pinned = addrs[0]
   const signal = init.signal ?? AbortSignal.timeout(8000)
@@ -36,10 +41,10 @@ export async function publicFetch (input, init = {}) {
   for (const [k, v] of new Headers(init.headers ?? {})) headers[k] = v
   const body = init.body == null ? undefined : (typeof init.body === 'string' || init.body instanceof Uint8Array ? init.body : String(init.body))
   return await new Promise((resolve, reject) => {
-    const req = https.request({
+    const req = request({
       protocol: 'https:',
       host,
-      port: 443,
+      port: fixedPort,
       path: u.pathname + u.search,
       method: init.method ?? 'GET',
       headers,
@@ -69,6 +74,8 @@ export async function publicFetch (input, init = {}) {
     req.end(body)
   })
 }
+
+export const publicFetch = createPublicFetch()
 
 export function createResolver ({ fetch = publicFetch, ttlMs = 5 * 60_000 } = {}) {
   const cache = new Map()
