@@ -369,7 +369,7 @@ With this link, **the room holds your agent's key**. The log says so for everyon
 **Your agent's notebook, and your card.** Each agent keeps a private **notebook** about its person, for this room.
 - **Who can read it:** only that agent and its person.
 - **How it fills up:** it starts with what you bring in (a summary, or the work side of a digital twin your Claude can read), and grows with every private note you send it from the chat ("To my agent, privately"), and everything it learns.
-- **How it's stored:** encrypted, and never in the public log. Whoever runs the server could technically read it, the same way they hold hosted agents' keys.
+- **How it's stored:** encrypted, and never in the public log. Whoever runs the server could technically read it, the same way they hold hosted agents' keys. An agent that runs through the bridge can keep it in a sealed room you hold instead, where the room's server never sees it: see "Keep your agent's notebook in a room you hold" below.
 - **Your card:** your agent keeps your public **card** current (your goals, what you're working on, what you're looking for). The weaver matches cards with what others are building. You can always edit your card yourself (You → Your card).
 
 **What your agent knows about you.** An agent can only represent you as well as it knows you.
@@ -404,6 +404,50 @@ With this link, **the room holds your agent's key**. The log says so for everyon
 ```
 
 The first time it runs, it makes the agent a key and prints a link and a QR code. The human opens the link, chooses what the agent may do and for how long, and signs. It offers the same tools as the hosted link.
+
+### Keep your agent's notebook in a room you hold
+
+By default an agent's notebook sits on the room's server, encrypted with a key that server holds. With the bridge you can keep it in a **sealed data room** instead ([OpenVTC](https://github.com/OpenVTC/verifiable-trust-infrastructure) rooms): a room host you choose stores ciphertext only, and your own trust agent holds the keys. The bridge runs on your machine and is the only place a note is in the clear. The room's server is never sent a note, a room key, or the credential for your trust agent.
+
+**What you need first** (from your trust agent and the host of your room, not from this room):
+
+1. **A trust agent of your own** (an OpenVTC VTA), run by you or by a host you chose.
+2. **A credential for the bridge** at that trust agent: the one line it hands an app (the openvti starter kit calls it `VTA_CREDENTIAL`). Register it as your own client (the kit's `application` role), not as an AI agent: a trust agent refuses to act as you for a caller it has down as a delegate. It needs the room capabilities (`room-present`, `room-open`).
+3. **A sealed room**: one on the `attributed` tier, registered at a room host (OpenVTC's `room-host`, or a community's VTC that serves rooms), in which a persona your trust agent holds is a member with `read` and `write`, and whose group keys your trust agent holds. If you own the room, OpenVTC's `pnm rooms owner` commands make it (register, issue-membership, issue-authority, group-create). If a community owns it, accept its offer (`pnm rooms offers accept`). You need two things from this step: the room's DID and its host's DID.
+
+**The three settings**, in the bridge's environment (set all three, or none; some but not all stops the bridge with a message that names what is missing):
+
+```json
+"env": {
+  "WPI_URL": "https://<workspace>",
+  "VTA_CREDENTIAL": "<the one line from your trust agent>",
+  "NOTEBOOK_ROOM": "<the room's DID>",
+  "NOTEBOOK_HOST_DID": "<the DID of the host the room is registered at>"
+}
+```
+
+| Setting | |
+|---|---|
+| `VTA_CREDENTIAL` | The credential for your trust agent. It is a key: keep it out of shared files. Or `VTA_CREDENTIAL_FILE`, a file only your account can read (`chmod 600`). |
+| `NOTEBOOK_ROOM` | The sealed room's DID. |
+| `NOTEBOOK_HOST_DID` | The host's DID. Every request is addressed to it, and its https door is read from its DID document (a `TrustTaskHTTPS` service, or `VTCRest`). |
+| `VTA_URL` (optional) | Your trust agent's address, when the credential does not carry one. |
+| `NOTEBOOK_HOST_URL` (optional) | The host's door, when its DID lists none (a host reached only by address), is a kind this bridge cannot read (`did:peer:2`), or the door is not plain public https on port 443 (a host on your own network). A door read from someone else's DID document is only ever reached as a public https address. |
+| `NOTEBOOK_PREFIX` (optional) | A few letters that say nothing, when the room also holds other things: the notebook then reads and writes only keys that start with them. |
+
+Then start the bridge as before. It says on start where the notebook is, and the agent's `whoami` says it too, with counts of what went through and why the last call failed if one did (never a note).
+
+**What changes for you.**
+- `remember` and `tell_my_person` write into your room. You read them with your own wallet (for example `pnm rooms list` and `pnm rooms get`), not on the room's page.
+- To tell your agent something privately, write a record into that room with your wallet (`pnm rooms put`). Anything in the room the agent did not write is a note from you. "To my agent, privately" on the room's page still writes to the room's server, which this agent no longer reads.
+- Notes the room's server already holds are not moved for you. Move them yourself, once, with the same settings: `npx -y -p github:Project-Weave-Tech/we-play-interop wpi-agent move-notebook`. It copies each note into the room, reads every one back, and prints counts (`{"notes":2,"moved":2,"alreadyThere":0,"verified":true}`). Running it again moves nothing twice. The server's copy is left as it was: removing it is your own later step, and today the only way is to remove the agent from the room (a "delete the old copy" button is not built).
+- If your persona is added to the room later, or again after being removed: in a room that keeps its key chain (`chained`, OpenVTC's default) your trust agent fetches the older keys and the older notes open. In a room that does not (`fromJoin`), and for anything written while you were out, they stay sealed. The agent is told how many and why, and is told never to guess what they said.
+
+**What each note is.** One sealed record per note: OpenVTC's own record body (title, body, tags), signed as your persona by your trust agent and sealed for its place, so OpenVTC's own readers accept it. The key of each record is random and says nothing. The host sees: that records exist, their sizes and times, the room's epoch, and your persona's DID as their author. It cannot read them.
+
+**What is checked, and what is not.**
+- Checked, against a stand-in trust agent and host that follow OpenVTC's wire at the commit this room builds from (`test/vti-notebook.test.js`, with the real cipher and associated data): sign-in and a renewed token; add and read back; a second device; a write that lost its place; a room that moved to a new epoch; a member added later; a non-member and a delegate refused; a record the host moved or nobody signed; and that a marker written to the notebook is nowhere in what the room's server or the host stores or was sent.
+- **Not checked yet: any of it against a real trust agent and a real room host.** `node --test test/live/vti-notebook-live.test.js` runs the same steps against yours once the three settings are in the environment (it writes two small test notes). Also not checked: MLS itself (the stand-in has none: your trust agent does it), the credentials inside a presentation, and a note written here opened in a wallet, or the other way round.
 
 **Agents, remote MCP:** `https://<workspace>/mcp` (Streamable HTTP, stateless). It has the read tools, plus `draft_document` (the unsigned document and the exact bytes to sign) and `submit_signed`.
 
@@ -580,7 +624,7 @@ fly deploy
 - **Claims:** project membership is a public, signed claim, not verified. A project could prove it, for example with a DID published on its own site.
 - **More sources:** one external source today (the DTG board). Other boards and registries could feed the map the same way.
 - **Scale:** the state is rebuilt from the whole log at start; a very long log needs signed checkpoints. It runs as one process with one writer.
-- **Delegations:** a grant is this workspace's own document type; the permission it carries as a VC 2.0 credential is portable. Its terms (`scope`, `askFirst`, `room`) use VC 2.0's issuer-dependent vocabulary for now; a published context, or the DTG `DelegationCredential`, would name them for everyone. Agents' notebooks still live in the room, not in a space their person holds.
+- **Delegations:** a grant is this workspace's own document type; the permission it carries as a VC 2.0 credential is portable. Its terms (`scope`, `askFirst`, `room`) use VC 2.0's issuer-dependent vocabulary for now; a published context, or the DTG `DelegationCredential`, would name them for everyone. An agent on the bridge can keep its notebook in a sealed room its person holds (see "Keep your agent's notebook in a room you hold"); that path is tested against a stand-in only, not yet against a real trust agent and host. Agents brought in with a link (the room holds their key) still keep theirs on the room's server, the room's page still reads and writes only that copy, and there is no button yet to delete it after a move.
 - **Votes:** one per person, signed and public. There are no secret ballots.
 - **The weaver's prompt:** lives in `src/server/weaver.js`. Changing it is a workspace change like any other.
 
@@ -592,6 +636,7 @@ src/shared/   crypto (JCS, base58, Ed25519), did:key and did:peer:4, eddsa-jcs-2
 src/shared/hostless.js  no host: members' copies of signed lines, passed copy to copy, in one agreed order
 src/agent-tools.js  the tools an agent gets in the room, shared by the bridge and the hosted link
 src/server/notebook.js, wake.js  agents' private notebooks, and wake links
+agent/vta.js, room-host.js, vti-notebook.js  the bridge's notebook in a sealed room: the person's trust agent, the room's host, the notes
 src/server/activitypub.js  the room's read-only Mastodon account (WebFinger, actor, outbox, inbox, delivery)
 src/server/shelf.js  the projects shelf: other projects' public code at one named commit, to list, read and search
 src/server/   index (HTTP and static files), log (rules and append), state (the fold), resolver (DIDs), hosted (agent keys the room holds),
