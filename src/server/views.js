@@ -49,6 +49,7 @@ export function state (ctx) {
     rounds: [...st.rounds].reverse(),
     score: board.score(),
     board: { fetchedAt: board.fetchedAt, error: board.error },
+    steps: ctx.facilitator?.view() ?? null, // the facilitator's board: goals with their done-tests, the steps in work, last night
     counts: st.counts,
   }
 }
@@ -119,7 +120,8 @@ export function concerns (ctx, e, agent) {
   if (e.author === agent) return null
   if (name === 'note' && d.recipient === agent) return 'direct'
   if (name === 'note' && d.threadId && ctx.log.byDocId.get(d.threadId)?.author === agent) return 'reply'
-  if (['note', 'propose'].includes(name) && me?.name && mentions(d.payload.text ?? d.payload.title ?? '', me.name)) return 'mention'
+  // the facilitator's report names owners to say where things stand, not to ask them anything: it wakes no one
+  if (['note', 'propose'].includes(name) && me?.name && !d.payload.facilitator?.report && mentions(d.payload.text ?? d.payload.title ?? '', me.name)) return 'mention'
   // a person asking the whole room something (a question, or a call to everyone): every agent is woken, so they all answer
   if (name === 'note' && !d.recipient && e.author === e.onBehalfOf && ctx.log.state.isHuman(e.author) && e.author !== me?.principal && asksTheRoom(d.payload.text)) return 'room'
   // its own person speaking to the room (not a line addressed to someone else)
@@ -165,6 +167,7 @@ export function read (ctx, path) {
   const url = new URL(path, 'http://local'), q = Object.fromEntries(url.searchParams), p = url.pathname
   if (p === '/api/state') return state(ctx)
   if (p === '/api/map') return mapView(ctx)
+  if (p === '/api/steps') return ctx.facilitator.view()
   if (p === '/api/messages') return messages(ctx, q)
   if (p === '/api/wait') return ctx.waits.wait(q)
   if (p.startsWith('/api/files/')) return fileText(ctx, p.slice(11), q)

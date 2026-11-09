@@ -1,6 +1,6 @@
 // The workspace's current state, folded from the log entry by entry.
 // Nothing here is stored on its own: restart, replay the log, same state.
-import { NAME_OF } from '../shared/types.js'
+import { DEFAULT_MODE, NAME_OF } from '../shared/types.js'
 
 export class State {
   constructor () {
@@ -9,7 +9,7 @@ export class State {
     this.participants = new Map() // did -> { did, kind, name, projects, about, since, principal? }
     this.delegations = new Map() // entry hash -> { hash, issuer, delegate, scope, label, expiresAt, revoked, seq }
     this.proposals = new Map() // entry hash -> proposal (see addProposal)
-    this.mode = { mode: 'weave', by: null, seq: null }
+    this.mode = { mode: DEFAULT_MODE, by: null, seq: null }
     this.rounds = [] // the last 20 rounds
     this.roundCount = 0
     this.lastRoundSeq = -1
@@ -22,6 +22,16 @@ export class State {
     this.hosted = new Set() // agent DIDs whose key the workspace holds (shown to everyone)
     this.away = new Map() // agent DID -> what it answers while its person is away (public: everyone can see an agent answers on its own)
     this.dives = new Map() // opening entry hash -> a closer look the weaver opened where agents disagree (see dive)
+    // the facilitator's board (facilitator.js): the steps being worked, the latest finished ones, and a tally per UTC day.
+    // Finished steps leave the active set, so it stays as small as the work in hand; the log keeps every line.
+    this.steps = new Map() // step id (the hash of its first line) -> the step as it stands
+    this.stepsDone = [] // the latest steps checked or set aside (newest last, at most 30)
+    this.stepDays = new Map() // 'YYYY-MM-DD' -> { opened, claimed, resulted, checked, toResultMs: [agreement to first result] } (the last 60 days)
+    this.stepOf = new Map() // a proposal, closer look or line a step came from -> the step (the latest 5000)
+    this.stepsHeard = -1 // the last line the board acted on (the facilitator listens on from there after a restart)
+    this.pressed = new Set() // lines the facilitator asked to be made exact (the latest 200)
+    this.testAsked = new Map() // goal -> when the facilitator last asked for its done-test
+    this.lastReport = null // { at, seq } of the facilitator's latest report
     this.counts = {}
     this.seq = -1
   }
@@ -86,7 +96,12 @@ export class State {
       }
       case 'hosted': { this.hosted.add(p.agent); const a = this.participants.get(p.agent); if (a) a.hosted = true; break }
       case 'revoke': { const d = this.delegations.get(p.delegation); if (d && d.issuer === e.author) d.revoked = true; break }
-      case 'note': if (e.author === this.workspace && p.dive) this.dive(e); break
+      case 'note':
+        if (e.author !== this.workspace) break
+        if (p.dive) this.dive(e)
+        if (p.facilitator) this.facilitatorSaid(e)
+        break
+      case 'step': this.step(e); break
       case 'propose': this.addProposal(e); break
       case 'vote': {
         const pr = this.proposals.get(p.proposal)
@@ -148,6 +163,33 @@ export class State {
       kind: p.kind, title: p.title, body: p.body ?? '', run: p.run, change: p.change, sources: p.sources, measure: p.measure, direction: p.direction, threadId: e.document.threadId,
       votes: new Map(), approvals: new Map(), lastApprovalAt: null, vetoes: [], results: [], outcome: null,
     })
+  }
+
+  /** A facilitator:step line: the whole step as it now stands. Times and the day's tally are folded here, not trusted from the line. */
+  step (e) {
+    const p = e.document.payload, id = p.of ?? e.hash
+    const prev = this.steps.get(id) ?? this.stepsDone.find((s) => s.id === id)
+    const day = e.timestamp.slice(0, 10), t = this.stepDays.get(day) ?? { opened: 0, claimed: 0, resulted: 0, checked: 0, toResultMs: [] }
+    if (!this.stepDays.has(day)) { this.stepDays.set(day, t); for (const d of [...this.stepDays.keys()].slice(0, -60)) this.stepDays.delete(d) }
+    const s = { ...p, id, hash: e.hash, seq: e.seq, at: e.timestamp, thread: prev?.thread ?? e.document.id, openedAt: prev?.openedAt ?? e.timestamp, claimedAt: prev?.claimedAt ?? null, resultAt: prev?.resultAt ?? null, checkedAt: prev?.checkedAt ?? null }
+    delete s.of
+    if (!prev) t.opened++
+    if (!s.claimedAt && s.owner && ['claimed', 'in progress', 'result posted', 'checked'].includes(s.state)) { s.claimedAt = e.timestamp; t.claimed++ }
+    if (!s.resultAt && ['result posted', 'checked'].includes(s.state)) { s.resultAt = e.timestamp; t.resulted++; if (s.agreedAt) t.toResultMs.push(Date.parse(e.timestamp) - Date.parse(s.agreedAt)) }
+    if (s.state === 'checked' && prev?.state !== 'checked') { s.checkedAt = e.timestamp; t.checked++ }
+    if (Number.isInteger(p.heardSeq) && p.heardSeq > this.stepsHeard) this.stepsHeard = p.heardSeq
+    for (const h of [p.from, ...(p.sources ?? [])].filter(Boolean)) { this.stepOf.delete(h); this.stepOf.set(h, id) }
+    while (this.stepOf.size > 5000) this.stepOf.delete(this.stepOf.keys().next().value)
+    this.stepsDone = this.stepsDone.filter((x) => x.id !== id)
+    if (s.state === 'checked' || s.aside) { this.steps.delete(id); this.stepsDone.push(s); if (this.stepsDone.length > 30) this.stepsDone.shift() } else this.steps.set(id, s)
+  }
+
+  /** What the facilitator said that its procedure needs to remember: the lines it pressed, its asks for done-tests, its reports. */
+  facilitatorSaid (e) {
+    const f = e.document.payload.facilitator
+    if (f.pressed) { this.pressed.add(f.pressed); if (this.pressed.size > 200) this.pressed.delete(this.pressed.values().next().value) }
+    if (f.what === 'ask test') for (const g of f.goals ?? []) this.testAsked.set(g, Date.parse(e.timestamp))
+    if (f.what === 'report') this.lastReport = { at: e.timestamp, seq: e.seq }
   }
 
   /** A closer look (dives.js) opens with one line of the weaver's and ends with another in its thread; both carry its record. */
