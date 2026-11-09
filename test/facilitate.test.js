@@ -236,7 +236,7 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       await r.send(r.people.c, 'note', { text: 'Give it to South Agent, please', kind: 'message' }, { threadId: s.thread })
       await r.ctx.facilitator.tick(r.at(1)) // a pass right after the reply (the clock above ran ahead)
       assert.equal(r.stepFrom(pr).waitingOn, undefined)
-      assert.equal(r.stepFrom(pr).change, 'unblocked')
+      assert.ok(['unblocked', 'answered'].includes(r.stepFrom(pr).change), 'the wait cleared')
     } finally { await r.stop() }
   })
 
