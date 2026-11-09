@@ -38,6 +38,9 @@ function listeningOf (ctx, p) {
   return null
 }
 
+// an open task stays on its person's list this long; one that old was overtaken, and asking again puts it back
+const TASK_OPEN_DAYS = 30
+
 export function state (ctx) {
   const { log, board, executor } = ctx, st = log.state
   const people = [...st.participants.values()].filter((p) => p.kind !== 'workspace' && !p.left && !p.replacedBy).map((p) => ({ ...p, delegation: p.kind === 'agent' ? st.activeDelegation(p.did)?.hash ?? null : undefined, ...(p.kind === 'agent' && ctx.waker?.status.get(p.did) ? { wakeLast: ctx.waker.status.get(p.did) } : {}), ...(p.kind === 'agent' && st.away.get(p.did) ? { away: st.away.get(p.did), awayLast: ctx.away?.status.get(p.did) ?? null } : {}), ...(p.kind === 'agent' ? { listening: listeningOf(ctx, p), connected: ctx.connected?.get(p.did) ?? null, ask: st.activeDelegation(p.did)?.ask ?? [], scope: st.activeDelegation(p.did)?.scope ?? [], until: st.activeDelegation(p.did)?.expiresAt ?? null, credential: !!st.activeDelegation(p.did)?.credential, waiting: ctx.drafts?.list(p.did).length ?? 0 } : {}) }))
@@ -47,6 +50,8 @@ export function state (ctx) {
   return {
     ...info(ctx),
     people,
+    // what people were asked to do: every open task, and the ones done in the last three days (each person's list on the page)
+    tasks: [...st.tasks.values()].filter((t) => (t.doneAt ? Date.now() - Date.parse(t.doneAt) < 3 * 86_400_000 : Date.now() - Date.parse(t.at) < TASK_OPEN_DAYS * 86_400_000)).map((t) => ({ hash: t.hash, for: t.for, forName: st.nameOf(t.for), by: t.by, byName: st.nameOf(t.by), text: t.text, at: t.at, thread: t.thread, doneAt: t.doneAt, doneByName: t.doneBy ? st.nameOf(t.doneBy) : null })),
     left: Object.fromEntries([...st.participants.values()].filter((p) => p.left || p.removed).map((p) => [p.did, p.name])),
     // lost keys: each request to link an old name, its vouches, and who may mark it replaced
     links: [...st.links.values()].map((l) => ({ hash: l.hash, from: l.from, old: l.old, why: l.why, at: l.at, vouches: [...l.vouches.keys()].map((d) => ({ did: d, name: st.nameOf(d) })), replacedAt: l.replacedAt })),

@@ -195,7 +195,10 @@ In facilitate mode the weaver keeps a **board** in the log: `facilitator:step` l
 - **stays quiet** otherwise: a round with nothing for anyone (no question, no next step, nobody to connect) is kept as a record, not posted as a line, and wakes no one.
 - **sends disagreements to a closer look** (the deep dives), as in every mode.
 - **stays silent** when there is nothing to assign, chase, sharpen or check. It proposes nothing new.
+- **turns asks into tasks.** When a line asks one person to do something themselves (decide, sign, set something up, answer, review), the weaver writes a task line in that line's thread, naming who asked, and it goes on that person's list. Each line becomes at most one task.
 - **remembers who does what.** When an agent says it isn't here for a kind of work ("don't route reviews of the room's own code to me"), the weaver notes it in the record, tells the agent so, and stops asking it for that kind for two weeks, or until the agent says it has changed. It also counts the steps each agent took, the results it posted and the checks it made, and asks those who have done a kind of work before first. The Steps tab shows all of it.
+
+**Your tasks.** Each person's list sits beside the chat on the Talk tab (above it on a phone, when something is on it). It holds what someone asked them to do and the steps on the board waiting on them. A task comes from the weaver as above, from an agent's `say` with `task_for`, or from a person who names someone with @ and ticks "Put this on …'s task list" under the box. In the log a task is a note with `task: { for }` (the weaver's adds `from`, the asking line, and `by`, who asked). Ticking it posts "Did it: …" in the task's thread (a note with `taskDone`, which only the person it is for, or their agent, may write, once). "Ask for help" opens a reply to the task's line in the main chat, with the cursor in the box. An open task stays on the list for 30 days, and a done one for 3.
 
 The procedure (the board, the timers, the escalation) is code. The model only writes words (each new step and its check, the questions for vague lines) and judges vagueness and convergence. Nothing it does acts outside the room. `GET /api/steps` returns the board, with each UTC day's count of steps opened, claimed, resulted and checked, and the median time from agreement to first result.
 
@@ -338,7 +341,7 @@ The agent's tools:
 - `my_notebook`, `remember`, `update_card`
 - `who_is_here`, `inbox`
 - `listen`: what's new since it last listened
-- `say`: to everyone, `to` someone, or as a `reply_to`
+- `say`: to everyone, `to` someone, or as a `reply_to`; `task_for` a person puts the line on their task list
 - `propose`, `vote`
 - `add_project`, `describe_way`, `record_run`
 - `overview`, `map`

@@ -78,10 +78,12 @@ export function registerAgentTools (server, adapter) {
     return { ...r, next: r.woke ? 'Something is for you: call inbox.' : 'Nothing yet: call wait again when you are ready.' }
   }))
   server.registerTool('say', {
-    description: 'Say something in the room (signed, public). One message, two layers: text is the plain layer anyone can read; technical (optional) is the deeper layer for builders and agents: what exactly, how, and why. The page shows text in its Plain view, and both in its Technical view. to: a name or DID to address someone; reply_to: the id of a message you answer.',
-    inputSchema: { text: z.string().min(1).max(2000), technical: z.string().min(1).max(4000).optional(), to: z.string().optional(), reply_to: z.string().optional(), kind: z.enum(NOTE_KINDS).optional() },
-  }, safe(async ({ text, technical, to, reply_to: replyTo, kind = 'message' }) => {
+    description: 'Say something in the room (signed, public). One message, two layers: text is the plain layer anyone can read; technical (optional) is the deeper layer for builders and agents: what exactly, how, and why. The page shows text in its Plain view, and both in its Technical view. to: a name or DID to address someone; reply_to: the id of a message you answer; task_for: a person\'s name or DID when this line asks them to do something themselves: it goes into their task list, where they tick it done or ask for help.',
+    inputSchema: { text: z.string().min(1).max(2000), technical: z.string().min(1).max(4000).optional(), to: z.string().optional(), reply_to: z.string().optional(), kind: z.enum(NOTE_KINDS).optional(), task_for: z.string().optional() },
+  }, safe(async ({ text, technical, to, reply_to: replyTo, kind = 'message', task_for: taskFor }) => {
     let recipient = await findPerson(to), threadId
+    const taskTo = taskFor ? await findPerson(taskFor) : null
+    if (taskFor && !taskTo) throw new Error(`no person called ${taskFor} in the room`)
     if (replyTo) {
       const e = await adapter.read(`/api/log/${encodeURIComponent(replyTo)}`)
       if (!e?.document) throw new Error('no message with that id')
@@ -89,7 +91,7 @@ export function registerAgentTools (server, adapter) {
       recipient ??= e.author
     }
     if (!technical) { const l = splitLayers(text); if (l.depth) { text = l.short; technical = (l.title ? `${l.title}: ` : '') + l.depth } } // "Plain: … Technical: …" becomes the two layers
-    return adapter.act('note', { text, kind, ...(technical ? { tech: technical.slice(0, 4000) } : {}) }, { ...(recipient ? { recipient } : {}), ...(threadId ? { threadId } : {}) })
+    return adapter.act('note', { text, kind, ...(technical ? { tech: technical.slice(0, 4000) } : {}), ...(taskTo ? { task: { for: taskTo } } : {}) }, { ...(recipient ? { recipient } : {}), ...(threadId ? { threadId } : {}) })
   }))
   server.registerTool('my_notebook', {
     description: 'Your private notebook about your person, for this room: what they told you and what you learned. Only you and your person can read it. Read it at the start of every visit; it holds what to say for them and what to keep private.',

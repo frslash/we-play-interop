@@ -280,6 +280,9 @@ export function checkPayload (name, doc) {
       if (!NOTE_KINDS.includes(p.kind)) return `kind: ${NOTE_KINDS.join(' | ')}`
       if (p.pair !== undefined && (!Array.isArray(p.pair) || p.pair.length !== 2 || !p.pair.every((s) => SLUG_RE.test(s)))) return 'pair: two project slugs'
       if (p.scenario !== undefined && !SLUG_RE.test(p.scenario)) return 'scenario: a scenario id'
+      // a task aimed at a person: the line's text is what to do; it shows in their task list until they say they did it
+      if (p.task !== undefined && !(isObj(p.task) && str(p.task.for, 8, 300) && /^did:[a-z0-9]+:/.test(p.task.for) && (p.task.from === undefined || /^[0-9a-f]{64}$/.test(p.task.from)) && (p.task.by === undefined || (str(p.task.by, 8, 300) && /^did:[a-z0-9]+:/.test(p.task.by))))) return 'task: { for: the DID of the person it is for, from: the hash of the line that asked (optional), by: who asked (optional) }'
+      if (p.taskDone !== undefined && !/^[0-9a-f]{64}$/.test(p.taskDone)) return 'taskDone: the hash of the task this line says is done'
       return p.step === undefined ? null : checkStepSay(p.step)
     case 'propose':
       if (!PROPOSAL_KINDS.includes(p.kind)) return `kind: ${PROPOSAL_KINDS.join(' | ')}`

@@ -19,6 +19,11 @@ function credentialOf (doc, room) {
 /** Whether a step is about the room's own code: its result is a pull request, or its words say so. */
 export const isCodeStep = (s) => (s?.evidence ?? []).some((x) => /\/pull\/\d+|\/api\/pulls\/\d+/.test(x?.url ?? '')) || /\b(pull request|the room['’]s (own )?code|room code)\b/i.test(`${s?.title ?? ''} ${s?.done ?? ''}`)
 
+// tasks are kept while open; done ones beyond this many are let go first (a few weeks of a busy room's asks)
+const TASKS_KEPT = 2000
+// the weaver's task line reads "Name: what to do (asked by Name)" for the room; the list shows just what to do
+const taskWords = (text, byWeaver) => (byWeaver && /^[^:\n]{1,80}: ([\s\S]+?) \(asked by [^()\n]{1,80}\)$/.exec(text)?.[1]) || text
+
 export class State {
   constructor () {
     this.workspace = null // the workspace DID (author of the genesis)
@@ -35,6 +40,8 @@ export class State {
     this.scoreHistory = [] // compact score history from every snapshot
     this.mapProjects = new Map() // slug -> project the workspace added or extended
     this.links = new Map() // hash -> a request to link an old name to a new key: { hash, from, old, why, at, vouches: Map(person -> { at, hash }), replacedAt }
+    this.tasks = new Map() // task line hash -> { hash, for, by, from, text, at, thread, doneAt, doneBy, doneText }: what someone was asked to do, until they say they did
+    this.taskFrom = new Set() // lines already turned into a task (the weaver makes one per line)
     this.mapWays = new Map() // id -> a way of doing interop, defined in the workspace
     this.mapRuns = [] // runs recorded in the workspace
     this.resources = new Map() // resourceKey(url) -> a source someone added to the Resources tab, and the notes on it
@@ -136,6 +143,13 @@ export class State {
       case 'hosted': { this.hosted.add(p.agent); const a = this.participants.get(p.agent); if (a) a.hosted = true; break }
       case 'revoke': { const d = this.delegations.get(p.delegation); if (d && d.issuer === e.author && !d.revoked) { d.revoked = true; d.endedBy = e.hash }; break }
       case 'note':
+        if (p.task) {
+          this.tasks.set(e.hash, { hash: e.hash, for: p.task.for, by: p.task.by ?? e.author, from: p.task.from ?? null, text: taskWords(p.text, e.author === this.workspace), at: e.timestamp, thread: e.document.threadId ?? e.document.id, doneAt: null, doneBy: null, doneText: null })
+          if (p.task.from) this.taskFrom.add(p.task.from)
+          if (this.tasks.size > TASKS_KEPT) for (const [h, t] of this.tasks) { if (this.tasks.size <= TASKS_KEPT) break; if (t.doneAt) this.tasks.delete(h) } // done ones go first
+          if (this.tasks.size > TASKS_KEPT) for (const h of this.tasks.keys()) { if (this.tasks.size <= TASKS_KEPT) break; this.tasks.delete(h) } // then the oldest asks, which the page stopped showing long before
+        }
+        if (p.taskDone) { const t = this.tasks.get(p.taskDone); if (t && !t.doneAt) Object.assign(t, { doneAt: e.timestamp, doneBy: e.author, doneText: p.text }) }
         if (e.author !== this.workspace) break
         if (p.dive) this.dive(e)
         if (p.facilitator) this.facilitatorSaid(e)
