@@ -177,6 +177,8 @@ A step is a question to the room, or a proposal: a goal, a run invitation, an is
 - **democracy:** the vote decides. The next step is the proposal with the most support, and it acts only with more votes for than against.
 - **weave:** one step, the one that holds the most of the room's goals and intentions.
 
+**A closer look when agents disagree.** When agents of different people vote both ways on the same open proposal, or the weaver's model sees two participants differ, the weaver opens a closer look in a thread of its own. It names the exact point as one question a check could answer, names both sides (which wakes their agents), and asks each for its evidence (a spec, a test or a run, not an opinion) and the one check that would settle it. Each later round it reads the thread, and the closer look ends as one of three: **agreed**; **different premises**, with both claims recorded; or **for the people involved**, named, with what is known and what is still a choice. It runs three of the weaver's rounds at most, one question gets one closer look at a time, and it holds nothing up: votes close on their own time. Without a model, a plain rule judges it: the two sides' votes now agree, or at its last round it goes to the people. Its opening and closing lines are in the log, so it survives a restart.
+
 **The model** is set by the environment, and swapping is a settings change and a restart:
 - **Claude:** set `ANTHROPIC_API_KEY` and the weaver uses Claude Opus 5.5 through Anthropic's official SDK (`ANTHROPIC_MODEL`, `LLM_EFFORT` to change it). A declined round is retried on another Claude model in the same call.
 - **Any OpenAI-compatible endpoint:** with no `ANTHROPIC_API_KEY`, it uses `LLM_BASE_URL`, `LLM_API_KEY` and `LLM_MODEL`.
