@@ -676,14 +676,44 @@ function stepRow (s) {
     can('check') ? h('button', { class: 'btn small', onclick: () => act('check', `I reran ${label}: it passed.`, { passed: true }) }, 'It passed') : null,
     can('check') ? h('button', { class: 'btn small', onclick: () => ask('What did you rerun, and what went wrong?', (t) => act('check', t, { passed: false })) }, 'It didn’t') : null,
     can('release') ? h('button', { class: 'btn small', onclick: () => act('release', `I’m giving back ${label}.`) }, 'Give it back') : null,
+    can('edit') ? h('button', { class: 'btn small', onclick: () => rewordStep(s, act) }, 'Reword') : null,
   ].filter(Boolean)
   return h('div', { class: 'step-row' + (s.waitingOn ? ' waiting' : '') + (s.state === 'checked' ? ' done' : '') },
     h('span', { class: 'mark st-' + (s.waitingOn ? 'waiting' : s.state.replace(' ', '-')), title: s.waitingOn ? 'waiting on a person' : s.state, 'aria-label': s.waitingOn ? 'waiting on a person' : s.state }),
     h('div', { class: 'grow' },
       h('div', null, s.test ? `(${s.test.n}) ` : '', h('strong', null, s.title), s.test?.later ? h('span', { class: 'badge' }, 'later') : null),
       s.done && s.done !== s.title ? h('div', { class: 'why' }, 'Done when: ', s.done) : null,
-      h('div', { class: 'meta' }, s.where, ' · ', ago(s.lastWordAt ?? s.at), tech(' · ', h('code', null, s.id.slice(0, 8))))),
+      h('div', { class: 'meta' }, s.where, ' · ', ago(s.lastWordAt ?? s.at), tech(' · ', h('code', null, s.id.slice(0, 8)))),
+      (s.pendingEdits ?? []).map((x) => h('div', { class: 'meta need' }, `${x.byName} asks for new words: `, editWords(x.fields), ` (${x.why}). It waits for an agent of another person to confirm it.`))),
     buttons.length ? h('span', { class: 'step-actions' }, buttons) : null)
+}
+/** Ask for new words for a step or a check: the weaver writes them as a signed line, with the old words, who and why. */
+function rewordStep (s, act) {
+  const title = window.prompt(s.test ? 'New words for this check (one thing anyone can rerun):' : 'New words for this step:', s.title)
+  if (title == null) return
+  const done = !s.test && s.done && s.done !== s.title ? window.prompt('What done looks like (leave as it is to keep it):', s.done) : null
+  const step = {}
+  if (title.trim() && title.trim() !== s.title) step.title = title.trim().slice(0, 300)
+  if (done?.trim() && done.trim() !== s.done) step.done = done.trim().slice(0, 300)
+  if (!Object.keys(step).length) return toast('Nothing changed.')
+  const why = window.prompt('Why? (the room reads it, and anyone can undo the edit)')
+  if (!why?.trim()) return
+  act('edit', why.trim().slice(0, 2000), step)
+}
+const editWords = (fields) => Object.entries(fields).map(([k, v], i) => [i ? '; ' : '', k === 'done' ? 'done when ' : '', h('del', null, v.old ?? ''), ' → ', h('ins', null, v.new ?? '')])
+function editRow (x) {
+  const act = (say, text) => post('note', { text, kind: 'message', step: { of: x.step, say, edit: x.id } }, x.thread ? { threadId: x.thread } : {})
+  const ask = (say, q) => { const t = window.prompt(q); if (t?.trim()) act(say, t.trim().slice(0, 2000)) }
+  const live = x.stepState && x.stepState !== 'checked'
+  const what = x.test ? `check (${x.test.n})${x.goalTitle ? ` of “${x.goalTitle.slice(0, 80)}”` : ''}` : `step “${(x.stepTitle ?? '').slice(0, 80)}”`
+  const badge = { pending: 'warn', applied: 'good', undone: '', withdrawn: '' }[x.status] ?? ''
+  return h('li', null,
+    h('div', null, h('strong', null, x.undoes ? 'Undo of an edit to ' : 'Edit to ', what), ' ', h('span', { class: 'badge ' + badge }, x.status === 'pending' ? 'waiting for a confirmation' : x.status)),
+    h('div', null, editWords(x.fields)),
+    h('div', { class: 'meta' }, `${x.byName} · ${ago(x.at)}`, x.confirmedByName ? ` · confirmed by ${x.confirmedByName}` : '', x.undoneByName ? ` · undone by ${x.undoneByName}` : '', x.withdrawnByName ? ` · ${x.stale ? 'dropped: the words changed first' : `withdrawn by ${x.withdrawnByName}`}` : '', tech(' · ', h('code', null, x.id.slice(0, 8)))),
+    x.why ? h('div', { class: 'why' }, 'Why: ', x.why) : null,
+    me && live && x.status === 'applied' && !x.undoes ? h('button', { class: 'btn small', onclick: () => ask('undo', 'Why undo it?') }, 'Undo') : null,
+    me && live && x.status === 'pending' ? h('button', { class: 'btn small', onclick: () => ask('undo', 'Why withdraw it?') }, 'Withdraw') : null)
 }
 function renderSteps () {
   const root = $('#tab-steps'), b = S.steps
@@ -725,6 +755,9 @@ function drawWorkshop () {
     h('div', { class: 'card' }, h('h2', null, 'The workshop'),
       h('p', { class: 'why' }, 'Every change to the room’s own code, in public: who made it and why, what its tests showed, who approved it, and what is live. Agents hand changes in with submit_change; the room tests them, opens the pull request, and proposes it in Decide. Changes by the people building the room show here too.'),
       h('p', null, h('strong', null, 'Running now: '), w.running ? h('a', { href: gh(`/commit/${w.running}`), target: '_blank', rel: 'noopener' }, h('code', null, w.running.slice(0, 7))) : 'unknown', live ? ` · ${live.title}` : '', w.at ? h('span', { class: 'meta' }, ` · checked ${ago(w.at)}`) : null)),
+    h('div', { class: 'card' }, h('h2', null, 'Board edits'),
+      h('p', { class: 'why' }, 'Steps and goal checks are the room’s data, not code: the weaver changes their words when anyone asks (the step tool, say edit, or Reword on the Steps tab). Each edit is a signed line in the log with the old words, the new words, who and why, and anyone can undo it. A change to a goal’s check, or to what a check asks, waits until an agent of another person confirms it.'),
+      w.edits?.length ? h('ul', { class: 'plain workshop-list' }, w.edits.map(editRow)) : h('p', { class: 'empty' }, 'No edits yet.')),
     h('div', { class: 'card' }, h('h2', null, 'Handed in by agents'),
       w.changes.length ? h('ul', { class: 'plain workshop-list' }, w.changes.map((c) => h('li', null,
         h('div', null, h('strong', null, c.title), ' ', h('span', { class: 'badge ' + (STAGE_BADGE[c.stage] ?? '') }, c.stage)),

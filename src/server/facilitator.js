@@ -17,7 +17,7 @@
 //  - reports against each done-test about once an hour, sooner when a check moved, never when nothing did.
 // The procedure (board, timers, escalation) is code. The model only writes words and judges vagueness and
 // convergence, in the weaver's round (fromRound). Nothing here acts outside the room: a step is words in the log.
-import { exact, whyNot } from '../shared/steps.js'
+import { exact, held, whyNot } from '../shared/steps.js'
 import { NAME_OF, STEP_STATES } from '../shared/types.js'
 import { parseJsonAnswer } from './llm.js'
 import { citedIn, resourcesFor } from './views.js'
@@ -70,7 +70,7 @@ const answers = (st, e, s) => {
   return [...asked].filter((w) => said.has(w) && !['which', 'what', 'whether', 'room', 'room’s', "room's"].includes(w)).length >= 2
 }
 const median = (xs) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2 }
-const FIELDS = ['goal', 'title', 'done', 'owner', 'state', 'from', 'sources', 'test', 'needs', 'waitingOn', 'offeredTo', 'previousOwner', 'chases', 'chasedAt', 'lastWordAt', 'result', 'evidence', 'checkedBy', 'checkAsked', 'checkAskedAt', 'agreedAt', 'words', 'aside', 'replaced']
+const FIELDS = ['goal', 'title', 'done', 'owner', 'state', 'from', 'sources', 'test', 'needs', 'waitingOn', 'offeredTo', 'previousOwner', 'chases', 'chasedAt', 'lastWordAt', 'result', 'evidence', 'checkedBy', 'checkAsked', 'checkAskedAt', 'agreedAt', 'words', 'aside', 'replaced', 'pendingEdits']
 
 export const ROUND_PROMPT = `Facilitate mode: you drive the held goals to done; you do not propose new directions. The board ("board") holds the steps in work: each has a goal, what done looks like, an owner and a state (${STEP_STATES.join(', ')}). The code keeps the board, the timers and the chasing; you only judge two things and write their words:
 "vague": lines in newInputs that claim progress, a result or a plan for a step or a goal but leave out the exact thing someone would need to check it or act on it: the method, a spec link, a test value, the file or the command. Give {"entry":"<hash from newInputs>","missing":"method|spec link|test value|file|command","ask":"<one short, friendly question that asks for exactly that>"}. Only real gaps, at most two; never small talk, greetings or lines that already give the thing.
@@ -197,6 +197,7 @@ export class Facilitator {
     const step = this.find(s.of)
     if (!step || e.seq < step.seq || whyNot(step, s, who, (d) => person(st, d))) return null // older than the step's last change, or not allowed: it changes nothing
     const words = { lastWordAt: e.timestamp, chases: 0 }, heard = { heard: true }
+    if (['edit', 'undo', 'confirm'].includes(s.say)) return this.edit(step, e)
     switch (s.say) {
       case 'claim': return this.write(step, { ...words, owner: who, state: 'claimed', offeredTo: null, aside: false }, 'claimed', e, heard)
       case 'update': return this.write(step, { ...words, state: step.state === 'claimed' ? 'in progress' : step.state, waitingOn: null }, 'update', e, heard)
@@ -226,6 +227,48 @@ export class Facilitator {
       }
     }
     return null
+  }
+
+  // ---------- editing: steps and goal checks are data, changed by signed lines ----------
+  /**
+   * New words for a step, an undo, or the confirmation of a held edit. Each one is a step line that carries the edit
+   * (edit: its id, the old and new words of each field, who asked and why), so the log alone shows every change and
+   * anyone can undo it. A change to a goal's check, or to what a step's check asks, waits in pendingEdits until an agent
+   * of a different person than the one who asked confirms it (shared/steps.js: held).
+   */
+  async edit (step, e) {
+    const st = this.st, s = e.document.payload.step, why = clip(e.document.payload.text, 300), heard = { heard: true }
+    const apply = (fields, pick) => Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, v[pick]]))
+    if (s.say === 'edit') {
+      const fields = {}
+      for (const k of ['title', 'done']) if (s[k] !== undefined && clip(s[k], 300) !== step[k]) fields[k] = { old: step[k] ?? null, new: clip(s[k], 300) }
+      if (step.test && fields.title && !fields.done && step.done === step.title) fields.done = { old: step.done, new: fields.title.new } // a check's words are its title and its done
+      if (!Object.keys(fields).length) return null
+      const rec = { id: e.hash, fields, by: e.author, why }
+      if (!held(step, fields)) return this.write(step, { ...apply(fields, 'new'), edit: rec }, 'edited', e, heard)
+      const next = await this.write(step, { pendingEdits: [...(step.pendingEdits ?? []), { ...rec, at: e.timestamp }], edit: { ...rec, held: true } }, 'edit held', e, heard)
+      await this.speak(`${st.nameOf(e.author)} asks to change ${this.label(step)}: ${Object.entries(fields).map(([k, v]) => `${k === 'done' ? 'done when' : 'the step'} “${clip(v.old, 200)}” becomes “${clip(v.new, 200)}”`).join('; ')}. It waits until an agent of another person confirms it (the step tool, say confirm, edit ${e.hash.slice(0, 8)}). Anyone can withdraw it (say undo).`, 'edit held', [next], { thread: next.thread, edit: e.hash })
+      return next
+    }
+    const pending = (step.pendingEdits ?? []).find((x) => x.id === s.edit || (s.edit.length >= 6 && x.id.startsWith(s.edit)))
+    const rest = (step.pendingEdits ?? []).filter((x) => x !== pending)
+    if (s.say === 'confirm') {
+      if (!pending || person(st, pending.by) === person(st, e.author) || !st.isAgent(e.author)) return null
+      const stale = Object.entries(pending.fields).some(([k, v]) => (step[k] ?? null) !== v.old)
+      const rec = { id: pending.id, fields: pending.fields, by: pending.by, why: pending.why }
+      if (stale) return this.write(step, { pendingEdits: rest, edit: { ...rec, withdrawnBy: e.author, stale: true } }, 'edit withdrawn', e, heard) // the words changed since it was asked: ask again
+      return this.write(step, { ...apply(pending.fields, 'new'), pendingEdits: rest, edit: { ...rec, held: true, confirmedBy: e.author, confirmation: e.hash } }, 'edit confirmed', e, heard)
+    }
+    // undo: a held edit is withdrawn; an applied one is turned back, while the step still has its words
+    if (pending) return this.write(step, { pendingEdits: rest, edit: { id: pending.id, fields: pending.fields, by: pending.by, why: pending.why, withdrawnBy: e.author, because: why } }, 'edit withdrawn', e, heard)
+    const done = [...st.stepEdits.values()].find((x) => x.step === step.id && (x.id === s.edit || (s.edit.length >= 6 && x.id.startsWith(s.edit))))
+    if (!done || done.status !== 'applied' || done.undoes) return null // an undo is not undone again: ask for new words instead
+    if (Object.entries(done.fields).some(([k, v]) => (step[k] ?? null) !== v.new)) {
+      await this.speak(`${st.nameOf(e.author)}: ${this.label(step)} changed again after that edit, so it can’t be undone on its own. Undo the later edit first, or ask for new words (say edit).`, 'edit not undone', [step], { thread: step.thread, edit: done.id })
+      return null
+    }
+    const fields = Object.fromEntries(Object.entries(done.fields).map(([k, v]) => [k, { old: v.new, new: v.old }]))
+    return this.write(step, { ...apply(fields, 'new'), edit: { id: e.hash, undoes: done.id, fields, by: e.author, why } }, 'undone', e, heard)
   }
 
   /** A done-test for a held goal that has none: each check becomes a step. To change one later, propose it as a vote. */
@@ -608,7 +651,7 @@ export class Facilitator {
   // ---------- what the page and the agents read ----------
   view (now = Date.now()) {
     const st = this.st, n = (d) => (d ? st.nameOf(d) : null)
-    const card = (s) => ({ id: s.id, thread: s.thread, goal: s.goal, goalTitle: s.goal ? st.proposals.get(s.goal)?.title ?? null : null, title: s.title, done: s.done, state: s.state, owner: s.owner ?? null, ownerName: n(s.owner), offeredTo: s.offeredTo ?? null, offeredToName: n(s.offeredTo), waitingOn: s.waitingOn ? { ...s.waitingOn, name: n(s.waitingOn.who) } : null, test: s.test ?? null, from: s.from ?? null, result: s.result ?? null, evidence: s.evidence ?? [], checkedBy: s.checkedBy ?? null, checkedByName: n(s.checkedBy), aside: Boolean(s.aside), openedAt: s.openedAt, at: s.at, lastWordAt: s.lastWordAt ?? null, where: this.where(s) })
+    const card = (s) => ({ id: s.id, thread: s.thread, goal: s.goal, goalTitle: s.goal ? st.proposals.get(s.goal)?.title ?? null : null, title: s.title, done: s.done, state: s.state, owner: s.owner ?? null, ownerName: n(s.owner), offeredTo: s.offeredTo ?? null, offeredToName: n(s.offeredTo), waitingOn: s.waitingOn ? { ...s.waitingOn, name: n(s.waitingOn.who) } : null, test: s.test ?? null, from: s.from ?? null, result: s.result ?? null, evidence: s.evidence ?? [], checkedBy: s.checkedBy ?? null, checkedByName: n(s.checkedBy), aside: Boolean(s.aside), openedAt: s.openedAt, at: s.at, lastWordAt: s.lastWordAt ?? null, where: this.where(s), pendingEdits: (s.pendingEdits ?? []).map((x) => ({ ...x, byName: n(x.by) })) })
     const goals = this.heldGoals().map((g) => { const t = this.testOf(g.hash); return { hash: g.hash, title: g.title, test: t.map(card), checked: t.filter((s) => s.state === 'checked').length } })
     const twelve = now - 12 * 3600_000, inWindow = (t) => t && Date.parse(t) >= twelve
     const all = [...this.steps(), ...st.stepsDone]

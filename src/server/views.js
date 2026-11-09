@@ -187,6 +187,7 @@ export function read (ctx, path) {
   if (p === '/api/map') return mapView(ctx)
   if (p === '/api/sources') return ctx.sources.view()
   if (p === '/api/steps') return ctx.facilitator.view()
+  if (p === '/api/workshop') return ctx.workshop.view() // with every edit of the board's words
   if (p === '/api/resources') return resourcesView(ctx, q)
   if (p === '/api/messages') return messages(ctx, q)
   if (p === '/api/wait') return ctx.waits.wait(q)
