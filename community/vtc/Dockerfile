@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
  && useradd --system --uid 10001 --home /var/lib/vtc vtc && install -d -o vtc -g vtc -m 0700 /var/lib/vtc
 COPY --from=build /src/target/release/vtc /usr/local/bin/vtc
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-USER vtc
+# Starts as root on purpose: the entrypoint fixes the volume owner, then drops to uid 10001 (Security 12376 C).
 ENV HOME=/var/lib/vtc
 EXPOSE 8200
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

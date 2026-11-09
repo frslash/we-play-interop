@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
  && useradd --system --uid 10001 --home /var/lib/vta vta && install -d -o vta -g vta -m 0700 /var/lib/vta
 COPY --from=build /src/target/release/vta /usr/local/bin/vta
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-USER vta
+# Starts as root on purpose: the entrypoint fixes the volume owner, then drops to uid 10001 (Security 12376 C).
 ENV HOME=/var/lib/vta
 EXPOSE 8100
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
