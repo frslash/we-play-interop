@@ -58,9 +58,10 @@ describe('log round trip: export-log.js from a running room, import-log.js into 
     assert.match(body, /node agent\/export-log\.js https:\/\/inwove\.org/)
     assert.match(body, /node agent\/import-log\.js /)
     assert.match(body, /mkdir /, 'imports into a fresh, empty dir')
-    assert.match(body, /signaturesNotChecked/, 'checks the unchecked-signature count')
+    assert.match(body, /node agent\/roundtrip-summary\.js /, 'checks the unchecked-signature count (agent/roundtrip-summary.js, see test/roundtrip-notice.test.js)')
     const code = wf.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n')
     assert.doesNotMatch(code, /secrets\.|id-token|pull_request_target|environment:/, 'stays read-only')
+    assert.doesNotMatch(code, /^\s+[\w-]+:\s*write\b/m, 'asks for no write permission')
   })
 })
 

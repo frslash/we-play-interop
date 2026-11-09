@@ -6,6 +6,7 @@ import { appendFileSync, readFileSync } from 'node:fs'
 import { importExport } from '../src/server/export.js'
 import { openDb } from '../src/server/db.js'
 import { createResolver } from '../src/server/resolver.js'
+import { notice } from './roundtrip-summary.js'
 
 const [file, dataDir] = process.argv.slice(2)
 if (!file || (!dataDir && !process.env.DATABASE_URL)) { console.error('usage: node agent/import-log.js <export.json> <data-dir>'); process.exit(2) }
@@ -32,6 +33,10 @@ try {
       if (rep.problems.length > 10) lines.push(`- … and ${rep.problems.length - 10} more (see the step's log)`)
     }
     try { appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n') } catch (e) { console.error(`could not write the job summary: ${e.message}`) }
+  }
+  // On Actions, also a public notice annotation (readable without signing in, no write permission).
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    console.log(notice('log-roundtrip', `ok=false entries=${rep?.entries} head=${rep?.head?.seq}:${rep?.head?.hash} unchecked=${rep?.signaturesNotChecked} reason=${oneLine(err.message)}`))
   }
   process.exitCode = 1
 } finally { await db.close() }

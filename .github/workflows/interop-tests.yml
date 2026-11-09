@@ -67,11 +67,5 @@ jobs:
           rm -rf "$dir" && mkdir "$dir"
           node agent/import-log.js "$RUNNER_TEMP/room-export.json" "$dir" | tee "$RUNNER_TEMP/import.json"
       - name: summary (ok, entries, head seq and hash, unchecked signatures)
-        run: |
-          node -e '
-            const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))
-            const line = `ok=${r.ok} entries=${r.entries} head.seq=${r.head?.seq} head.hash=${r.head?.hash} signaturesNotChecked=${r.signaturesNotChecked}`
-            console.log(line)
-            require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, line + "\n")
-            if (r.ok !== true || r.signaturesNotChecked !== 0) process.exit(1)
-          ' "$RUNNER_TEMP/import.json"
+        # Also posts them as a notice annotation, public without signing in; no write permission needed.
+        run: node agent/roundtrip-summary.js "$RUNNER_TEMP/import.json"
