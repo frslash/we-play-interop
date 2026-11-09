@@ -22,6 +22,11 @@
     },
     "needAPerson": ["rules.json", "src/shared/rules.js", "src/server/actions.js", "src/server/log.js", "src/server/hosted.js", "src/server/never.js", "src/server/drafts.js", "src/shared/guard.js", "src/shared/types.js", "src/shared/chain.js", "src/shared/did.js", "src/shared/crypto.js", "sandbox/", ".github/", "package.json", "package-lock.json"]
   },
+  "pauses": {
+    "sidesNeeded": 3,
+    "openHours": 12,
+    "why": "Pausing someone by a vote of the room (proposed 2026-11-09): people from at least sidesNeeded different sides vote for it, more for than against, and the vote stays open openHours so the person affected can see it and answer. The target's own side doesn't count. Every pause says why and what they must show to come back; when those checks pass, it lifts by itself."
+  },
   "votes": {
     "closeAfterMinutes": 10
   },

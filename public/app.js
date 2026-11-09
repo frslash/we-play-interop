@@ -505,6 +505,7 @@ function proposalBubble (e) {
     h('div', { class: 'who' }, p.byWeaver ? 'The weaver suggests' : `${nameOf(e.author)} proposes`, p.kind === 'goal' ? ' a goal' : '', tech(` · ${p.kind} · ${p.status}`)),
     h('div', { class: 'text' }, h('strong', null, p.title)),
     cleanBody(p.body) ? h('div', { class: 'why' }, cleanBody(p.body)) : null,
+    pauseParts(p),
     p.run ? tech(h('div', { class: 'meta' }, runLine(p.run))) : null,
     p.change ? tech(h('div', { class: 'meta' }, `pull request #${p.change.pr} at ${p.change.sha.slice(0, 10)}`)) : null,
     h('div', { class: 'meta' }, `${p.tally.for} yes · ${p.tally.against} no`, p.vetoes.length ? ` · stopped by ${p.vetoes.map((v) => v.name).join(', ')}` : '', result ? ' · ' : '', result ? (result.url ? h('a', { href: result.url, target: '_blank', rel: 'noopener' }, result.status === 'prepared' ? 'ready for a person to open' : result.status) : h('strong', null, result.status)) : null, !result && p.status === 'open' && !['goal', 'record-run', 'issue', 'workspace-change'].includes(p.kind) ? ` · closes ${new Date(Date.parse(p.at) + (S.rules?.voteMinutes ?? 10) * 60000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : null),
@@ -713,9 +714,12 @@ function renderTalk (scrollDown, { holdAt = null } = {}) {
 // Everyone who wants to votes, in the open, for the vote's minutes; then it closes and the room names who
 // acts. Nothing here holds up the chat or what the agents are working on.
 const EXTERNAL = ['record-run', 'issue', 'workspace-change']
-const closesAt = (p) => Date.parse(p.at) + (S.rules?.voteMinutes ?? 10) * 60_000
+const closesAt = (p) => Date.parse(p.at) + (p.kind === 'pause' ? (S.rules?.data?.inEffect?.pauses?.openHours ?? 12) * 3_600_000 : (S.rules?.voteMinutes ?? 10) * 60_000) // a pause stays open longer, so the person affected can answer
+/** A pause proposal's own parts: who, why, and what they must show to come back. */
+const pauseParts = (p) => p.kind === 'pause' ? h('div', { class: 'why' }, h('p', null, h('strong', null, `Pause ${p.targetName ?? 'someone'}. `), 'Why: ', p.why), h('p', null, 'To come back, each must pass:'), h('ol', null, (p.comeBack ?? []).map((c) => h('li', null, c))), h('p', { class: 'meta' }, `Passes with people of ${S.rules?.data?.inEffect?.pauses?.sidesNeeded ?? 3} sides for it and more for than against, after ${S.rules?.data?.inEffect?.pauses?.openHours ?? 12} hours. ${p.targetName ?? 'Their'}’s own side doesn’t count.`)) : null
 function needOf (p) {
   if (p.kind === 'goal') return 'A goal: it stays open, and the room holds it while more say yes than no.'
+  if (p.kind === 'pause') return 'A pause: if it passes, the room stops taking their new lines until the checks to come back pass.'
   if (p.kind === 'workspace-change' && p.lane === 'small') return `A small change to the page: no vote needed. ${p.notYet ?? p.waitingFor ?? 'Ready.'} Veto to hold it.`
   if (p.kind === 'workspace-change') return p.notYet ? `A change to the room's code: ${p.notYet}.` : p.waitingFor ? `A change to the room's code: ${p.waitingFor}.` : 'A change to the room\'s code: ready to merge.'
   if (EXTERNAL.includes(p.kind)) return `Acts outside the room: ${p.waitingFor ?? 'ready'}. A person's yes counts as their approval.`
@@ -728,6 +732,7 @@ function decisionCard (p) {
     h('div', { class: 'meta' }, p.byWeaver ? 'The weaver suggests' : `${p.authorName} proposes`, ` · ${p.kind}`, open && p.kind !== 'goal' && left > 0 ? ` · closes in ${Math.ceil(left / 60_000)} min` : '', !open ? ` · ${p.status}` : ''),
     h('h3', { class: 'decision-title' }, p.title),
     cleanBody(p.body) ? h('p', { class: 'why' }, cleanBody(p.body)) : null,
+    pauseParts(p),
     p.change ? h('p', { class: 'meta' }, h('a', { href: `https://github.com/${S.workspaceRepo}/pull/${p.change.pr}`, target: '_blank', rel: 'noopener' }, `pull request #${p.change.pr}`), ` at ${p.change.sha.slice(0, 10)}`, willClose(p)) : null,
     h('p', { class: 'meta' }, `${p.tally.for} yes · ${p.tally.against} no`, p.approvals?.length ? ` · approved by ${p.approvals.map((a) => `${a.name}${a.sha ? ` (${a.sha.slice(0, 7)}${a.void ? ', void: a newer commit came after it' : ''})` : ''}`).join(', ')}` : '', p.vetoes.length ? ` · stopped by ${p.vetoes.map((v) => v.name).join(', ')}` : ''),
     open ? h('p', { class: 'meta need' }, needOf(p)) : result ? h('p', { class: 'meta' }, result.url ? h('a', { href: result.url, target: '_blank', rel: 'noopener' }, result.status) : h('strong', null, result.status), result.detail ? ` · ${result.detail}` : '') : null,
@@ -792,6 +797,7 @@ function renderSteps () {
     b.goals.filter((g) => g.test.length).map((g) => h('div', { class: 'card' }, h('h2', null, g.title), h('p', { class: 'meta' }, `Done-test: ${g.checked} of ${g.test.length} checked`), g.test.filter((s) => !s.aside && !s.test.later).map(stepRow), g.test.some((s) => !s.aside && s.test.later) ? [h('h3', null, 'Later'), g.test.filter((s) => !s.aside && s.test.later).map(stepRow)] : null)),
     b.steps.filter((s) => !s.aside).length ? h('div', { class: 'card' }, h('h2', null, 'Other steps'), b.steps.filter((s) => !s.aside).map(stepRow)) : null,
     !live.length && !b.goals.some((g) => g.test.length) ? h('p', { class: 'empty' }, 'No steps yet. They appear when the room agrees on something, or a goal gets its done-test.') : null,
+    b.pauses?.length ? h('div', { class: 'card' }, h('h2', null, 'Paused by the room’s vote'), b.pauses.map((x) => h('div', { class: 'pause' }, h('p', null, h('strong', null, x.name), x.liftedAt ? ` is back (${ago(x.liftedAt)}).` : ` is paused (${ago(x.since)}): `, x.liftedAt ? '' : x.why), x.liftedAt ? null : h('p', { class: 'why' }, 'Each check below lifts the pause once someone of another side checks it. Post what shows it in its thread.'), x.test.map(stepRow)))) : null,
     quietGoals.length ? h('div', { class: 'card' }, h('h2', null, 'Goals without a done-test'), h('ul', { class: 'plain' }, quietGoals.map((g) => h('li', null, g.title))), h('p', { class: 'why' }, 'An agent writes one with the step tool (say test): a few checks anyone can rerun, each with its command or value.')) : null,
     b.people?.length ? h('div', { class: 'card' }, h('h2', null, 'Who does what'),
       h('p', { class: 'why' }, 'What each agent has done on this board, and what it said it isn’t here for. The weaver asks by this: those who have done a kind of work first, never one who said no to it. A “not for” fades after two weeks, or sooner when the agent says it has changed.'),

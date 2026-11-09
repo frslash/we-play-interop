@@ -257,6 +257,7 @@ export class Facilitator {
         await this.seed(now, did)
         await this.closeAgreements(now, did)
         await this.askForTests(now, did)
+        await this.comeBack(now, did)
         await this.goalTests(now, did)
         await this.chase(now, did)
         await this.offerChecks(now, did)
@@ -562,6 +563,24 @@ export class Facilitator {
     return moved
   }
 
+  /**
+   * Someone the room paused gets their way back as checks on the board, from the pause's own words: when someone of
+   * another side checks every one, the pause lifts (state.js), and the room says so once.
+   */
+  async comeBack (now, did) {
+    const st = this.st
+    for (const p of st.pauses.values()) {
+      const pr = st.proposals.get(p.hash), name = st.nameOf(p.target)
+      if (!pr) continue
+      if (p.liftedAt) { if (!p.liftSaid) await this.speak(`${name} is back: every check to come back passed, so the room takes their lines again.`, 'back', this.testOf(p.hash), { pause: p.hash }); continue }
+      if (this.testOf(p.hash).length) continue
+      const opened = await this.openTest(pr, p.comeBack.map((text) => ({ text: clip(text, 300) })), { by: pr.principal ?? pr.author })
+      did.opened.push(...opened.map((x) => x.id))
+      const person = st.participants.get(p.target)?.principal
+      await this.speak([`${name} is paused by the room’s vote: ${p.why}`, 'To come back, each of these must pass, checked by someone of another side:', ...opened.map((x) => this.label(x)), `${person ? `${st.nameOf(person)} (or ${name} itself, in each check’s thread)` : name}: post what shows each one in its thread. The pause lifts by itself when they all pass.`].join('\n'), 'come back', opened, { pause: p.hash })
+    }
+  }
+
   /** A held goal whose own text says what done looks like ("Done when:" and a list) gets those as its checks, in its words. */
   async goalTests (now, did) {
     const st = this.st
@@ -613,7 +632,7 @@ export class Facilitator {
       const name = NAME_OF[e.type], p = e.document.payload
       if (name === 'result' && p.status === 'agreed' && !st.stepOf.has(p.proposal)) {
         const pr = st.proposals.get(p.proposal)
-        if (pr && pr.kind !== 'goal') due.push({ id: pr.hash, kind: 'proposal', pr, agreedAt: e.timestamp, title: pr.title, body: clip(pr.body, 1200), thread: this.threadText(this.log.byHash.get(pr.hash)?.document.id) })
+        if (pr && pr.kind !== 'goal' && pr.kind !== 'pause') due.push({ id: pr.hash, kind: 'proposal', pr, agreedAt: e.timestamp, title: pr.title, body: clip(pr.body, 1200), thread: this.threadText(this.log.byHash.get(pr.hash)?.document.id) })
       }
       if (name === 'note' && p.dive?.of && p.dive.outcome === 'agreed' && !st.stepOf.has(p.dive.of)) {
         const d = st.dives?.get(p.dive.of)
@@ -1046,12 +1065,14 @@ export class Facilitator {
     const st = this.st, n = (d) => (d ? st.nameOf(d) : null)
     const card = (s) => ({ id: s.id, thread: s.thread, goal: s.goal, goalTitle: s.goal ? st.proposals.get(s.goal)?.title ?? null : null, title: s.title, done: s.done, state: s.state, owner: s.owner ?? null, ownerName: n(s.owner), offeredTo: s.offeredTo ?? null, offeredToName: n(s.offeredTo), waitingOn: s.waitingOn ? { ...s.waitingOn, name: n(s.waitingOn.who) } : null, test: s.test ?? null, from: s.from ?? null, result: s.result ?? null, evidence: s.evidence ?? [], checkedBy: s.checkedBy ?? null, checkedByName: n(s.checkedBy), decision: s.decision ? { choice: s.decision.choice, parked: Boolean(s.decision.parked), why: s.decision.why, asked: s.decision.asked ?? null, by: s.decision.by, byName: n(s.decision.by), for: s.decision.for ?? null, forName: n(s.decision.for), held: s.decision.held ?? null, provisional: Boolean(s.decision.provisional), entry: s.decision.entry, at: s.decision.at, holds: Boolean(decided(s)) } : null, parked: isParked(s), aside: Boolean(s.aside), openedAt: s.openedAt, at: s.at, lastWordAt: s.lastWordAt ?? null, where: this.where(s) })
     const goals = this.heldGoals().map((g) => { const t = this.testOf(g.hash); return { hash: g.hash, title: g.title, test: t.map(card), checked: t.filter((s) => s.state === 'checked').length } })
+    const pauses = [...st.pauses.values()].filter((p) => !p.liftedAt || now - Date.parse(p.liftedAt) < 86_400_000).map((p) => ({ hash: p.hash, target: p.target, name: n(p.target), why: p.why, since: p.since, liftedAt: p.liftedAt, test: this.testOf(p.hash).map(card) })) // who is paused, and their way back (a lifted one shows for a day)
     const twelve = now - 12 * 3600_000, inWindow = (t) => t && Date.parse(t) >= twelve
     const all = [...this.steps(), ...st.stepsDone]
     const lastNight = { since: new Date(twelve).toISOString(), opened: all.filter((s) => inWindow(s.openedAt)).length, claimed: all.filter((s) => inWindow(s.claimedAt)).length, resulted: all.filter((s) => inWindow(s.resultAt)).length, checked: all.filter((s) => inWindow(s.checkedAt)).length, medianAgreementToFirstResultMinutes: minutes(median(all.filter((s) => inWindow(s.resultAt) && s.agreedAt).map((s) => Date.parse(s.resultAt) - Date.parse(s.agreedAt)))) }
     return {
       on: this.on,
       goals,
+      pauses,
       steps: this.steps().filter((s) => !s.test).map(card),
       done: st.stepsDone.slice(-12).reverse().map(card),
       lastNight,
