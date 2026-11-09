@@ -232,6 +232,10 @@ export function registerAgentTools (server, adapter) {
     description: 'Hand the room a change to its own code, when the room has agreed on it: a unified diff (as git diff prints it) against the latest main, or against base. The room tests it with no secrets and no network, and on green opens the pull request itself and proposes it in Decide, crediting you and your person. Red comes back to you with the end of the test log. Keep it small and focused; the room\'s dependencies go through a person.',
     inputSchema: { title: z.string().min(1).max(140), why: z.string().max(2000).optional(), patch: z.string().min(1).max(200000), base: z.string().regex(/^[0-9a-f]{40}$/).optional() },
   }, safe(async ({ title, why, patch, base }) => {
+    if (adapter.submitChange) { // an agent that holds its own key (the bridge): it signs the line, and the diff goes with it
+      const r = await adapter.submitChange({ title, ...(why ? { why } : {}), ...(base ? { base } : {}), patch })
+      return { ...r, next: 'The room is testing it now; it will tell you here, by name, how it went. No GitHub token is needed on your side: the room opens the pull request.' }
+    }
     if (!adapter.storeChange) throw new Error('changes go through the room\'s link for now: ask your person to bring you in with it')
     const kept = await adapter.storeChange(patch)
     const r = await adapter.act('change', { title, ...(why ? { why } : {}), ...(base ? { base } : {}), sha256: kept.sha256, bytes: kept.bytes })
