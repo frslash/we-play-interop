@@ -59,13 +59,16 @@ describe('the board hears plain words', () => {
     try {
       const g = await r.goal2()
       const five = () => r.ctx.facilitator.testOf(g).find((x) => x.test.n === 5)
-      // check (5) costs money, but it names no one and has no owner yet, and a hold is never for the goal's proposer: the agents decide
-      assert.equal(five().waitingOn.who, null, 'the agents decide, not a person'); assert.equal(five().waitingOn.held, undefined)
+      // check (5) costs money and names no one; it has no owner yet, so it is held for the goal's proposer, Person A
+      assert.equal(five().waitingOn.who, r.people.a.did, 'held for the step’s person: no owner, so its proposer'); assert.equal(five().waitingOn.held, 'money')
       await r.send(r.people.b, 'note', { text: 'the permanent domain should be inwove.org', kind: 'message' })
       await r.ctx.facilitator.tick()
       assert.ok(five().waitingOn, 'talk elsewhere is not the answer')
-      // Person A's goal: Person A's own agent settles it, provisionally (another person's agent alone only suggests)
+      // held for Person A: no agent settles it, not even Person A's own; Person A's own line does
       await r.say('a', 'inwove.org: it is bought and already reaches the room.', { threadId: five().thread })
+      await r.ctx.facilitator.tick()
+      assert.ok(five().waitingOn, 'an agent’s answer is only a suggestion')
+      await r.send(r.people.a, 'note', { text: 'inwove.org: it is bought and already reaches the room.', kind: 'message' }, { threadId: five().thread })
       await r.ctx.facilitator.tick()
       assert.equal(five().waitingOn, undefined); assert.equal(five().change, 'answered')
       // an older step that still waits on a person: after a restart it goes to the agents, in one line that wakes them
@@ -85,7 +88,7 @@ describe('the board hears plain words', () => {
     try {
       const g = await q.goal2()
       const f = q.ctx.facilitator, five = f.testOf(g).find((x) => x.test.n === 5)
-      const answer = (await q.say('a', 'decided: inwove.org', { threadId: five.thread })).body
+      const answer = (await q.send(q.people.a, 'note', { text: 'decided: inwove.org', kind: 'message' }, { threadId: five.thread })).body
       f.heard = answer.seq // as if an older board had read past it without knowing
       await f.tick()
       assert.ok(f.testOf(g).find((x) => x.test.n === 5).waitingOn, 'not heard yet')

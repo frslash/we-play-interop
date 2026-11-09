@@ -315,16 +315,16 @@ export class Facilitator {
   }
 
   /** A choice that touches a person's keys, money, time or name is held for that person: { who, held }, else null. */
-  // A person the choice itself names, else the step's owner's person (held for them even when they also proposed it;
-  // with no owner, never the proposer). Never whoever a "blocked"
-  // line points at: a line can't send a hold elsewhere.
+  // A person the choice itself names, else the step's own person: its owner's, else (with no owner) its proposer's.
+  // The hold stays when the owner is also the proposer. Never whoever a "blocked" line points at: a line can't send
+  // a hold elsewhere.
   holdOf (step, decision) {
     const what = touches(decision)
     if (!what) return null
     const st = this.st, named = namedPerson(st, decision)
-    // a choice that names a person is held for them; one that names no one, for the step's owner, never its proposer
-    const who = named ?? ownerPerson(st, step)
-    if (!who) return null // no person to hold it for: it stays with the agents (the hold stays when the owner is also the proposer)
+    // a choice that names a person is held for them; one that names no one, for the step's person (owner, else proposer)
+    const who = named ?? stepPerson(st, step)
+    if (!who) return null // no person at all to hold it for: it stays with the agents
     return { who, held: what }
   }
 

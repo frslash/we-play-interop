@@ -93,7 +93,7 @@ describe('a choice that touches a person is held for them', () => {
       const f = r.ctx.facilitator
       const p = await blockOn(r, 'Publish the room’s DID document', `${ASK}?`)
       let s = r.stepFrom(p)
-      assert.deepEqual({ who: s.waitingOn.who, held: s.waitingOn.held }, { who: r.people.a.did, held: 'keys' }, 'held for the step’s owner’s person, never its proposer')
+      assert.deepEqual({ who: s.waitingOn.who, held: s.waitingOn.held }, { who: r.people.a.did, held: 'keys' }, 'held for the step’s owner’s person, before its proposer')
       const ask = r.said('decide').at(-1).payload.text
       assert.match(ask, /^A choice held for Person A: Which key signs/); assert.match(ask, /can’t settle it/)
       // another person's agent answers, in the thread and through the round's judgment: nothing is decided

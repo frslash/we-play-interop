@@ -1,6 +1,6 @@
 // Step 189c1171 (changes #59): an unheld choice is settled by a person, or provisionally by the step's own person's
 // agent (any person can reopen it); an agent of another person alone can't settle it. A choice that names no one is
-// held for the step's owner's person, also when that person proposed it. Only a clear disagreement, or a person's
+// held for the step's owner's person, also when that person proposed it (with no owner, for its proposer: test/held-no-owner.test.js). Only a clear disagreement, or a person's
 // plain new answer, reopens a decision, a limited number of times for agents (src/server/facilitator.js).
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -132,14 +132,14 @@ describe('a held choice', () => {
     } finally { await r.stop() }
   })
 
-  test('a choice that names no one is held for the step’s owner, also when the owner proposed it; one that names a person is held for them', async () => {
+  test('a choice that names no one is held for the step’s person (owner, else proposer), also when the owner proposed it; one that names a person is held for them', async () => {
     const r = await room()
     try {
       const f = r.ctx.facilitator, p = await r.agreeForBuilder('Publish the room’s DID document') // proposed for Person B
       assert.deepEqual(f.holdOf({ owner: r.builder, from: p }, KEY), { who: r.people.a.did, held: 'keys' })
       assert.deepEqual(f.holdOf({ owner: r.agents.b.did, from: p }, KEY), { who: r.people.b.did, held: 'keys' }, 'the owner is the proposer’s own agent: the hold stays, for Person B')
       assert.deepEqual(f.holdOf({ owner: r.people.b.did, from: p }, KEY), { who: r.people.b.did, held: 'keys' }, 'the owner is the proposer themself: the hold stays')
-      assert.equal(f.holdOf({ from: p }, KEY), null, 'no owner: never the proposer')
+      assert.deepEqual(f.holdOf({ from: p }, KEY), { who: r.people.b.did, held: 'keys' }, 'no owner: held for the proposer')
       assert.deepEqual(f.holdOf({ owner: r.builder, from: p }, 'whether Person C pays for the domain'), { who: r.people.c.did, held: 'money' })
       assert.equal(f.holdOf({ owner: r.builder, from: p }, CARRIER), null, 'touches nobody')
     } finally { await r.stop() }
