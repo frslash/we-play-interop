@@ -187,6 +187,14 @@ describe('the workspace, end to end', () => {
   })
   after(async () => { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) })
 
+  test('a document over the 64 KB cap gets a real 413 with the usual error body', async () => {
+    const r = await fetch(`${base}/api/entries`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pad: 'x'.repeat(70_000) }) })
+    assert.equal(r.status, 413)
+    const e = await r.json()
+    assert.equal(e.payload.code, 'malformedRequest')
+    assert.match(e.payload.message, /64 KB/)
+  })
+
   test('genesis and the first board snapshot are in the log', async () => {
     const { entries } = await get('/api/log')
     assert.deepEqual(entries.map((e) => e.type), [TYPES.genesis, TYPES.score])

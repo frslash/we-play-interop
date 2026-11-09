@@ -227,9 +227,14 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     res.writeHead(status, { 'content-type': json ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8', 'access-control-allow-origin': '*', ...headers })
     res.end(json ? JSON.stringify(body, null, 2) : body)
   }
+  /** A document's body, at most 64 KB: the cap keeps one careless or hostile sender from filling the room's memory, so past it nothing more is kept, the rest is read and thrown away, and the caller answers a real 413 (destroying the socket would swallow that answer). */
   const readBody = (req) => new Promise((resolve, reject) => {
-    let size = 0; const chunks = []
-    req.on('data', (c) => { size += c.length; if (size > MAX_BODY) { reject(new TaskError('malformedRequest', 'a document is at most 64 KB', { status: 413 })); req.destroy() } else chunks.push(c) })
+    let size = 0, over = false; const chunks = []
+    req.on('data', (c) => {
+      size += c.length
+      if (over) return
+      if (size > MAX_BODY) { over = true; chunks.length = 0; reject(new TaskError('malformedRequest', 'a document is at most 64 KB', { status: 413 })) } else chunks.push(c)
+    })
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
     req.on('error', reject)
   })
