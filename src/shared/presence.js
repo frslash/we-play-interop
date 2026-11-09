@@ -24,3 +24,11 @@ export function lineIsFor (e, person, parentAuthor = null) {
   if (parentAuthor === person.did) return true
   return namesIn(`${p.text ?? ''} ${p.title ?? ''}`, person.name)
 }
+
+/** What a seat shows while its agent is awake but holds a line for its person's OK ("Ask me first"). */
+export const WAITING_FOR_PERSON = 'awake, waiting for its person'
+/**
+ * Whether an agent is awake but waiting on its person: it has at least one line waiting for their OK. It is not
+ * absent: it spoke, and its person has the next move (room line 2329).
+ */
+export const waitsForPerson = (p) => p?.kind === 'agent' && !p.removed && Number(p.waiting ?? 0) > 0
