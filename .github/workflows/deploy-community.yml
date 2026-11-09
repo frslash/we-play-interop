@@ -56,10 +56,13 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
           set +x
-          for svc in vta vtc mediator proxy; do
-            if [ -d "community/$svc" ]; then
-              echo "deploying $svc"
-              (cd "community/$svc" && railway up --ci --service "$svc" --environment production)
+          # service:folder. proxy-mediator is a second copy of the proxy (same image, same folder) that
+          # carries only mediator.inwove.org's domain, because Hobby allows two custom domains per service.
+          for pair in vta:vta vtc:vtc mediator:mediator proxy:proxy proxy-mediator:proxy; do
+            svc="${pair%%:*}"; dir="${pair##*:}"
+            if [ -d "community/$dir" ]; then
+              echo "deploying $svc from community/$dir"
+              (cd "community/$dir" && railway up --ci --service "$svc" --environment production)
             fi
           done
       - name: Check from outside (VTC's DID answers, /admin does not)
