@@ -144,6 +144,16 @@ test('postTask names the task in a Trust-Task header, as OpenVTC\'s client does 
   assert.equal(new Headers(calls[2].headers).has('Trust-Task'), false, 'a type that is not one printable line is never put in a header')
 })
 
+test('postTask keeps Retry-After when a 429 or 503 comes with a body', async () => {
+  const req = signedTask(person, { type: JOIN, recipient: service.did })
+  const refusal = refusalTo(req, { code: 'unavailable', message: 'slow down' }, service.did)
+  const with429 = await postTask('https://vtc.example', req, { fetch: async () => new Response(JSON.stringify(refusal), { status: 429, headers: { 'retry-after': '7' } }) })
+  assert.equal(with429.kind, 'error'); assert.equal(with429.code, 'unavailable'); assert.equal(with429.retryAfter, '7')
+  assert.equal((await postTask('https://vtc.example', req, { fetch: async () => new Response('busy', { status: 503, headers: { 'retry-after': '30' } }) })).retryAfter, '30', 'a body that is not JSON keeps it too')
+  assert.equal((await postTask('https://vtc.example', req, { fetch: async () => new Response(null, { status: 429, headers: { 'retry-after': '5' } }) })).retryAfter, '5')
+  assert.equal('retryAfter' in (await postTask('https://vtc.example', req, { fetch: async () => new Response(JSON.stringify(responseTo(req, {}, service.did)), { status: 200 }) })), false, 'nothing is added when there is no header')
+})
+
 test('a service is found in a DID document by its type, never by its #id', () => {
   const doc = { service: [{ id: '#whatever', type: 'LinkedDomains', serviceEndpoint: 'https://a.example/' }, { id: '#x', type: 'TrustTaskHTTPS', serviceEndpoint: 'https://vtc.example/v1' }, { id: '#d', type: 'DIDCommMessaging', serviceEndpoint: [{ uri: 'did:webvh:abc:mediator.example', accept: ['didcomm/v2'] }] }, { id: '#t', type: ['TSPTransport'], serviceEndpoint: { uri: 'did:webvh:abc:mediator.example' } }] }
   assert.equal(serviceEndpoint(doc, 'TrustTaskHTTPS'), 'https://vtc.example/v1')

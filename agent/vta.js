@@ -41,10 +41,9 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
  */
 export async function sendTask (base, doc, { fetch: f = globalThis.fetch, bearer, sleep = pause, counts } = {}) {
   for (let turn = 0; ; turn++) {
-    let header = null
-    const r = await postTask(base, doc, { bearer, fetch: async (...a) => { const res = await f(...a); header = res.headers.get('retry-after'); return res } })
+    const r = await postTask(base, doc, { bearer, fetch: f }) // postTask keeps Retry-After, with a body or without
     if (r.status !== 429 && r.kind !== 'in-flight') return r
-    const ms = retryMs(header) ?? 1000
+    const ms = retryMs(r.retryAfter) ?? 1000
     if (counts) counts.slowDowns++
     if (turn >= SLOW_DOWN_TURNS || ms > MAX_WAIT_MS) return { ...r, kind: 'slow-down', retryAfterMs: ms }
     await sleep(ms)

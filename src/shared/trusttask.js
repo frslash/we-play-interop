@@ -209,10 +209,11 @@ export async function postTask (base, doc, { fetch: f = globalThis.fetch, bearer
   const url = `${String(base).replace(/\/+$/, '')}/trust-tasks`
   const type = typeof doc?.type === 'string' && /^[\x21-\x7e]{1,300}$/.test(doc.type) ? doc.type : null // a header value: printable, one line
   const res = await f(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json', ...(trustTaskHeader && type ? { 'trust-task': type } : {}), ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) }, body: JSON.stringify(doc), signal: AbortSignal.timeout(timeoutMs) })
-  const text = await res.text()
-  if (!text) return { status: res.status, reply: null, kind: res.status === 202 ? 'in-flight' : res.status === 204 ? 'done-no-body' : res.status === 429 ? 'slow-down' : 'empty', retryAfter: res.headers.get('retry-after') }
-  let reply; try { reply = JSON.parse(text) } catch { return { status: res.status, reply: null, kind: 'not-json', text: text.slice(0, 300) } }
-  return { status: res.status, reply, ...classify(reply, doc.type) }
+  const text = await res.text(), wait = res.headers.get('retry-after')
+  const later = wait ? { retryAfter: wait } : {} // a 429 or 503 may carry a body too (a signed refusal): the header still says how long to wait
+  if (!text) return { status: res.status, reply: null, kind: res.status === 202 ? 'in-flight' : res.status === 204 ? 'done-no-body' : res.status === 429 ? 'slow-down' : 'empty', retryAfter: wait }
+  let reply; try { reply = JSON.parse(text) } catch { return { status: res.status, reply: null, kind: 'not-json', text: text.slice(0, 300), ...later } }
+  return { status: res.status, reply, ...classify(reply, doc.type), ...later }
 }
 
 /** The service endpoint of one type in a DID document (matched by `type`, never by the entry's #id), as a string. */
