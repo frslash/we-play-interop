@@ -44,7 +44,10 @@ const MINUTE = 60_000
 // Answers kept for a redelivery, all together: about 4 MB of the room's memory (a small container). Past it an
 // answer is not kept, and a redelivery of its document gets 204: done, nothing to send again.
 const MAX_RECORDED_BYTES = 4 * 1024 * 1024
-const PURPOSES = ['authentication', 'assertionMethod'] // a request, or something a person attests; never keyAgreement
+// a request, or something a person attests; never keyAgreement. Upstream also accepts capabilityInvocation and
+// capabilityDelegation (vta-sdk/src/trust_task_proof/purpose.rs); the room does not, on purpose: nothing here takes
+// a capability, and every purpose it accepts is one more way for a proof to be read as something it was not meant for.
+const PURPOSES = ['authentication', 'assertionMethod']
 const EXTENDED = /^[a-z][a-z0-9]*(-[a-z0-9]+)*(\/[a-z][a-z0-9]*(-[a-z0-9]+)*)*:[a-z][a-zA-Z0-9_]*$/ // a task's own code, "<family>:<local>", in the form RLTP's reader holds one to (lib/src/adapters/vti-mediator.ts)
 const OPAQUE = 'the room could not complete this task; nothing was wrong with the document itself' // never the cause: that goes to the host's log
 /**
@@ -256,6 +259,9 @@ export class Door {
       if (!(err instanceof RangeError)) throw err
       v = { ok: false, code: 'malformedRequest', message: 'the document is nested too deeply to check its proof' } // thousands of levels inside 64 KiB: nothing honest looks like that
     }
+    // A proof that is present and does not verify is proofInvalid (422) here; upstream answers permissionDenied (403)
+    // for it, because its verifier's failure is an Unauthorized error (vti-trust-task-server/src/verify.rs, mapped by
+    // reject.rs app_error_to_reject). The code is what a client reads; the room keeps the more exact one.
     if (!v.ok) return this.#refuse(doc, v, as)
     const signer = v.signer
 
@@ -333,7 +339,10 @@ export function serveRoomTasks (door, ctx) {
   // Which tasks the room serves, and the window it accepts documents in. The window is read from the same numbers
   // the door checks with, so what is said cannot be wider than what is done. Request { patterns } (none: everything);
   // answer { supportedTypes, acceptanceWindow, frameworkVersion } (vti-common/src/trust_task/discovery.rs). Only to
-  // callers the room can identify, as upstream: every document here is signed.
+  // callers the room can identify: the room refuses an unsigned document for every type, on purpose, which is
+  // stricter than upstream (it accepts a proofless document unless the task's own policy needs a proof, and ping 0.2
+  // does not: vti-trust-task-server/src/spine.rs, the "No proof" branch). The reason is at the top of this file: the
+  // rate limit is per signer.
   const discovery = (horizon) => ({ payload }) => {
     const patterns = payload.patterns ?? []
     if (!Array.isArray(patterns) || !patterns.every((p) => typeof p === 'string')) throw new Refusal('malformedRequest', 'payload: patterns is a list of strings ("*", "<prefix>/*", or one whole slug such as messaging/ping/0.2)')
