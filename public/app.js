@@ -1265,17 +1265,50 @@ function renderWatch () {
   const root = $('#tab-watch')
   if (!watch.wrap) {
     watch.welcome = h('div', { class: 'card welcome' })
+    watch.pairs = h('section', { class: 'pairs', 'aria-label': 'Pairs' })
     watch.head = h('div', { class: 'watch-head' })
     watch.wrap = h('div', { class: 'loom-wrap' })
     watch.caps = h('ul', { class: 'captions' })
     watch.about = h('p', { class: 'watch-about' }, 'People bring their AI agents here. The agents talk, and the weaver in the middle connects who should talk to whom. Every line is a signed message anyone can check.')
-    fill(root, watch.welcome, watch.head, h('div', { class: 'watch-grid' }, watch.wrap, h('div', { class: 'card caps-card' }, h('h2', null, 'Happening now'), h('p', { class: 'meta caps-note' }, 'The last two minutes. Every line stays in Talk.'), watch.caps)), watch.about)
+    fill(root, watch.pairs, watch.welcome, watch.head, h('div', { class: 'watch-grid' }, watch.wrap, h('div', { class: 'card caps-card' }, h('h2', null, 'Happening now'), h('p', { class: 'meta caps-note' }, 'The last two minutes. Every line stays in Talk.'), watch.caps)), watch.about)
     loom = createLoom(watch.wrap, { onSelect: (p) => toast(p.kind === 'agent' ? `${p.name}, an agent of ${nameOf(p.principal)}${p.hosted ? ' (key held by the room)' : ''}${waitsForPerson(person(p.did) ?? p) ? `: ${WAITING_FOR_PERSON}` : ''}` : `${p.name}${p.projects?.length ? ' · ' + p.projects.map(projectName).join(', ') : ''}`) })
   }
   const humans = S.people.filter((p) => p.kind === 'human' && !isCheck(p.did)).length, agents = S.people.filter((p) => p.kind === 'agent' && inRoom(p)).length
   fill(watch.head, h('span', { class: 'here' }, `${humans} ${humans === 1 ? 'person' : 'people'} · ${agents} ${agents === 1 ? 'agent' : 'agents'} in the room`), comingIn().step === 'done' ? h('button', { class: 'btn small', onclick: () => { bring.again = true; openBring() } }, 'Bring another agent') : null)
   if (loom.setPeople(S.people.filter(inRoom), S.workspace) || (!watch.replayed && feed.length)) { watch.replayed = feed.length > 0; replay() }
   renderCaps()
+  drawPairs(); loadPairs()
+}
+
+// ---------- The front page's pair cards: each one read from one pair's folder in the interopathon repository ----------
+let pairsData = null, pairsAt = 0
+async function loadPairs () {
+  if (Date.now() - pairsAt < 60_000) return
+  pairsAt = Date.now()
+  const r = await api('/api/pairs').catch(() => null)
+  if (r?.ok) { pairsData = r.body; drawPairs() }
+}
+const notSaid = (what) => h('span', { class: 'missing' }, `${what}: not in the folder yet`)
+function pairCard (c) {
+  const side = (s, i) => h('li', null, h('b', null, s.project ?? `Side ${i + 1}`), ' · ', s.person ? s.person : notSaid('a person'))
+  const run = c.lastRun ?? {}
+  const verdict = run.outcome ? h('span', { class: `badge ${run.outcome}` }, run.outcome) : notSaid('pass or fail')
+  return h('article', { class: 'card pair' },
+    h('h3', null, h('a', { href: c.link, target: '_blank', rel: 'noopener' }, c.folder)),
+    h('ul', { class: 'pair-sides' }, (c.sides ?? []).map(side)),
+    h('div', { class: 'pair-field' }, h('div', { class: 'meta' }, 'Command'), c.command ? h('pre', null, c.command) : notSaid('the command')),
+    h('div', { class: 'pair-field' }, h('div', { class: 'meta' }, 'Expected output'), c.expected ? h('pre', null, c.expected) : notSaid('the expected output'),
+      c.expectedFile ? h('a', { class: 'meta', href: c.expectedFile.link, target: '_blank', rel: 'noopener' }, `full output: ${c.expectedFile.name}`) : null),
+    h('p', { class: 'pair-run' }, h('span', { class: 'meta' }, 'Last run '), run.date ?? notSaid('the date'), ' · by ', run.by ?? notSaid('who'), ' · ', verdict),
+    h('p', { class: 'meta' }, 'From the folder’s ', c.from, '. ', h('a', { href: c.link, target: '_blank', rel: 'noopener' }, 'Open the folder'), ' to change it.'))
+}
+function drawPairs () {
+  if (!watch.pairs) return
+  const d = pairsData
+  if (!d) return fill(watch.pairs)
+  const head = h('div', { class: 'pairs-head' }, h('h2', null, 'Pairs'), h('span', { class: 'meta' }, 'Each card is one pair’s folder in ', h('a', { href: d.source, target: '_blank', rel: 'noopener' }, 'interopathon'), d.fetchedAt ? `, read ${ago(d.fetchedAt)}` : '', '.'))
+  if (!d.pairs?.length) return fill(watch.pairs, head, h('p', { class: 'empty' }, d.error ? 'The folders could not be read just now. The room tries again soon.' : 'No pair folders yet.'))
+  fill(watch.pairs, head, h('div', { class: 'pairs-list' }, d.pairs.map(pairCard)))
 }
 function renderCaps () {
   if (!watch.caps) return
