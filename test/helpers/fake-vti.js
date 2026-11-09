@@ -30,6 +30,13 @@
 //                                expectedVersion cases and their words, the epoch a sealed record must name, the
 //                                version a body was stored at kept as sealed.version) and list_records_page (by
 //                                version, a cursor "v<version>" only when more remain)
+//   member tasks                 keys/sign-document/0.1 and keys/list/0.2 (vti-specs-core/trust-tasks/keys/*/*.bundle.json; handlers
+//                                vta-service/src/trust_tasks/keys.rs, operations/keys.rs sign_document and the comment above it),
+//                                rooms/keys/key-package/0.2 and rooms/keys/welcome/0.1 (vti-specs-rooms bundles; handlers
+//                                vta-service/src/trust_tasks/room_group.rs handle_key_package_v0_2 and handle_welcome),
+//                                vault/credentials/{receive/0.1, query/0.1, get/0.2} (vti-specs-core/trust-tasks/vault/credentials;
+//                                served trust_tasks/mod.rs), the community types of rooms/keys/act (operations/room_act.rs
+//                                COMMUNITY_TYPES_0_8, trust_tasks/room_act.rs complete_offer, item 10)
 //   who may do what              vti-rooms/src/authz.rs as reported in _reads/vti-rooms.md: the presenter is the
 //                                document's signer; { membership, authority: [leaf first … issued by the room] }
 // Where it is NOT the real thing, on purpose:
@@ -44,7 +51,8 @@ import http from 'node:http'
 import { canonicalize, multibase } from '../../src/shared/crypto.js'
 import { newIdentity, resolveDidKey } from '../../src/shared/did.js'
 import { keyFromDidDocument } from '../../src/shared/chain.js'
-import { sign, verifySignature } from '../../src/shared/proof.js'
+import { ed25519 } from '../../src/shared/crypto.js'
+import { proofConfig, sign, signingInput, verifySignature } from '../../src/shared/proof.js'
 import { SPEC, checkTask, instant, parseType, refusalTo, responseTo, signTask, statusFor, verifyTask } from '../../src/shared/trusttask.js'
 
 const b64u = (b) => Buffer.from(b).toString('base64url')
@@ -75,9 +83,13 @@ const T = (family, v) => `${SPEC}rooms/${family}/${v}`
 const ACT_0_8 = { [T('records/put', '0.1')]: 'write', [T('records/put', '0.2')]: 'write', [T('records/put', '0.3')]: 'write', [T('records/get', '0.1')]: 'read', [T('records/get', '0.2')]: 'read', [T('records/list', '0.1')]: 'read', [T('records/list', '0.2')]: 'read', [T('records/list', '0.3')]: 'read', [T('records/list', '0.4')]: 'read', [T('records/list', '0.5')]: 'read', [T('records/curate', '0.1')]: 'curate', [T('info', '0.1')]: 'read', [T('info', '0.2')]: 'read', [T('info', '0.3')]: 'read', [T('epoch/chain', '0.2')]: 'read', [T('epoch/commits', '0.1')]: 'read' }
 const ACT_0_11 = { ...ACT_0_8, [T('records/put', '0.4')]: 'write', [T('records/put', '0.5')]: 'write', [T('records/list', '0.6')]: 'read', [T('records/get', '0.3')]: 'read' }
 const ACT_TABLES = { 0.8: ACT_0_8, 0.9: { ...ACT_0_8, [T('records/put', '0.4')]: 'write' }, '0.10': { ...ACT_0_8, [T('records/put', '0.4')]: 'write' }, 0.11: ACT_0_11, 0.12: { ...ACT_0_11, [T('watch', '0.1')]: 'read' } }
+// The community types rooms/keys/act completes with no presentation and with `issuer` required (operations/room_act.rs COMMUNITY_TYPES_0_8; 0.10 adds memberships/list 0.2).
+const V = (family, v) => `${SPEC}vtc/rooms/${family}/${v}`
+const COMMUNITY_0_8 = [V('offers/list', '0.1'), V('offers/list', '0.2'), V('offers/list', '0.3'), V('offers/list', '0.4'), V('offers/accept', '0.1'), V('memberships/list', '0.1')]
+const COMMUNITY = { 0.8: COMMUNITY_0_8, 0.9: COMMUNITY_0_8, '0.10': [...COMMUNITY_0_8, V('memberships/list', '0.2')], 0.11: [...COMMUNITY_0_8, V('memberships/list', '0.2')], 0.12: [...COMMUNITY_0_8, V('memberships/list', '0.2')] }
 const BODY_MEMBERS = ['roomId', 'key', 'version', 'author', 'title', 'description', 'body', 'tags', 'basis', 'confidence', 'evidence', 'validFor', 'validUntil', 'file', 'kind', 'inReplyTo', 'writtenAt', 'editedAt']
 const GOVERNED = ['kind', 'inReplyTo', 'writtenAt', 'editedAt'] // accepted from rooms/keys/seal 0.3 only
-const VTA_SERVES = { 'auth/challenge': ['0.1'], 'auth/authenticate': ['0.3'], 'auth/refresh': ['0.2'], 'rooms/keys/list': ['0.2'], 'rooms/keys/present': ['0.2'], 'rooms/keys/act': ['0.8', '0.9', '0.10', '0.11', '0.12'], 'rooms/keys/seal': ['0.2', '0.3'], 'rooms/keys/open': ['0.2'], 'rooms/keys/commit': ['0.1'], 'rooms/keys/backfill': ['0.2'] }
+const VTA_SERVES = { 'keys/list': ['0.2'], 'keys/sign-document': ['0.1'], 'rooms/keys/key-package': ['0.2'], 'rooms/keys/welcome': ['0.1'], 'vault/credentials/receive': ['0.1'], 'vault/credentials/query': ['0.1'], 'vault/credentials/get': ['0.2'], 'auth/challenge': ['0.1'], 'auth/authenticate': ['0.3'], 'auth/refresh': ['0.2'], 'rooms/keys/list': ['0.2'], 'rooms/keys/present': ['0.2'], 'rooms/keys/act': ['0.8', '0.9', '0.10', '0.11', '0.12'], 'rooms/keys/seal': ['0.2', '0.3'], 'rooms/keys/open': ['0.2'], 'rooms/keys/commit': ['0.1'], 'rooms/keys/backfill': ['0.2'] }
 const HOST_SERVES = { 'rooms/info': ['0.3'], 'rooms/records/put': ['0.3', '0.4', '0.5'], 'rooms/records/get': ['0.2', '0.3'], 'rooms/records/list': ['0.5', '0.6'], 'rooms/epoch/commits': ['0.1'] }
 const READS = ['rooms/info', 'rooms/records/get', 'rooms/records/list', 'rooms/epoch/commits']
 
@@ -85,7 +97,7 @@ const READS = ['rooms/info', 'rooms/records/get', 'rooms/records/list', 'rooms/e
  * Start both services. Options: `vtaServes` / `hostServes` replace which versions of a family are served (an older
  * trust agent or host); `tokenMs` how long a sign-in lasts.
  */
-export async function startFakeVti ({ vtaServes = {}, hostServes = {}, tokenMs = 15 * 60_000 } = {}) {
+export async function startFakeVti ({ vtaServes = {}, hostServes = {}, tokenMs = 15 * 60_000, keysPageSize = 2 } = {}) {
   const vtaId = newIdentity(), hostId = newIdentity()
   const serves = { vta: { ...VTA_SERVES, ...vtaServes }, host: { ...HOST_SERVES, ...hostServes } }
   const personas = new Map() // did -> identity: the DIDs the trust agent holds keys for
@@ -98,11 +110,15 @@ export async function startFakeVti ({ vtaServes = {}, hostServes = {}, tokenMs =
   const rooms = new Map() // roomId -> what the HOST stores: { roomId, ownerDid, visibility, retentionPolicy, epoch, nextVersion, records, commits, links }
   const secrets = new Map() // roomId -> { id (the room's own key), keys: Map(epoch -> key) }: what the room's OWNER holds, never the host
   const accepted = new Map() // document id -> { digest, answer }: the host's duplicate record
+  const stranger = new Map() // persona -> a key the trust agent holds that no DID document lists, and a revoked copy of the persona's own: what keys/list must be read past
+  const packages = new Map() // key package -> { roomId, persona, invitation, used }: what rooms/keys/key-package minted and still holds (room_groups outstanding_or_mint)
+  const spent = new Set() // invitation credential ids a welcome has consumed (room_invitation is_consumed)
+  const stored = new Map() // app credential's DID -> Map(handle -> { format, credential | credentialBase64, types, ... }): the person's vault
   const received = { vta: [], host: [] } // every body each service was sent, as it arrived
   const seen = { vta: {}, host: {} } // counts by type
   const slow = { vta: [], host: [] } // retry-after values to answer the next requests with (HTTP 429)
   const hostDoc = (url) => ({ '@context': ['https://www.w3.org/ns/did/v1'], id: hostId.did, verificationMethod: [{ id: hostId.verificationMethod, type: 'Multikey', controller: hostId.did, publicKeyMultibase: hostId.did.slice('did:key:'.length) }], authentication: [hostId.verificationMethod], assertionMethod: [hostId.verificationMethod], service: [{ id: `${hostId.did}#rest`, type: 'TrustTaskHTTPS', serviceEndpoint: url }] })
-  const fake = { vta: { did: vtaId.did }, host: { did: hostId.did, signs: false }, received, seen }
+  const fake = { vta: { did: vtaId.did }, host: { did: hostId.did, signs: false }, received, seen, alter: {} }
   const resolve = async (did) => (did === hostId.did ? hostDoc(fake.host.url) : resolveDidKey(did))
   fake.resolver = { resolve, keyFor: async (did, vm, purpose) => keyFromDidDocument(await resolve(did), did, vm, purpose) }
   const keyFor = fake.resolver.keyFor
@@ -122,6 +138,12 @@ export async function startFakeVti ({ vtaServes = {}, hostServes = {}, tokenMs =
     const leaf = credential(personas.get(persona), to, { authority: { scope: roomId, actions: [action] } }, 4 / 24)
     return { presentation: { membership: JSON.stringify(v.vmc), authority: [JSON.stringify(leaf), JSON.stringify(v.vac)] }, expiresAt: leaf.validUntil }
   }
+  /** An invitation credential (VIC): issued by the room named, still valid, with the member as its subject. One refusal for every way it can fail (room_invitation::verify). */
+  const invitationOf = (roomId, text, code) => {
+    let inv; try { inv = JSON.parse(text) } catch { no(code, 'the invitation does not verify') }
+    if (!credentialHolds(inv, roomId) || !inv.credentialSubject?.id || !inv.id) no(code, 'the invitation does not verify, was not issued by this room, or has expired')
+    return inv
+  }
   const notDelegate = (auth) => { if (clients.get(auth.did).delegate) no('permissionDenied', 'a delegate presents under its own identifier: use rooms/keys/present, and sign your own record bodies') }
   const vtaTasks = {
     'rooms/keys/list': (auth, p) => {
@@ -129,6 +151,93 @@ export async function startFakeVti ({ vtaServes = {}, hostServes = {}, tokenMs =
       const c = clients.get(auth.did), out = []
       if (!c.delegate) for (const [k, g] of groups) { const [roomId, member] = k.split('|'); if (c.personas.has(member)) out.push({ roomId, member, epoch: g.epoch, earliestReadableEpoch: g.earliest }) }
       return { rooms: out.sort((a, b) => a.roomId.localeCompare(b.roomId) || a.member.localeCompare(b.member)) }
+    },
+    // keys/list/0.2: the active keys this credential may see (here: those of the personas it acts as), publicKey multibase base58btc with the 0xed01 prefix (vta-keys encode_public_multibase), paged by an opaque cursor.
+    'keys/list': (auth, p) => {
+      only(p, ['status', 'contextId', 'cursor', 'limit'], 'keys/list')
+      const all = []
+      for (const m of clients.get(auth.did).personas) { const x = stranger.get(m); if (x) all.push(x.revoked, x.decoy, x.own) }
+      const rows = all.filter((k) => (p.status ? k.status === p.status : true))
+      const from = p.cursor === undefined ? 0 : (/^k\d+$/.test(p.cursor) ? Number(p.cursor.slice(1)) : no('malformedRequest', 'a cursor this VTA did not issue'))
+      const size = Math.min(p.limit ?? keysPageSize, keysPageSize), page = rows.slice(from, from + size)
+      return { keys: page, ...(from + size < rows.length ? { nextCursor: `k${from + size}` } : {}) }
+    },
+    // keys/sign-document/0.1: operations/keys.rs sign_document, items 1-12 (write session; delegates are refused here as the others are).
+    'keys/sign-document': (auth, p) => {
+      only(p, ['keyId', 'document', 'proofPurpose', 'created', 'challenge', 'domain'], 'keys/sign-document'); need(p, ['keyId', 'document'], 'keys/sign-document')
+      notDelegate(auth)
+      const d = p.document
+      if (!d || typeof d !== 'object' || Array.isArray(d)) no('malformedRequest', 'document is an object')
+      if ('proof' in d) no('keys/sign-document:proofPresent', 'the document already carries a proof')
+      const named = d.issuer !== undefined ? (d.issuer?.id ?? d.issuer) : Array.isArray(d.controller) && d.controller.length === 1 ? d.controller[0] : d.controller
+      if (named === undefined) no('keys/sign-document:documentInvalid', 'no signer', { reason: 'noSigner' })
+      if (typeof named !== 'string' || !/^did:/.test(named)) no('keys/sign-document:documentInvalid', 'signer malformed', { reason: 'signerMalformed' })
+      const mine = [...clients.get(auth.did).personas].map((m) => ({ m, k: stranger.get(m) })).filter((x) => x.k)
+      const hit = mine.flatMap(({ m, k }) => [k.own, k.decoy, k.revoked].map((r) => ({ m, r }))).find(({ r }) => r.keyId === p.keyId) ?? no('keys:notFound', 'no such key')
+      if (hit.r.status !== 'active') no('keys/sign-document:failedPrecondition', 'the key is not active')
+      if (hit.r.keyType !== 'ed25519') no('keys/sign-document:keyTypeUnsupported', 'ed25519 only', { keyType: hit.r.keyType })
+      if (hit.m !== named || hit.r.keyId !== stranger.get(hit.m).own.keyId) no('keys/sign-document:issuerMismatch', 'the key is not a verification method of the DID the document names', { member: d.issuer !== undefined ? 'issuer' : 'controller' })
+      const purpose = p.proofPurpose ?? 'assertionMethod' // a did:key lists its key under both
+      let created = instant()
+      if (p.created !== undefined) { if (!(Math.abs(Date.parse(p.created) - Date.now()) <= 5 * 60_000)) no('keys:invalidArgument', 'created is more than five minutes from this VTA\'s clock'); created = p.created }
+      const id = personas.get(named), cfg = { ...proofConfig({ verificationMethod: id.verificationMethod, created, proofPurpose: purpose, context: d['@context'] }), ...(p.challenge ? { challenge: p.challenge } : {}), ...(p.domain ? { domain: p.domain } : {}) }
+      const proof = { ...cfg, proofValue: multibase(ed25519.sign(signingInput(d, cfg), id.seed)) }
+      return { keyId: p.keyId, signerDid: named, document: { ...d, proof }, proof }
+    },
+    // rooms/keys/key-package/0.2: room_group.rs handle_key_package_v0_2: no mint without a valid invitation from this room; the same KeyPackage while it is outstanding.
+    'rooms/keys/key-package': (auth, p) => {
+      only(p, ['roomId', 'invitation'], 'rooms/keys/key-package'); need(p, ['roomId', 'invitation'], 'rooms/keys/key-package')
+      const inv = invitationOf(p.roomId, p.invitation, 'rooms/keys/key-package:notInvited')
+      if (!clients.get(auth.did).personas.has(inv.credentialSubject.id)) no('permissionDenied', 'you may not act as the member this invitation names')
+      if (spent.has(inv.id)) no('taskFailed', `invitation \`${inv.id}\` has already been used`)
+      const memo = `${p.roomId}|${inv.credentialSubject.id}|${inv.id}`
+      let pending = [...packages].find(([, v]) => v.memo === memo && !v.used)
+      const already = Boolean(pending)
+      if (!pending) { const kp = b64u(randomBytes(48)); packages.set(kp, { memo, roomId: p.roomId, persona: inv.credentialSubject.id, invitation: inv.id, used: false, expiresAt: instant(Date.now() + 86400_000) }); pending = [kp, packages.get(kp)] }
+      return { keyPackage: pending[0], expiresAt: pending[1].expiresAt, alreadyMinted: already }
+    },
+    // rooms/keys/welcome/0.1: room_group.rs handle_welcome: a matching invitation is the load-bearing gate; a spent one for the member who joined is alreadyJoined.
+    'rooms/keys/welcome': (auth, p) => {
+      only(p, ['roomId', 'welcome', 'invitation', 'ratchetTree'], 'rooms/keys/welcome'); need(p, ['roomId', 'welcome'], 'rooms/keys/welcome')
+      const inv = invitationOf(p.roomId, p.invitation, 'rooms/keys/welcome:notInvited')
+      const persona = inv.credentialSubject.id
+      if (!clients.get(auth.did).personas.has(persona)) no('permissionDenied', 'you may not act as the member this invitation names')
+      if (spent.has(inv.id)) return groups.has(`${p.roomId}|${persona}`) ? no('rooms/keys/welcome:alreadyJoined', 'this VTA already holds group state for the member, joined with this invitation') : no('taskFailed', `invitation \`${inv.id}\` has already been used`)
+      let wanted; try { wanted = JSON.parse(unb64u(p.welcome).toString('utf8')).keyPackage } catch { no('rooms/keys/welcome:welcomeInvalid', 'the Welcome did not process') }
+      const held = packages.get(wanted)
+      if (!held || held.persona !== persona || held.roomId !== p.roomId) no('rooms/keys/welcome:welcomeInvalid', 'the Welcome is for a KeyPackage this VTA did not mint for this member')
+      const room = rooms.get(p.roomId) ?? no('taskFailed', 'no such room')
+      held.used = true; spent.add(inv.id)
+      groups.set(`${p.roomId}|${persona}`, { epoch: room.epoch, earliest: room.epoch, keys: new Map([[room.epoch, secrets.get(p.roomId).keys.get(room.epoch)]]) }); grant(p.roomId, persona, ['read', 'write'])
+      return { epoch: room.epoch - 1 } // the MLS epoch joined at: a room counts from 1, MLS from 0
+    },
+    // vault/credentials/*: the person's own vault, kept per app credential here (the real one per context). receive verifies the credential's proof first.
+    'vault/credentials/receive': (auth, p) => {
+      only(p, ['credential', 'credentialBase64', 'format', 'contextId', 'id'], 'vault/credentials/receive')
+      if ((p.credential === undefined) === (p.credentialBase64 === undefined)) no('malformedRequest', 'exactly one of credential or credentialBase64')
+      const mine = stored.get(auth.did) ?? stored.set(auth.did, new Map()).get(auth.did)
+      if (p.credentialBase64 !== undefined) {
+        const handle = p.id ?? `b-${mine.size + 1}`
+        mine.set(handle, { format: p.format ?? 'dc+sd-jwt', credentialBase64: p.credentialBase64, types: [], status: 'unknown' })
+        return { id: handle, types: [], status: 'unknown' }
+      }
+      const c = p.credential
+      try { if (!verifySignature(c, keyFromDidDocument(resolveDidKey(c.issuer), c.issuer, c.proof.verificationMethod, 'assertionMethod')).ok) throw new Error() } catch { no('vault/credentials/receive:verificationFailed', 'the credential does not verify') }
+      const types = [].concat(c.type ?? []), handle = p.id ?? c.id ?? `c-${mine.size + 1}`
+      const purpose = types.includes('MembershipCredential') ? 'membership' : types.includes('InvitationCredential') ? 'invite' : 'role'
+      mine.set(handle, { format: p.format ?? 'ldp_vc', credential: c, types, purpose, status: 'valid', issuerDid: c.issuer, subject: c.credentialSubject?.id })
+      return { id: handle, types, purpose, status: 'valid' }
+    },
+    'vault/credentials/query': (auth, p) => {
+      only(p, ['type', 'communityDid', 'issuerDid', 'purpose', 'status', 'subjectDid', 'includeArchived', 'includeDeleted'], 'vault/credentials/query')
+      if (!['type', 'communityDid', 'issuerDid', 'purpose', 'status'].some((k) => p[k] !== undefined)) no('vault/credentials/query:filterRequired', 'at least one of type, communityDid, issuerDid, purpose or status')
+      const rows = [...(stored.get(auth.did) ?? new Map())].filter(([, c]) => (!p.type || c.types.includes(p.type)) && (!p.issuerDid || c.issuerDid === p.issuerDid) && (!p.purpose || c.purpose === p.purpose) && (!p.status || c.status === p.status) && (!p.subjectDid || c.subject === p.subjectDid))
+      return { credentials: rows.map(([id, c]) => ({ id, types: c.types, status: c.status, ...(c.purpose ? { purpose: c.purpose } : {}), ...(c.issuerDid ? { issuerDid: c.issuerDid } : {}) })) }
+    },
+    'vault/credentials/get': (auth, p) => {
+      only(p, ['id'], 'vault/credentials/get'); need(p, ['id'], 'vault/credentials/get')
+      const c = stored.get(auth.did)?.get(p.id) ?? no('vault/credentials/get:notFound', 'no such credential')
+      return { format: c.format, ...(c.credential ? { credential: c.credential } : { credentialBase64: c.credentialBase64 }) }
     },
     'rooms/keys/present': (auth, p) => {
       only(p, ['roomId', 'action'], 'rooms/keys/present'); need(p, ['roomId', 'action'], 'rooms/keys/present')
@@ -142,11 +251,19 @@ export async function startFakeVti ({ vtaServes = {}, hostServes = {}, tokenMs =
       const d = p.document
       only(d, ['id', 'type', 'issuer', 'recipient', 'issuedAt', 'expiresAt', 'threadId', 'payload'], 'document'); need(d, ['id', 'type', 'recipient', 'issuedAt', 'payload'], 'document')
       if (!/^https:\/\/trusttasks\.org\/spec\/(rooms|vtc\/rooms\/(offers|memberships))\//.test(d.type) || !/^did:/.test(d.recipient)) no('malformedRequest', 'document: not a room request')
-      const action = ACT_TABLES[version][d.type]
-      if (!action) no('rooms/keys/act:typeNotActable', `\`${d.type}\` is not a room request this VTA completes as a member`, { type: d.type })
+      const community = COMMUNITY[version].includes(d.type)
+      const action = community ? null : ACT_TABLES[version][d.type]
+      if (!community && !action) no('rooms/keys/act:typeNotActable', `\`${d.type}\` is not a room request this VTA completes as a member`, { type: d.type })
       const at = Date.parse(d.issuedAt)
       if (!(at >= Date.now() - 5 * 60_000 && at <= Date.now() + 2 * 60_000)) no('malformedRequest', `the document was issued at ${d.issuedAt}; a document is completed to be sent now`)
       if ('presentation' in d.payload) no('malformedRequest', 'the document already carries a presentation; the member\'s own is inserted here')
+      if (community) { // trust_tasks/room_act.rs complete_offer: the member is not in the room yet, so no credential is looked for; `issuer` is the DID the community addressed its offers to
+        if (!d.issuer || !clients.get(auth.did).personas.has(d.issuer)) no('rooms/keys/act:issuerNotPrincipal', 'this VTA holds no key that issuer lists for `authentication` that you may act as', { issuer: d.issuer ?? '' })
+        const kp = d.payload.keyPackage, held = packages.get(kp)
+        if (d.type === V('offers/accept', '0.1') && kp !== undefined && !(held && held.persona === d.issuer && !held.used && (d.payload.roomId === undefined || d.payload.roomId === held.roomId))) no('rooms/keys/act:keyPackageNotHeld', 'this KeyPackage was not minted here for this room and member, or its private half is no longer held')
+        const id = personas.get(d.issuer)
+        return { principal: d.issuer, document: sign(d, { seed: id.seed, verificationMethod: id.verificationMethod, created: instant(), proofPurpose: 'authentication' }) }
+      }
       const roomId = d.payload.roomId, who = actsAs(auth, roomId)
       const member = d.issuer ? (who.includes(d.issuer) ? d.issuer : no('rooms/keys/act:issuerNotPrincipal', `\`${d.issuer}\` is not a member of room \`${roomId}\` you may act as`, { issuer: d.issuer })) : who.length === 1 ? who[0] : no(who.length ? 'rooms/keys/act:principalAmbiguous' : 'rooms/keys/act:notAMember', who.length ? `you may act as ${who.length} members of room \`${roomId}\`; name the one you mean in the document's \`issuer\`` : `this VTA holds no credential issued by room \`${roomId}\` to a member you may act as`)
       const minted = present(roomId, member, member, action) ?? no('rooms/keys/act:actionNotHeld', `the member's credentials for room \`${roomId}\` do not confer \`${action}\``, { action })
@@ -330,7 +447,8 @@ export async function startFakeVti ({ vtaServes = {}, hostServes = {}, tokenMs =
     const family = parseType(doc.type)?.family, dup = which === 'host' ? accepted.get(doc.id) : null
     if (dup) return dup.digest !== digest(doc) ? send(409, refusalTo(doc, { code: 'idConflict', message: 'another document already used that id' }, issuer.did)) : dup.answer ? send(200, dup.answer) : send(204, null)
     try {
-      const payload = await answer(doc, (req.headers.authorization ?? '').replace(/^Bearer /, ''), Buffer.byteLength(raw))
+      let payload = await answer(doc, (req.headers.authorization ?? '').replace(/^Bearer /, ''), Buffer.byteLength(raw))
+      if (which === 'vta' && fake.alter[family]) payload = fake.alter[family](payload) // a test makes the trust agent answer wrongly: the check under test is the client's
       let reply = responseTo(doc, payload, issuer.did)
       if (which === 'vta' || fake.host.signs) reply = signTask(reply, issuer) // a host with a DID of its own signs what it answers; one reached only by address does not
       if (which === 'host') accepted.set(doc.id, { digest: digest(doc), answer: READS.includes(family) ? null : reply })
@@ -347,7 +465,19 @@ export async function startFakeVti ({ vtaServes = {}, hostServes = {}, tokenMs =
 
   // ----- what the room's owner does, outside this wire (pnm rooms owner register / issue-membership / issue-authority --store / group-create / group-add / group-renew) -----
   /** A DID the trust agent holds keys for: the person's member of a room. */
-  fake.persona = () => { const id = newIdentity(); personas.set(id.did, id); return id.did }
+  fake.persona = () => {
+    const id = newIdentity(); personas.set(id.did, id)
+    const rec = (keyId, keyType, status, publicKey) => ({ keyId, keyType, status, publicKey, label: keyId, createdAt: instant() })
+    const mk = (pub) => multibase(new Uint8Array([0xed, 0x01, ...pub]))
+    const decoy = newIdentity().publicKey
+    // listed in this order, the persona's own key last: a revoked copy of it, an active key no DID lists, then the key to find
+    stranger.set(id.did, { revoked: rec(`k-${randomUUID()}`, 'ed25519', 'revoked', mk(id.publicKey)), decoy: rec(`k-${randomUUID()}`, 'ed25519', 'active', mk(decoy)), own: rec(`k-${randomUUID()}`, 'ed25519', 'active', mk(id.publicKey)) })
+    return id.did
+  }
+  /** An invitation credential from the room (a VIC look-alike: issuer the room, subject the member), as a string. */
+  fake.invite = (roomId, persona, { days = 30 } = {}) => JSON.stringify(credential(secrets.get(roomId).id, persona, { invitation: { roomId } }, days))
+  /** The Welcome the room's owner builds for a minted KeyPackage (here: the KeyPackage named in JSON; the real one is MLS). */
+  fake.welcomeFor = (keyPackage) => b64u(JSON.stringify({ keyPackage }))
   /** A credential for an app (the starter kit's VTA_CREDENTIAL), allowed to act as these personas; `delegate`: registered as an AI agent, not the person's own client. */
   fake.credential = (acts, { delegate = false, withUrl = true } = {}) => {
     const id = newIdentity(); clients.set(id.did, { personas: new Set(acts), delegate })
