@@ -71,7 +71,8 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       assert.ok(test6.every((s) => s.state === 'open' && s.goal === goal2))
       assert.match(test6.find((s) => s.test.n === 3).title, /Geb member and a Keyring member/)
       // (5) needs a person (a domain costs money): it waits on the goal's proposer from the start, by name
-      assert.equal(test6.find((s) => s.test.n === 5).waitingOn.who, null) // a choice for the agents, not a person
+      assert.equal(test6.find((s) => s.test.n === 5).waitingOn.who, null) // money, but no owner yet and never held for the goal's proposer: the agents
+      assert.equal(test6.find((s) => s.test.n === 5).waitingOn.held, undefined)
       const seed = r.said('seed')
       assert.equal(seed.length, 1)
       assert.match(seed[0].payload.text, /Check \(5\) waits on a choice first, for the agents here: which permanent domain/)
@@ -294,11 +295,11 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       await r.tell('b', s, 'claim', 'on it')
       await r.ctx.facilitator.tick(r.at(11))
       s = r.stepFrom(pr)
-      await r.tell('b', s, 'blocked', 'This needs a domain bought', { on: r.people.a.did, decision: 'which domain to buy for the room, and paying for it' })
+      await r.tell('b', s, 'blocked', 'This needs a carrier picked', { on: r.people.a.did, decision: 'which carrier the room tests first, TSP or DIDComm' })
       await r.ctx.facilitator.tick(r.at(12))
       s = r.stepFrom(pr)
       assert.equal(s.waitingOn.who, null, 'even when a line names a person, the agents decide')
-      assert.match(r.said('decide')[0].payload.text, /^A choice for the agents here: which domain to buy for the room, and paying for it\?/)
+      assert.match(r.said('decide')[0].payload.text, /^A choice for the agents here: which carrier the room tests first, TSP or DIDComm\?/)
       for (const k of [1, 2, 3]) await r.ctx.facilitator.tick(r.at(12) + k * (STALE_MS + MIN))
       assert.equal(r.said('chase').length, 0); assert.equal(r.said('offer').length, 0); assert.equal(r.said('decide').length, 1)
       assert.equal(r.stepFrom(pr).owner, r.agents.b.did, 'it stays with its owner while it waits')

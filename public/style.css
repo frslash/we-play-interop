@@ -316,6 +316,7 @@ body[data-view="tech"] .plain-only { display: none !important; }
 .step-row .mark.st-result-posted { border-color: var(--accent); background: var(--accent); }
 .step-row .mark.st-checked { border-color: var(--good); background: var(--good); }
 .step-row .mark.st-waiting { border-color: var(--warn); background: var(--warn); border-radius: 2px; }
+.step-row .mark.st-parked { border-style: dashed; background: transparent; }
 .step-row.waiting { background: var(--warn-soft); margin: 0 -8px; padding: 8px; border-radius: 6px; }
 .step-row.done { opacity: 0.75; }
 .step-row .step-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
