@@ -43,6 +43,7 @@ const digest = (s) => createHash('sha256').update(String(s)).digest('hex')
  */
 export async function startFakeCommunity (fake, { withRatchetTree = false, pending = 0, pageSize = 50 } = {}) {
   const communityDid = fake.host.did
+  fake.host.signs = true // the community is the room's host and has a DID: what it passes on to its room host is answered signed too
   const offers = [] // { member, roomId, visibility, actions, validUntil, offeredAt, label, credentials, state, kept: { digest, welcome, epoch } | null }
   const renewals = [] // { member, ... }: renewals of admissions already held
   const members = new Set() // the DIDs the community lists as members
@@ -106,10 +107,12 @@ export async function startFakeCommunity (fake, { withRatchetTree = false, pendi
       if (!v.ok) no('permissionDenied', `request proof: ${v.message}`)
       const t = parseType(doc.type)
       if (t.response) no('unsupportedType', 'not a request')
-      send(200, responseTo(doc, serve[doc.type](v.signer, doc.payload), communityDid))
+      // A community has a DID, so it signs every answer, refusals included, for authentication: OpenVTC signs once, in
+      // the door, so no task can forget to (vti-trust-task-server/src/sign.rs:1-8, 28-62 at the room's pin).
+      send(200, fake.host.sign(responseTo(doc, serve[doc.type](v.signer, doc.payload), communityDid)))
     } catch (e) {
-      if (!(e instanceof Refuse)) return send(500, refusalTo(doc, { code: 'internalError', message: e.message }, communityDid))
-      send(statusFor(e.code), refusalTo(doc, { code: e.code, message: e.message, retryable: /admissionPending$/.test(e.code) }, communityDid))
+      if (!(e instanceof Refuse)) return send(500, fake.host.sign(refusalTo(doc, { code: 'internalError', message: e.message }, communityDid)))
+      send(statusFor(e.code), fake.host.sign(refusalTo(doc, { code: e.code, message: e.message, retryable: /admissionPending$/.test(e.code) }, communityDid)))
     }
   })
   community.url = await new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)))

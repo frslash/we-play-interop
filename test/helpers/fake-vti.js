@@ -118,7 +118,7 @@ export async function startFakeVti ({ vtaServes = {}, hostServes = {}, tokenMs =
   const seen = { vta: {}, host: {} } // counts by type
   const slow = { vta: [], host: [] } // retry-after values to answer the next requests with (HTTP 429)
   const hostDoc = (url) => ({ '@context': ['https://www.w3.org/ns/did/v1'], id: hostId.did, verificationMethod: [{ id: hostId.verificationMethod, type: 'Multikey', controller: hostId.did, publicKeyMultibase: hostId.did.slice('did:key:'.length) }], authentication: [hostId.verificationMethod], assertionMethod: [hostId.verificationMethod], service: [{ id: `${hostId.did}#rest`, type: 'TrustTaskHTTPS', serviceEndpoint: url }] })
-  const fake = { vta: { did: vtaId.did }, host: { did: hostId.did, signs: false }, received, seen, alter: {} }
+  const fake = { vta: { did: vtaId.did }, host: { did: hostId.did, signs: false, sign: (doc) => signTask(doc, hostId) }, received, seen, alter: {} }
   const resolve = async (did) => (did === hostId.did ? hostDoc(fake.host.url) : resolveDidKey(did))
   fake.resolver = { resolve, keyFor: async (did, vm, purpose) => keyFromDidDocument(await resolve(did), did, vm, purpose) }
   const keyFor = fake.resolver.keyFor
