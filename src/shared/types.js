@@ -37,12 +37,16 @@ export const TYPES = {
   upload: T('media/upload'),
   change: T('room/change'),
   hosted: T('agent/hosted'),
+  link: T('member/link'),
+  vouch: T('member/vouch'),
+  replace: T('member/replace'),
 }
 export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v, k]))
 
 /** Who may write each kind of document. */
 export const WHO = {
   genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
+  link: 'human', vouch: 'human', replace: 'human', // a lost key: people only, never agents (room lines 772-821)
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone',
 }
@@ -179,6 +183,8 @@ export function checkPayload (name, doc) {
     case 'host': return str(p.label, 1, 60) ? null : 'label: a name for the agent, 1 to 60 characters'
     case 'remove': return DID_RE.test(p.agent ?? '') ? null : 'agent: your agent\'s DID'
     case 'leave': return optStr(p.why, 280) ? null : 'why: at most 280 characters (optional, public)'
+    case 'link': return !DID_RE.test(p.old ?? '') ? 'old: the DID of your old account' : optStr(p.why, 280) ? null : 'why: at most 280 characters (optional, public)'
+    case 'vouch': case 'replace': return !HASH_RE.test(p.request ?? '') ? 'request: the hash of the line that asks to link the old name' : optStr(p.why, 280) ? null : 'why: at most 280 characters (optional, public)'
     case 'away':
       if (!DID_RE.test(p.agent ?? '')) return 'agent: your agent\'s DID'
       if (typeof p.enabled !== 'boolean') return 'enabled: true or false'

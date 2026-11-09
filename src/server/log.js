@@ -140,6 +140,7 @@ export class Log extends EventEmitter {
       if (st.isAgent(doc.issuer)) throw new TaskError('permissionDenied', 'this DID belongs to an agent: sign with onBehalfOf and delegation', { status: 403 })
       if (name !== 'join' && !st.isHuman(doc.issuer)) throw new TaskError('permissionDenied', 'join first (member/join)', { status: 403 })
       if (name !== 'join' && st.participants.get(doc.issuer)?.left) throw new TaskError('permissionDenied', 'you left this room; join again to take part', { status: 403 })
+      if (st.participants.get(doc.issuer)?.replacedBy) throw new TaskError('permissionDenied', `this account was replaced by ${st.nameOf(st.participants.get(doc.issuer).replacedBy)}'s new key; use that one`, { status: 403 })
     }
     if (name === 'card' && (doc.payload.model !== undefined || doc.payload.runsOn !== undefined) && !(doc.onBehalfOf && st.isAgent(doc.issuer))) throw new TaskError('permissionDenied', 'model and runsOn are an agent\'s own word about itself: only the agent sets them', { status: 403 })
     if (name === 'delegate' && doc.payload.credential !== undefined) await this.#checkCredential(doc)
@@ -167,13 +168,35 @@ export class Log extends EventEmitter {
       case 'delegate': {
         if (p.delegate === doc.issuer || p.delegate === st.workspace || st.isHuman(p.delegate)) throw new TaskError('permissionDenied', 'an agent needs a DID of its own, not a person\'s', { status: 403 })
         const other = st.participants.get(p.delegate)
-        if (other?.kind === 'agent' && other.principal !== doc.issuer) throw new TaskError('permissionDenied', 'that agent already acts for someone else', { status: 403 })
+        if (other?.kind === 'agent' && other.principal !== doc.issuer && st.participants.get(other.principal)?.replacedBy !== doc.issuer) throw new TaskError('permissionDenied', 'that agent already acts for someone else', { status: 403 }) // a replaced key's agents can be signed for again by its new key
         break
       }
       case 'away':
         if (st.participants.get(p.agent)?.principal !== doc.issuer) throw new TaskError('permissionDenied', 'you can set this only for your own agent', { status: 403 })
         if (!st.hosted.has(p.agent)) throw new TaskError('permissionDenied', 'only agents brought in with a link can answer while you are away (the room needs their key)', { status: 403 })
         break
+      case 'link': {
+        const old = st.participants.get(p.old)
+        if (p.old === doc.issuer || old?.kind !== 'human') throw new TaskError('malformedRequest', 'old: the DID of the account you had before (a person in this room)')
+        if (old.replacedBy) throw new TaskError('permissionDenied', `that account was already replaced by ${st.nameOf(old.replacedBy)}`, { status: 403 })
+        break
+      }
+      case 'vouch': {
+        const l = st.links.get(p.request)
+        if (!l) throw new TaskError('malformedRequest', 'no request to link an old name with that hash')
+        if (l.replacedAt) throw new TaskError('permissionDenied', 'that old name is already linked', { status: 403 })
+        if (doc.issuer === l.from || doc.issuer === l.old) throw new TaskError('permissionDenied', 'someone else has to vouch for you: people who know you', { status: 403 })
+        break
+      }
+      case 'replace': {
+        const l = st.links.get(p.request)
+        if (!this.config.hosts?.includes(doc.issuer)) throw new TaskError('permissionDenied', this.config.hosts?.length ? 'only the room\'s host marks an account replaced' : 'this room has no host named yet (ROOM_HOSTS), so no one can mark an account replaced', { status: 403 })
+        if (!l) throw new TaskError('malformedRequest', 'no request to link an old name with that hash')
+        if (l.replacedAt) throw new TaskError('permissionDenied', 'that old name is already linked', { status: 403 })
+        if (st.participants.get(l.old)?.replacedBy) throw new TaskError('permissionDenied', 'that account was already replaced', { status: 403 })
+        if (![...l.vouches.keys()].some((d) => d !== l.from && d !== l.old && st.isHuman(d))) throw new TaskError('permissionDenied', 'no one has vouched for this yet: people who know them vouch first', { status: 403 })
+        break
+      }
       case 'remove':
         if (st.participants.get(p.agent)?.kind !== 'agent' || st.participants.get(p.agent).principal !== doc.issuer) throw new TaskError('permissionDenied', 'you can remove only your own agents', { status: 403 })
         break

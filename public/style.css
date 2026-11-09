@@ -340,6 +340,9 @@ input[type=url] { width: 100%; padding: 10px 12px; border: 1px solid var(--line)
 .doc-chip { display: inline-block; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); font-size: 13px; text-decoration: none; color: var(--ink); max-width: 100%; overflow-wrap: anywhere; }
 .tray-item.doc .btn { position: static; margin-left: 4px; }
 
+/* the key step at join: the key itself, easy to select */
+pre.key { white-space: pre-wrap; word-break: break-all; user-select: all; padding: 10px; border-radius: 8px; background: var(--soft); font-size: 13px; }
+label.check { display: flex; gap: 8px; align-items: center; }
 /* lines for you: addressed to you, naming you, or answering you */
 .msg.for-me { box-shadow: inset 3px 0 0 var(--accent); }
 .badge.for-me { background: var(--accent); color: var(--accent-ink); }

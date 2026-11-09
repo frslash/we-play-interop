@@ -38,7 +38,7 @@ function listeningOf (ctx, p) {
 
 export function state (ctx) {
   const { log, board, executor } = ctx, st = log.state
-  const people = [...st.participants.values()].filter((p) => p.kind !== 'workspace' && !p.left).map((p) => ({ ...p, delegation: p.kind === 'agent' ? st.activeDelegation(p.did)?.hash ?? null : undefined, ...(p.kind === 'agent' && ctx.waker?.status.get(p.did) ? { wakeLast: ctx.waker.status.get(p.did) } : {}), ...(p.kind === 'agent' && st.away.get(p.did) ? { away: st.away.get(p.did), awayLast: ctx.away?.status.get(p.did) ?? null } : {}), ...(p.kind === 'agent' ? { listening: listeningOf(ctx, p), connected: ctx.connected?.get(p.did) ?? null, ask: st.activeDelegation(p.did)?.ask ?? [], scope: st.activeDelegation(p.did)?.scope ?? [], until: st.activeDelegation(p.did)?.expiresAt ?? null, credential: !!st.activeDelegation(p.did)?.credential, waiting: ctx.drafts?.list(p.did).length ?? 0 } : {}) }))
+  const people = [...st.participants.values()].filter((p) => p.kind !== 'workspace' && !p.left && !p.replacedBy).map((p) => ({ ...p, delegation: p.kind === 'agent' ? st.activeDelegation(p.did)?.hash ?? null : undefined, ...(p.kind === 'agent' && ctx.waker?.status.get(p.did) ? { wakeLast: ctx.waker.status.get(p.did) } : {}), ...(p.kind === 'agent' && st.away.get(p.did) ? { away: st.away.get(p.did), awayLast: ctx.away?.status.get(p.did) ?? null } : {}), ...(p.kind === 'agent' ? { listening: listeningOf(ctx, p), connected: ctx.connected?.get(p.did) ?? null, ask: st.activeDelegation(p.did)?.ask ?? [], scope: st.activeDelegation(p.did)?.scope ?? [], until: st.activeDelegation(p.did)?.expiresAt ?? null, credential: !!st.activeDelegation(p.did)?.credential, waiting: ctx.drafts?.list(p.did).length ?? 0 } : {}) }))
   const checkDids = ctx.check?.dids() ?? []
   const theirs = people.filter((p) => p.kind === 'agent' && p.hosted && !checkDids.includes(p.did))
   const comingIn = { agents: theirs.length, saidHello: theirs.filter((p) => p.firstSaid).length, answeringNow: theirs.filter((p) => p.listening).length }
@@ -46,6 +46,10 @@ export function state (ctx) {
     ...info(ctx),
     people,
     left: Object.fromEntries([...st.participants.values()].filter((p) => p.left || p.removed).map((p) => [p.did, p.name])),
+    // lost keys: each request to link an old name, its vouches, and who may mark it replaced
+    links: [...st.links.values()].map((l) => ({ hash: l.hash, from: l.from, old: l.old, why: l.why, at: l.at, vouches: [...l.vouches.keys()].map((d) => ({ did: d, name: st.nameOf(d) })), replacedAt: l.replacedAt })),
+    hosts: ctx.config.hosts ?? [],
+    replaced: Object.fromEntries([...st.participants.values()].filter((p) => p.replacedBy).map((p) => [p.did, { name: p.name, by: p.replacedBy, at: p.replacedAt }])), // old keys, no longer listed; the history stays
     check: ctx.check?.view() ?? null,
     comingIn,
     proposals: [...st.proposals.values()].reverse().map((pr) => ({ ...st.proposalView(pr), waitingFor: executor.waitingFor(pr), notYet: pr.notYet ?? null, lane: pr.lane ?? null })),
@@ -106,7 +110,7 @@ export function mapView (ctx) {
   }
 }
 
-const HEARD = new Set(['note', 'propose', 'round', 'project', 'way', 'run', 'vote', 'approve', 'veto', 'mode', 'join', 'delegate', 'result'])
+const HEARD = new Set(['note', 'propose', 'round', 'project', 'way', 'run', 'vote', 'approve', 'veto', 'mode', 'join', 'delegate', 'result', 'link', 'vouch', 'replace'])
 /** What an agent hears: who said what, to whom, in reply to what, in plain words. */
 export function message (ctx, e, me) {
   const st = ctx.log.state, doc = e.document, p = doc.payload, name = NAME_OF[e.type]

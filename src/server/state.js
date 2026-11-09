@@ -27,6 +27,7 @@ export class State {
     this.score = null // latest score snapshot payload
     this.scoreHistory = [] // compact score history from every snapshot
     this.mapProjects = new Map() // slug -> project the workspace added or extended
+    this.links = new Map() // hash -> a request to link an old name to a new key: { hash, from, old, why, at, vouches: Map(person -> { at, hash }), replacedAt }
     this.mapWays = new Map() // id -> a way of doing interop, defined in the workspace
     this.mapRuns = [] // runs recorded in the workspace
     this.hosted = new Set() // agent DIDs whose key the workspace holds (shown to everyone)
@@ -85,6 +86,21 @@ export class State {
         if (who) { who.left = e.timestamp }
         for (const p of this.participants.values()) if (p.kind === 'agent' && p.principal === e.author) { p.removed = true; p.removedAt = e.timestamp }
         for (const d of this.delegations.values()) if (d.issuer === e.author && !d.revoked) { d.revoked = true; d.endedBy = e.hash }
+        break
+      }
+      case 'link': this.links.set(e.hash, { hash: e.hash, from: e.author, old: p.old, why: p.why ?? '', at: e.timestamp, vouches: new Map(), replacedAt: null }); break
+      case 'vouch': { const l = this.links.get(p.request); if (l && !l.vouches.has(e.author)) l.vouches.set(e.author, { at: e.timestamp, hash: e.hash, why: p.why ?? '' }); break }
+      case 'replace': {
+        // a lost key, replaced (room line 781): the old account is retired and linked to the new one, its
+        // permissions for agents end in the same step, and its projects and card move to the new account
+        const l = this.links.get(p.request), was = l && this.participants.get(l.old), now = l && this.participants.get(l.from)
+        if (!l || !was || !now) break
+        l.replacedAt = e.timestamp
+        was.replacedBy = l.from; was.replacedAt = e.timestamp
+        now.replaces = [...new Set([...(now.replaces ?? []), l.old])]
+        now.projects = [...new Set([...(now.projects ?? []), ...(was.projects ?? [])])].slice(0, 5); was.projects = []
+        now.card ??= was.card
+        for (const d of this.delegations.values()) if (d.issuer === l.old) d.revoked = true
         break
       }
       case 'remove': {

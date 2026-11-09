@@ -64,7 +64,7 @@ const store = {
 let S = null, B = null, feed = [], me = null, pending = null
 try { const seed = store.get('wpi.seed'); if (seed) me = identityFromSeedHex(seed) } catch { me = null }
 const person = (did) => S?.people.find((p) => p.did === did)
-const nameOf = (did) => (did === S?.workspace ? 'the weaver' : person(did)?.name ?? (S?.left?.[did] ? `${S.left[did]} (left)` : short(did)))
+const nameOf = (did) => (did === S?.workspace ? 'the weaver' : S?.replaced?.[did] ? `${S.replaced[did].name} (old key)` : person(did)?.name ?? (S?.left?.[did] ? `${S.left[did]} (left)` : short(did)))
 const joined = () => me && person(me.did)?.kind === 'human'
 // the room check (a test person and agent walking the newcomer's path) stays out of the room's own view; the Log keeps it
 // A line is for you when it's addressed to you, names you, or answers a line of yours (room line 570: a person
@@ -459,6 +459,19 @@ function proposalBubble (e) {
     h('div', { class: 'meta' }, `${p.tally.for} yes · ${p.tally.against} no`, p.vetoes.length ? ` · stopped by ${p.vetoes.map((v) => v.name).join(', ')}` : '', result ? ' · ' : '', result ? (result.url ? h('a', { href: result.url, target: '_blank', rel: 'noopener' }, result.status === 'prepared' ? 'ready for a person to open' : result.status) : h('strong', null, result.status)) : null, !result && p.status === 'open' && !['goal', 'record-run', 'issue', 'workspace-change'].includes(p.kind) ? ` · closes ${new Date(Date.parse(p.at) + (S.rules?.voteMinutes ?? 10) * 60000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : null),
     voteButtons(p))
 }
+// a lost key (room lines 772-821): the new key asks for the old name, people who know them vouch, the host marks it
+function linkLine (e) {
+  const l = S.links?.find((x) => x.hash === e.hash), p = e.document.payload, oldName = (person(p.old) ?? S.replaced?.[p.old])?.name ?? nameOf(p.old)
+  const parts = [`${nameOf(e.author)} lost their key and asks to be linked to their old name, ${oldName}.${p.why ? ' ' + p.why : ''} `]
+  if (!l) return parts
+  if (l.replacedAt) return [...parts, h('span', { class: 'badge' }, 'linked')]
+  const vouched = l.vouches.length ? `Vouched for by ${l.vouches.map((v) => v.name).join(', ')}. ` : 'No one has vouched yet. '
+  const canVouch = joined() && me.did !== l.from && me.did !== l.old && !l.vouches.some((v) => v.did === me.did)
+  const host = joined() && S.hosts?.includes(me.did)
+  return [...parts, vouched,
+    canVouch ? h('button', { class: 'btn tiny', title: 'Only if you know this is the same person', onclick: async () => { if (confirm(`Vouch that ${nameOf(l.from)} is ${oldName}? Only if you know it’s the same person.`) && await post('vouch', { request: l.hash })) toast('Vouched.') } }, 'I know them: vouch') : null,
+    host && l.vouches.length ? h('button', { class: 'btn tiny', onclick: async () => { if (confirm(`Mark ${oldName}’s old key replaced by ${nameOf(l.from)}? Its permissions for agents end now; the history stays.`) && await post('replace', { request: l.hash })) toast('Marked replaced.') } }, 'Mark the old key replaced') : null]
+}
 function chatItem (e) {
   const name = NAME_OF[e.type], d = e.document, p = d.payload
   const time = h('span', { class: 'time' }, ago(e.timestamp))
@@ -495,6 +508,9 @@ function chatItem (e) {
       tech(h('div', { class: 'tech-line' }, `round ${p.round} · ${p.mode} · ${p.model?.ok ? p.model.id : 'built-in tally'} · heard ${p.heard?.length ?? 0}`)))
   }
   if (name === 'join') return system(`${nameOf(e.author)} joined${p.projects?.length ? ' for ' + p.projects.map(projectName).join(', ') : ''}.`)
+  if (name === 'link') return system(linkLine(e))
+  if (name === 'vouch') { const l = S.links?.find((x) => x.hash === p.request); return system(`${nameOf(e.author)} vouched that ${l ? nameOf(l.from) : 'they'} ${l ? `is ${(person(l.old) ?? S.replaced?.[l.old])?.name ?? nameOf(l.old)}` : 'are who they say'}, with a new key.${p.why ? ' ' + p.why : ''}`) }
+  if (name === 'replace') { const l = S.links?.find((x) => x.hash === p.request); return system(l ? `${nameOf(e.author)} marked ${(person(l.old) ?? S.replaced?.[l.old])?.name ?? nameOf(l.old)}’s old key replaced by the new one. Its permissions for agents ended; the history stays.` : 'An old key was marked replaced.') }
   if (name === 'delegate') { // starting an agent's setup isn't bringing it in: it's in the room once it first speaks
     const a = person(p.delegate), label = a?.name ?? p.label ?? 'an agent'
     if (!heard(a)) return system(`${nameOf(e.author)} is setting up an agent, ${label}. It comes into the room when it first speaks.`)
@@ -825,6 +841,19 @@ function cardPanel (mine) {
         if (await post('card', { goals: g, workingOn: working.value.trim(), lookingFor: looking.value.trim() })) forget('card.goals', 'card.working', 'card.looking')
       } }, 'Save')))
 }
+function lostKeyPanel (mine) {
+  const mineOpen = S.links?.find((l) => l.from === me.did && !l.replacedAt)
+  if (mine.replaces?.length) return h('p', { class: 'meta' }, `Linked to your old name (${mine.replaces.map((d) => (person(d) ?? S.replaced?.[d])?.name ?? nameOf(d)).join(', ')}).`)
+  if (mineOpen) return h('p', { class: 'meta' }, `You asked to be linked to your old name, ${(person(mineOpen.old) ?? S.replaced?.[mineOpen.old])?.name ?? nameOf(mineOpen.old)}. `, mineOpen.vouches.length ? `Vouched for by ${mineOpen.vouches.map((v) => v.name).join(', ')}; the room’s host marks it once they’ve checked.` : 'Ask people who know you to vouch for you in Talk; the room’s host then marks it.')
+  const old = h('select', null, h('option', { value: '' }, 'Your old name…'), (S.people ?? []).filter((p) => p.kind === 'human' && p.did !== me.did && !p.replacedBy && !isCheck(p.did)).map((p) => h('option', { value: p.did }, `${p.name} (since ${new Date(p.since).toLocaleDateString()})`)))
+  const why = h('input', { type: 'text', maxlength: 280, placeholder: 'e.g. my browser was reset (optional, public)' })
+  return h('details', null, h('summary', null, 'Lost your old key? Link my old name'),
+    h('p', { class: 'why' }, 'If you were here before under another key, ask to be linked to your old name. People who know you vouch for you (agents never can), then the room’s host marks the old key replaced: its permissions for agents end, your projects and card move here, and the history stays.'),
+    h('label', null, 'Your old name', old), h('label', null, 'Why (optional)', why),
+    h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn small', onclick: async () => { if (!old.value) return toast('Pick your old name.'); if (await post('link', { old: old.value, ...(why.value.trim() ? { why: why.value.trim() } : {}) })) toast('Asked. People who know you can vouch for you in Talk.') } }, 'Link my old name')),
+    !S.hosts?.length ? h('p', { class: 'meta' }, 'This room has no host named yet (ROOM_HOSTS), so the last step waits until it has one.') : null)
+}
+
 // ---------- join on your phone: a short link for this visit only, as a QR code ----------
 // The room makes the link (POST /api/visit); it opens once and runs out after ten minutes. A phone camera
 // opens it into this page's join flow; a wallet reads the room's DID and a DIDComm invitation behind it.
@@ -871,7 +900,7 @@ function renderYou () {
         tech(h('p', { class: 'why' }, 'The key is an Ed25519 did:key; every action is a signed Trust Task document.')),
         h('label', null, 'Name', name),
         h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: join }, 'Join')),
-        h('details', null, h('summary', null, 'I already have a key'), h('label', null, 'Your key', seedIn), h('button', { class: 'btn', onclick: () => { try { me = identityFromSeedHex(seedIn.value); store.set('wpi.seed', me.seedHex); toast('Key loaded.'); refresh() } catch (err) { toast(err.message) } } }, 'Use this key'))),
+        h('details', null, h('summary', null, 'I already have a key'), h('label', null, 'Your key', seedIn), h('button', { class: 'btn', onclick: () => { try { me = identityFromSeedHex(seedIn.value); store.set('wpi.seed', me.seedHex); store.set('wpi.keySaved', me.did); toast('Key loaded.'); refresh() } catch (err) { toast(err.message) } } }, 'Use this key'))),
       phoneCard())
   }
   const mine = person(me.did)
@@ -895,6 +924,7 @@ function renderYou () {
       h('label', null, 'Projects you are part of (lets you record their runs)', projects),
       h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn small', onclick: async () => { const list = projects.value.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean).slice(0, 5); if (await post('join', { name: mine.name, ...(list.length ? { projects: list } : {}) })) forget('me.projects') } }, 'Save')),
       h('div', { class: 'row' }, h('span', { class: 'meta grow' }, 'Lines for you (to you, naming you, or answering you) are marked “for you” in Talk.'), 'Notification' in window ? h('button', { class: 'btn small', onclick: toggleNotify }, notifyOn() ? 'Stop notifications' : 'Notify me here') : null),
+      lostKeyPanel(mine),
       h('details', null, h('summary', null, 'Back up your key'), h('p', { class: 'why' }, 'This secret is what makes you you here. Anyone with it can act as you. Keep it somewhere safe; clearing this browser deletes it.'), h('pre', null, me.seedHex), h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(me.seedHex).then(() => toast('Copied.')) }, 'Copy')),
       h('details', null, h('summary', null, 'Leave the room'),
         h('p', { class: 'why' }, 'Leaving removes your agents and deletes everything private the room holds for you and them: their keys, their notebooks and drafts, their wake links. The room stops listing you and takes nothing more from you, and this browser forgets your key. What you said in the room stays in its public record as "(left)": that record is signed and copied by others, so nothing in it can be taken back. You can come back later by joining again.'),
@@ -1089,6 +1119,7 @@ const gotOf = (a) => ({ connected: Boolean(a.connected || a.firstSaid || a.liste
 /** Where this person is on the way in. */
 function comingIn () {
   if (!joined()) return { step: 'you' }
+  if (store.get('wpi.keySaved') !== me.did) return { step: 'key' } // saving the key can't be skipped (room lines 774-778): it is the only way back to your name
   const agents = myLiveAgents()
   if (!agents.length && !bring.now && !bring.again) return { step: 'ask' } // joining is one step; the agent comes when its person is ready
   if (!agents.length || bring.again) return { step: 'agent' }
@@ -1289,10 +1320,32 @@ function flowView (where) {
       h('label', null, 'What are you building? (optional, everyone sees it)', building),
       h('label', null, 'Its public code, if it has some (optional): your agent and the weaver can read it to find who it could work with', repo),
       h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'No account or password: this browser makes you a key.'), go1),
-      h('details', null, h('summary', null, 'I already have a key'), h('label', null, 'Your key', seedIn), h('button', { class: 'btn small', onclick: () => { try { me = identityFromSeedHex(seedIn.value.trim()); store.set('wpi.seed', me.seedHex); toast('Key loaded.'); refresh() } catch (err) { toast(err.message) } } }, 'Use this key')),
+      h('details', null, h('summary', null, 'I already have a key'), h('label', null, 'Your key', seedIn), h('button', { class: 'btn small', onclick: () => { try { me = identityFromSeedHex(seedIn.value.trim()); store.set('wpi.seed', me.seedHex); store.set('wpi.keySaved', me.did); toast('Key loaded.'); refresh() } catch (err) { toast(err.message) } } }, 'Use this key')),
     ]
   }
   const myName = person(me.did).name
+  if (f.step === 'key') {
+    // the one step nobody skips: a lost key is a lost name, so it is saved before anything else
+    let kept = false
+    const done = h('button', { class: 'btn primary', disabled: true, onclick: () => { store.set('wpi.keySaved', me.did); toast('Saved. Keep it safe: anyone with it can act as you.'); renderFlows(true) } }, 'Continue')
+    const sure = h('input', { type: 'checkbox' })
+    const ready = () => { done.disabled = !(kept && sure.checked) }
+    sure.addEventListener('change', ready)
+    const download = () => {
+      const file = new Blob([`Your We Play Interop key, for ${myName} in ${S.publicUrl || location.origin}\n\n${me.seedHex}\n\nKeep it private: anyone with it can act as you. To come back on another browser: Join, then "I already have a key".\n`], { type: 'text/plain' })
+      const a = h('a', { href: URL.createObjectURL(file), download: 'we-play-interop-key.txt' }); a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+      kept = true; ready()
+    }
+    const copy = () => (navigator.clipboard ? navigator.clipboard.writeText(me.seedHex) : Promise.reject(new Error('no clipboard'))).then(() => { kept = true; ready(); toast('Copied. Paste it somewhere you keep passwords.') }, () => { getSelection()?.selectAllChildren(document.querySelector('pre.key')); toast('Select the key above and copy it by hand (it is selected now).') })
+    return [
+      h('h2', null, `Save your key, ${myName}`),
+      h('p', { class: 'why' }, 'This key is how the room knows it’s you. It lives only in this browser: if the browser forgets it, you lose your name here, and your agents’ permissions with it. Save it now, in a password manager or a file you’ll keep.'),
+      h('pre', { class: 'key', oncopy: () => { kept = true; ready() } }, me.seedHex), // copying it by hand counts too
+      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: download }, 'Download it'), h('button', { class: 'btn', onclick: copy }, 'Copy it')),
+      h('label', { class: 'check' }, sure, ' I’ve saved it somewhere safe'),
+      h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'Keep it private: anyone with it can act as you.'), done),
+    ]
+  }
   if (f.step === 'ask') {
     const q = keep(h('textarea', { rows: 2, maxlength: 2000, placeholder: 'e.g. How safe is this? How do I bring my agent? Who here works on sign-in?' }), 'ask.q')
     const ask = async (btn) => {
@@ -1366,7 +1419,7 @@ function drawWelcome () {
   const doneLongAgo = f.step === 'done' && Date.now() - Date.parse(f.agent.firstSaid) > 86400000
   if (f.step === 'done' && (later === 'closed' || doneLongAgo)) { el.hidden = true; return }
   el.hidden = false
-  if ((later === 'later' && f.step !== 'done') || (f.step === 'ask' && store.get('wpi.asked'))) {
+  if ((later === 'later' && f.step !== 'done' && f.step !== 'key') || (f.step === 'ask' && store.get('wpi.asked'))) {
     el.className = 'welcome slim'
     return fill(el, h('span', { class: 'grow' }, f.step === 'you' ? 'Join in one step, then ask the room anything.' : 'Bring your agent when you are ready.'),
       h('button', { class: 'btn primary small', onclick: () => { store.set('wpi.welcome', null); if (f.step === 'ask') bring.now = true; renderFlows(true) } }, f.step === 'you' ? 'Join' : f.step === 'ask' ? 'Bring my agent' : 'Continue'))
@@ -1374,7 +1427,7 @@ function drawWelcome () {
   el.className = 'card welcome'
   fill(el, flowView('welcome'),
     f.step === 'done' ? h('button', { class: 'btn tiny welcome-x', onclick: () => { store.set('wpi.welcome', 'closed'); renderFlows(true) } }, 'Close')
-      : h('button', { class: 'btn tiny welcome-x', onclick: () => { store.set('wpi.welcome', 'later'); renderFlows(true) } }, 'Not now, just watch'))
+      : f.step === 'key' ? null : h('button', { class: 'btn tiny welcome-x', onclick: () => { store.set('wpi.welcome', 'later'); renderFlows(true) } }, 'Not now, just watch'))
 }
 /** Redraw the steps where they show, when where the person is has changed, never under their typing. */
 function renderFlows (force) {
@@ -1384,7 +1437,7 @@ function renderFlows (force) {
   // force: a step the person just took (it moves on even with the cursor still in a field); otherwise never under their typing
   if (watch.welcome && (force || (key !== watch.welcomeKey && !typing(watch.welcome)))) { watch.welcomeKey = key; drawWelcome() }
   if (bring.open && (force || (key !== bring.key && !typing($('#sheet'))))) { bring.key = key; renderBring() }
-  $('#bring').textContent = f.step === 'you' ? 'Join' : 'Your agent'
+  $('#bring').textContent = f.step === 'you' ? 'Join' : f.step === 'key' ? 'Save your key' : 'Your agent'
   // connecting and listening leave nothing in the log, so while it waits for the agent the page asks every few seconds
   const waiting = f.step === 'waiting' && (bring.open || (watch.welcome && !watch.welcome.hidden && store.get('wpi.welcome') !== 'later'))
   if (waiting && !flowPoll) flowPoll = setInterval(async () => { const s = await api('/api/state').catch(() => null); if (s?.ok) { S = s.body; renderFlows() } }, 4000)
