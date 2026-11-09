@@ -13,11 +13,24 @@ makes its first admin keys:
   agent or builder can see it, and it must not be guessed. That person (or their agent)
   posts it as an ordinary signed line in the room. No code change is needed for that:
   every line in the log is already signed.
-- **The test marking** has nothing to change yet. This repository has no `community/`
-  folder: no boot script, no join page and no DID document. Those come from OpenVTC's
-  `vtc-service`, and the services that would run it are still only a plan in pull
-  request #45, which is blocked on who does the first setup. Anything put under
-  `community/` deploys as soon as it reaches `main`, so it should not be started here.
+- **The test marking** has nothing to change on `main` yet. `main` has no `community/`
+  folder: no boot script, no join page and no DID document. The services now exist as a
+  draft on the branch `claude/wpi-build-community-services` (the plan from pull request
+  #45), not merged. Anything put under `community/` deploys as soon as it reaches `main`,
+  so this pull request does not add a copy of it.
+
+## Where the marking goes on that branch
+
+- `community/vtc/entrypoint.sh` runs `vtc setup --from $DATA/setup.toml`, but does not
+  write that file: it waits for the first-run step, which is not scripted yet. The
+  `vtc_name` and `vtc_description` below belong in that file, so they land with the
+  first-run step (or the entrypoint writes them, as the VTA's entrypoint already writes
+  its own `setup.toml`).
+- `community/vta/entrypoint.sh` writes the VTA's `setup.toml` with
+  `admin_label = "room-test-admin"`. Nothing there names it a test in public.
+- A small guard fits there too: the VTC entrypoint refuses to run its first setup unless
+  `setup.toml` has a `vtc_name` containing `TEST`. Then no admin key is made under a
+  name that does not say test.
 
 ## How to mark it, once the services exist
 

@@ -16,3 +16,8 @@ test('the note pins the OpenVTC commit it was checked against', () => {
 test('nothing deployable was added: there is no community/ folder', () => {
   assert.equal(existsSync(new URL('../community', import.meta.url)), false)
 })
+
+test('the note says where the marking goes once the services land', () => {
+  assert.match(doc, /community\/vtc\/entrypoint\.sh/)
+  assert.match(doc, /claude\/wpi-build-community-services/)
+})
