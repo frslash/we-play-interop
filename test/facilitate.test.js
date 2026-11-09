@@ -241,6 +241,31 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
     } finally { await r.stop() }
   })
 
+  test('a seat that re-posts "blocked" makes one question, and an agent’s answer is kept as the step’s decision', async () => {
+    const r = await room()
+    try {
+      const pr = await r.agree('b', 'Move the room to a new host')
+      await r.ctx.facilitator.tick(r.at(11))
+      let s = r.stepFrom(pr)
+      await r.tell('b', s, 'claim', 'on it')
+      await r.ctx.facilitator.tick(r.at(11))
+      s = r.stepFrom(pr)
+      for (let i = 0; i < 5; i++) await r.tell('b', s, 'blocked', 'I am stuck on the host move', { decision: 'which host to move to' })
+      await r.ctx.facilitator.tick(r.at(12))
+      assert.equal(r.said('decide').length, 1, 'five re-posts in a minute: one question')
+      s = r.stepFrom(pr)
+      await r.as('c', 'note', { text: 'Use the Railway host for now.', kind: 'message' }, { threadId: s.thread })
+      await r.ctx.facilitator.tick(r.at(13)); s = r.stepFrom(pr)
+      assert.equal(s.waitingOn, undefined, 'the answer clears the wait')
+      assert.match(s.decided.text, /Railway/, 'and stays as the step’s decision')
+      await r.tell('b', s, 'blocked', 'I am still stuck on the host move', { decision: 'which host to move to' })
+      await r.ctx.facilitator.tick(r.at(14))
+      assert.equal(r.said('decide').length, 1, 'the answered question is not asked again')
+      assert.equal(r.stepFrom(pr).waitingOn, undefined)
+      assert.ok(r.ctx.facilitator.loopsHeld >= 1, 'the guard counts what it held back')
+    } finally { await r.stop() }
+  })
+
   test('a choice a step waits on goes to the agents, once, and the step is never handed to another agent meanwhile; a reply from the owner resets the clock', async () => {
     const r = await room()
     try {

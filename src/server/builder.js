@@ -136,7 +136,7 @@ export class Builder {
         // stuck again with the same question until the step changes. What was reported is kept on the step too, so a
         // restart (every merge redeploys the room) does not post it all over again.
         const sig = createHash('sha256').update(`${pr.number}\n${pr.title}\n${pr.body ?? ''}`).digest('hex').slice(0, 16)
-        const kept = s.stuck?.stateKey === stateKey(s) ? { sig: s.stuck.sig, at: Date.parse(s.stuck.at) } : null, before = this.reported.get(s.id) ?? kept
+        const kept = s.stuck?.stateKey === stateKey(s) ? { sig: s.stuck.sig, at: Date.parse(s.stuck.at) } : null, before = this.reported.get(s.id) ?? kept ?? (s.decided ? { sig, at: now - BLOCKED_MIN_MS } : undefined) // after a restart, a step the agents already decided counts as reported
         const stuck = stuckOf(pr), d = decided(s), same = (a, b) => String(a ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '') === String(b ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '')
         if (d && same(d.asked, clip(stuck.needs, 280).replace(/\.$/, ''))) { this.guarded++; continue }
         if (before && (now - before.at < BLOCKED_MIN_MS || (before.sig === sig && now - before.at < BLOCKED_AGAIN_MS))) { this.guarded++; continue }
