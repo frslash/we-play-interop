@@ -328,6 +328,21 @@ describe('a door on its own: each step, in order', () => {
     assert.equal((await send(doc())).status, 200)
   })
 
+  test('a task registered with once: false leaves no record: 2,000 signed pings from fresh signers remember no id, and never fill a record of 50', async () => {
+    const { door, send, clock } = make({ perSignerPerMinute: 1e6, perAddressPerMinute: 1e6, maxRecords: 50 }) // a record of 50: were pings recorded, the 51st would be refused as unavailable
+    serveRoomTasks(door, { acceptEntry: async () => { throw new Error('not used here') } })
+    let signer = newIdentity()
+    for (let i = 0; i < 2000; i++) {
+      if (i % 200 === 0) signer = newIdentity() // fresh signers, a few hundred documents each
+      const r = await send(signedTask(signer, { type: PING, recipient: room.did, issuedAt: instant(clock.now), payload: {} }))
+      assert.equal(r.status, 200)
+    }
+    assert.equal(door.info().counts.rememberedIds, 0)
+    const same = signedTask(signer, { type: PING, recipient: room.did, issuedAt: instant(clock.now), payload: {} })
+    assert.equal((await send(same)).status, 200); assert.equal((await send(same)).status, 200) // again: it runs again, never 202 or 204
+    assert.equal(door.info().counts.rememberedIds, 0); assert.equal(door.counts.duplicates.answeredAgain + door.counts.duplicates.doneNothingKept, 0)
+  })
+
   test('the registry: one task per address, known purposes, and serves() lists what is offered', () => {
     const { door } = make()
     assert.deepEqual(door.serves(), [ECHO])

@@ -135,8 +135,9 @@ export class Door {
    *    the record. Default 2 x RATE_PER_MINUTE (60): twice what the log lets a person write, so someone writing
    *    lines meets the log's own limit, with its own words, first.
    *  - the record holds at most `maxRecords` ids: a quarter more than one address can send, at its limit, in the
-   *    longest time a record is kept (an hour and the slack), so it takes more than one flooding address to fill it.
-   *    About 18,000 ids by default, a few MB.
+   *    longest time a record is kept (an hour and the slack). About 18,000 ids by default, a few MB. Only tasks that
+   *    change something are recorded (register's `once`): discovery and ping are not, so the record is filled only by
+   *    signed documents of tasks that change something, which the per-signer limit and the log's own limits also bound.
    */
   constructor ({ ctx, now = Date.now, perSignerPerMinute, perAddressPerMinute, maxRecords, maxRecordedBytes = MAX_RECORDED_BYTES }) {
     const rate = ctx.config?.ratePerMinute ?? 30
@@ -157,18 +158,21 @@ export class Door {
    * the DID whose proof verified; it is the document's issuer. `purposes`: the proof purposes this task takes
    * (a request is signed for authentication; something a person attests, an approval or a grant, for assertionMethod).
    * `record: false` for an answer that must not be kept or sent twice (it carries a secret): a redelivery gets 204.
+   * `once: false` (default true) leaves the document's id out of the duplicate-id record: the task simply runs each
+   * time it is sent, and the door never answers 202 or 204 for it or keeps its answer. Only for a task that changes
+   * nothing, so running twice is harmless; it keeps such documents from filling the record.
    * `listed: false` keeps the address out of serves() and discovery (a type that is only ever refused here).
    * `precheck(doc)`: the task's own gate before any proof is read (and so before a signer's DID is fetched), after the
    * document is known to be fresh and for the room; it returns a Refusal to refuse, or nothing (OpenVTC's sign-in
    * refuses any signer but an Ed25519 did:key there, vti-oob-server T21).
    */
-  register (typeUri, handler, { purposes = PURPOSES, record = true, listed = true, precheck = null } = {}) {
+  register (typeUri, handler, { purposes = PURPOSES, record = true, listed = true, precheck = null, once = true } = {}) {
     if (typeof typeUri !== 'string' || !typeUri || typeUri.length > 300 || typeUri.includes('#')) throw new Error('a task is registered under its full type address, without a #fragment')
     if (typeof handler !== 'function') throw new Error(`${typeUri}: a task needs a handler`)
     if (!Array.isArray(purposes) || !purposes.length || !purposes.every((p) => SIGNING_RELATIONSHIPS.includes(p))) throw new Error(`${typeUri}: purposes are some of ${SIGNING_RELATIONSHIPS.join(', ')}`)
     if (this.handlers.has(typeUri)) throw new Error(`${typeUri} is already served`) // two parts of the room claiming one task is a mistake to see at start, not at the first document
     if (precheck !== null && typeof precheck !== 'function') throw new Error(`${typeUri}: precheck is a function`)
-    this.handlers.set(typeUri, { handler, purposes, record, listed, precheck })
+    this.handlers.set(typeUri, { handler, purposes, record, listed, precheck, once })
     return this
   }
 
@@ -263,7 +267,7 @@ export class Door {
     if (!task) return this.#refuse(doc, this.#unsupported(type), as)
 
     // 6. the duplicate-id record, claimed before the task runs
-    const claim = this.accepted.claim(doc.id, toHex(sha256(canonicalize(doc))), acceptedUntil(doc, { horizonMs: HORIZON_MS }), now)
+    const claim = task.once ? this.accepted.claim(doc.id, toHex(sha256(canonicalize(doc))), acceptedUntil(doc, { horizonMs: HORIZON_MS }), now) : { fresh: null } // `once: false`: nothing is claimed, the task just runs
     if (claim.duplicate) { // never a failure: it already happened
       const r = claim.duplicate
       if (r.body) { c.duplicates.answeredAgain++; return { status: 200, body: r.body } }
@@ -286,10 +290,10 @@ export class Door {
         body = this.#signed(responseTo({ ...doc, type }, payload, as.did), as)
       }
     } catch (err) {
-      this.accepted.release(doc.id, claim.fresh)
+      if (claim.fresh) this.accepted.release(doc.id, claim.fresh)
       return this.#refuse(doc, this.#refusalOf(err, type), as)
     }
-    this.accepted.completed(doc.id, claim.fresh, task.record ? body : null)
+    if (claim.fresh) this.accepted.completed(doc.id, claim.fresh, task.record ? body : null)
     c.answered++; c.answeredByType[type] = (c.answeredByType[type] ?? 0) + 1
     return { status: 200, body }
   }
@@ -337,13 +341,14 @@ export function serveRoomTasks (door, ctx) {
     const acceptanceWindow = { maxAgeSeconds: Math.floor(ACCEPT_MS / 1000), clockSkewSeconds: Math.floor(SKEW_MS / 1000), ...(horizon ? { expiryHorizonSeconds: Math.floor(HORIZON_MS / 1000) } : {}) }
     return { supportedTypes, acceptanceWindow, frameworkVersion: FRAMEWORK_VERSION }
   }
-  door.register(DISCOVERY, discovery(true))
-  door.register(DISCOVERY_0_3, discovery(false)) // 0.3 cannot state a horizon: it says the ten minutes and the slack, which is never wider than applied
+  // discovery and ping change nothing: running twice is harmless, so they take no place in the duplicate-id record (once: false)
+  door.register(DISCOVERY, discovery(true), { once: false })
+  door.register(DISCOVERY_0_3, discovery(false), { once: false }) // 0.3 cannot state a horizon: it says the ten minutes and the slack, which is never wider than applied
 
   // "Are you there, and how do you take documents?" Request { nonce? }; answer { respondedAt, status, protocols,
   // nonce? } with the nonce given back as sent (vta-service/src/trust_tasks/messaging.rs). The room takes Trust
   // Tasks over https only; upstream's word for that way in is "rest".
-  door.register(PING, ({ payload }) => ({ respondedAt: instant(door.now()), status: 'ok', protocols: ['rest'], ...(typeof payload.nonce === 'string' ? { nonce: payload.nonce } : {}) }))
+  door.register(PING, ({ payload }) => ({ respondedAt: instant(door.now()), status: 'ok', protocols: ['rest'], ...(typeof payload.nonce === 'string' ? { nonce: payload.nonce } : {}) }), { once: false })
 
   // A line for the room's log, of any of the room's own types. The answer is the entry the room made (its place in
   // the chain, its hash, the room's witness signature), without the document, which the sender has. Types only the
