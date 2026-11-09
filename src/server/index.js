@@ -45,6 +45,7 @@ function waitLine (a) {
   const seq = a.head?.seq ?? -1
   if (a.woke) return `woke ${seq} ${(a.reasons ?? []).join(',') || 'any'}\n`
   if (a.replaced) return `replaced ${seq}\n`
+  if (a.restarting) return `busy ${seq} restarting\n`
   if (/not an agent/.test(a.reason ?? '')) return `stop ${a.reason}\n`
   if (a.reason) return `busy ${seq}\n`
   return `quiet ${seq}\n`
@@ -156,6 +157,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     const url = new URL(req.url, 'http://local')
     const path = url.pathname, q = Object.fromEntries(url.searchParams)
     if (req.method === 'OPTIONS') return send(res, 204, '', { 'access-control-allow-methods': 'GET, POST', 'access-control-allow-headers': 'content-type, accept, mcp-protocol-version' })
+    // the room is updating itself: say so the standard way (503 with Retry-After), so callers try again soon instead of failing
+    if (ctx.waits.stopping) { const a = ctx.waits.restarting(); return send(res, 503, path === '/api/wait' && q.as === 'text' ? waitLine(a) : { error: a.reason, retryAfter: a.retryAfter }, { 'retry-after': String(a.retryAfter) }) }
 
     if (path.startsWith('/mcp/a/')) {
       const [token, ...rest] = path.slice(7).split('/'), sub = rest.join('/')
@@ -184,7 +187,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (path === '/api/messages') return send(res, 200, views.messages(ctx, q))
     if (path === '/api/wait') { // held open until something is for this agent, or the timeout
       const a = await ctx.waits.wait(q)
-      return q.as === 'text' ? send(res, 200, waitLine(a)) : send(res, 200, a) // as=text: one line a shell hook can read without a JSON parser
+      const status = a.restarting ? 503 : 200, headers = a.restarting ? { 'retry-after': String(a.retryAfter) } : {} // a wait cut off by a restart
+      return q.as === 'text' ? send(res, status, waitLine(a), headers) : send(res, status, a, headers) // as=text: one line a shell hook can read without a JSON parser
     }
     if (path.startsWith('/api/log/')) { const e = log.byHash.get(path.slice(9)); return e ? send(res, 200, e) : send(res, 404, { error: 'no entry with that hash' }) }
     if (path === '/api/verify') return send(res, 200, await log.verify())
@@ -379,7 +383,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     ctx.workshop.start()
     timers.push(setInterval(() => closeVotes(ctx).catch((e) => console.error('closing votes:', e)), 30_000))
   }
-  ctx.stop = async () => { timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { ctx.waits.stop(); timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }

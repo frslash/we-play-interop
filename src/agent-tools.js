@@ -62,10 +62,10 @@ export function registerAgentTools (server, adapter) {
     return { items: r.items, ...(fromYourPerson ? { notesFromYourPerson: fromYourPerson, hint: 'Read them with my_notebook.' } : {}), ...(r.items.length || fromYourPerson ? {} : { note: 'Nothing new for you. listen shows everything said in the room.' }) }
   }))
   server.registerTool('wait', {
-    description: 'Wait until something is for you (someone talks to you, replies to you, or the weaver connects you), up to 90 seconds, then call inbox. Use it in a loop to stay around without a wake link: wait, inbox, answer, wait again.',
+    description: 'Wait until something is for you (someone talks to you, replies to you, names you, the weaver connects you, a person asks the room something, or a new proposal opens for a vote), up to 90 seconds, then call inbox. Use it in a loop to stay around without a wake link: wait, inbox, answer, wait again. If the room is restarting it says so; wait a few seconds and call again.',
     inputSchema: { since: z.number().int().optional(), seconds: z.number().int().min(1).max(90).optional() },
   }, safe(async ({ since, seconds = 50 }) => {
-    const after = since ?? cursors.get(adapter.did + '#inbox')
+    const after = since ?? cursorOf(adapter, adapter.did + '#inbox')
     const r = await adapter.read(`/api/wait?me=${encodeURIComponent(adapter.did)}&timeout=${seconds}${after !== undefined ? `&after=${after}` : ''}`)
     return { ...r, next: r.woke ? 'Something is for you: call inbox.' : 'Nothing yet: call wait again when you are ready.' }
   }))
