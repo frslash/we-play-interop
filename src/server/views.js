@@ -2,6 +2,7 @@
 import { proofConfig, signingInputHex } from '../shared/proof.js'
 import { buildDocument, checkPayload, NAME_OF, resourceKey, TYPES, VOTE_KINDS } from '../shared/types.js'
 import { heard } from '../shared/presence.js'
+import { roundText, silentRound } from '../shared/round.js'
 import { differences, inEffect } from '../shared/rules.js'
 import { AGREED } from './rules.js'
 import { KINDS as RESOURCE_KINDS, RESOURCES as CURATED } from '../../public/resources.js'
@@ -129,9 +130,7 @@ export function message (ctx, e, me) {
   if (name === 'edit') return { ...base, edits: p.of, text: p.text === '' ? '(deleted by its author)' : p.text, ...(p.text === '' ? { deleted: true } : {}) }
   if (name === 'note') return { ...base, kind: p.kind, ...newest(st, e.hash, p.text), ...(p.tech ? { technical: p.tech } : {}), ...(p.media?.length ? { photos: p.media.map((m) => `${ctx.config.publicUrl || ''}/media/${m.sha256}`) } : {}), ...(p.files?.length ? { files: p.files.map((f) => ({ name: f.name, type: f.type, sha256: f.sha256, url: `${ctx.config.publicUrl || ''}/media/${f.sha256}?name=${encodeURIComponent(f.name)}`, read: `read_file with file ${f.sha256}` })) } : {}) }
   if (name === 'round') {
-    const next = (p.next ?? []).map((n) => n.action).join(' · ')
-    const links = (p.connections ?? []).map((c) => `${c.between.map((d) => st.nameOf(d)).join(' & ')}: ${c.why}`).join(' · ')
-    return { ...base, from: 'the weaver', text: [next && `Next: ${next}`, links && `Should talk: ${links}`].filter(Boolean).join('\n') || 'Listening.', ...(p.connections?.length ? { connections: p.connections } : {}) }
+    return { ...base, from: 'the weaver', text: roundText(p, (d) => st.nameOf(d)), ...(p.connections?.length ? { connections: p.connections } : {}) }
   }
   return { ...base, text: gist(e, st).text }
 }
@@ -141,7 +140,11 @@ export function message (ctx, e, me) {
 export function concerns (ctx, e, agent) {
   const name = NAME_OF[e.type], d = e.document, me = ctx.log.state.participants.get(agent)
   if (e.author === agent) return null
+  if (name === 'round' && silentRound(d.payload)) return null // a round with nothing for anyone is a record, not a line
   if (name === 'note' && d.recipient === agent) return 'direct'
+  // a person's line that @-names someone is for those it names alone: only they are woken, nobody else (room line 2760)
+  const n = namedIn(ctx, e)
+  if (n) return n.has(agent) ? 'mention' : null
   if (name === 'note' && d.threadId && ctx.log.byDocId.get(d.threadId)?.author === agent) return 'reply'
   // a choice the facilitator puts to the agents wakes them, as a question to everyone does
   if (name === 'note' && e.author === ctx.log.state.workspace && d.payload.facilitator?.what === 'decide' && me?.kind === 'agent') return 'ask'
@@ -159,6 +162,26 @@ export function concerns (ctx, e, agent) {
   return null
 }
 
+/** Whether text @-names someone: "@Ada" (the @ is what makes it a line for them alone), any case, as a whole word. */
+export function atNames (text, name) {
+  const esc = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(^|[^\\p{L}\\p{N}])@${esc}(?![\\p{L}\\p{N}])`, 'iu').test(String(text))
+}
+
+/**
+ * Who a person's own line (a note) @-names (people and agents here), as a set of DIDs, or null: null when it is not a person's
+ * own line (an agent, the weaver), or names no one. Lines that name no one stay open to all, as before.
+ */
+export function namedIn (ctx, e) {
+  const name = NAME_OF[e.type], d = e.document, st = ctx.log.state
+  if (name !== 'note' || e.author !== e.onBehalfOf || !st.isHuman(e.author)) return null // a proposal stays open to every voter
+  const text = `${d.payload?.text ?? ''} ${d.payload?.title ?? ''}`
+  if (!text.includes('@')) return null
+  const out = new Set()
+  for (const p of st.participants.values()) if (p.name && p.did !== e.author && atNames(text, p.name)) out.add(p.did)
+  return out.size ? out : null
+}
+
 /** Whether a line asks the room something: a question, or a call to everyone. */
 export const asksTheRoom = (text) => /\?\s*$|\?\s|\b(everyone|everybody|all agents|agents|anyone|y'all|you all|all of you)\b/i.test(String(text ?? ''))
 
@@ -173,6 +196,7 @@ export function messages (ctx, { after = -1, limit = 40, me, forMe } = {}) {
   let i = Math.max(0, Number(after) + 1)
   for (; i < all.length && items.length < Math.min(Number(limit) || 40, 100); i++) {
     if (!HEARD.has(NAME_OF[all[i].type])) continue
+    if (NAME_OF[all[i].type] === 'round' && silentRound(all[i].document.payload)) continue // a silent round is not a line
     const why = me ? concerns(ctx, all[i], me) : null
     if (only && (!why || why === 'round')) continue
     items.push({ ...message(ctx, all[i], me), ...(why && why !== 'round' ? { forYou: why } : {}) })

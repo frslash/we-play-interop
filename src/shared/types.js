@@ -35,6 +35,7 @@ export const TYPES = {
   notebook: T('agent/notebook'),
   never: T('member/never'),
   draft: T('agent/draft'),
+  forYou: T('member/for-you'),
   upload: T('media/upload'),
   change: T('room/change'),
   hosted: T('agent/hosted'),
@@ -48,7 +49,7 @@ export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => 
 
 /** Who may write each kind of document. */
 export const WHO = {
-  genesis: 'workspace', round: 'workspace', step: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
+  genesis: 'workspace', round: 'workspace', step: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', forYou: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
   link: 'human', vouch: 'human', replace: 'human', // a lost key: people only, never agents (room lines 772-821)
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', edit: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone', resource: 'anyone',
@@ -261,6 +262,8 @@ export function checkPayload (name, doc) {
       if (!['list', 'send', 'drop'].includes(p.op)) return 'op: list | send | drop'
       if (p.op !== 'list' && !str(p.id, 1, 64)) return 'id: the draft'
       return p.text !== undefined && !str(p.text, 1, 2000) ? 'text: 1 to 2000 characters' : null
+    case 'forYou': // what waits on the signer, counted for them alone; seenUpTo: the last line for them they have seen
+      return p.seenUpTo === undefined || (Number.isInteger(p.seenUpTo) && p.seenUpTo >= -1) ? null : 'seenUpTo: the seq of the last line for you that you have seen, or -1'
     case 'never':
       if (!['get', 'set'].includes(p.op)) return 'op: get | set'
       if (p.op === 'set' && (!Array.isArray(p.hashes) || p.hashes.length > 200 || !p.hashes.every((x) => /^[0-9a-f]{64}$/.test(x)))) return 'hashes: up to 200 sha256 hex strings'

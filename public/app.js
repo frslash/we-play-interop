@@ -11,6 +11,7 @@ import { neverKey, phrases, secretIn, textsOf } from '/shared/guard.js'
 import { splitLayers } from '/shared/layers.js'
 import { whyNot } from '/shared/steps.js'
 import { mentionOptions } from '/shared/mentions.js'
+import { silentRound } from '/shared/round.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
 import { WAITING_FOR_PERSON, allDrafts, heard, lineIsFor, waitingForOk, waitingLabel, waitsForPerson } from '/shared/presence.js'
 
@@ -75,7 +76,7 @@ function forMe (e) {
   return lineIsFor(e, { did: me.did, name: person(me.did)?.name }, parent)
 }
 const seenForMe = () => Number(store.get('wpi.forMeSeen') ?? -1)
-function markForMeSeen () { const top = feed.find(forMe)?.seq; if (top != null && top > seenForMe()) { store.set('wpi.forMeSeen', String(top)); drawForMeCount() } }
+function markForMeSeen () { const top = feed.find(forMe)?.seq; if (top != null && top > seenForMe()) { store.set('wpi.forMeSeen', String(top)); drawForMeCount(); loadForYouSoon() } }
 function drawForMeCount () {
   const b = document.querySelector('.tabs button[data-tab="talk"]'); if (!b) return
   const n = feed.filter((e) => e.seq > seenForMe() && forMe(e)).length
@@ -98,6 +99,36 @@ async function toggleNotify () {
   if (!('Notification' in window)) return toast('This browser can\'t show notifications.')
   const ok = (await Notification.requestPermission()) === 'granted'
   store.set('wpi.notify', ok ? '1' : null); toast(ok ? 'You\'ll get a notification here when a line is for you.' : 'Notifications are blocked for this site in your browser settings.'); render()
+}
+
+// ---------- For you: what waits on you, counted by the room for you alone (room line 2629) ----------
+// Asked with a request signed here and answered only to its signer; none of it is in /api/state or the log.
+const BASE_TITLE = document.title
+let forYouData = null, forYouLast = 0, forYouTimer = null
+function loadForYouSoon () { // at most every 3 seconds, whatever the live stream does
+  clearTimeout(forYouTimer)
+  forYouTimer = setTimeout(() => { forYouLast = Date.now(); loadForYou().catch(() => {}) }, Math.max(0, 3000 - (Date.now() - forYouLast)))
+}
+async function loadForYou () {
+  if (!joined()) { forYouData = null; return drawForYou() }
+  const r = await privateCall('/api/for-you', 'forYou', { seenUpTo: seenForMe() })
+  forYouData = r.ok && r.body.for === me.did ? r.body : null
+  drawForYou()
+}
+function drawForYou () {
+  const box = $('#for-you'), d = joined() ? forYouData : null
+  document.title = d?.total ? `(${d.total}) ${BASE_TITLE}` : BASE_TITLE
+  if (!box) return
+  if (!d) { box.hidden = true; return fill(box) }
+  const toAgent = () => { const a = d.ok[0]?.agent; if (a && myLiveAgents()[0]?.did === a) talk.to = 'agent'; go('talk'); renderTalk(true) }
+  const toRoom = () => { talk.to = 'room'; go('talk'); renderTalk(true) }
+  const item = (n, label, onclick) => h('button', { type: 'button', class: 'fy' + (n ? ' some' : ''), onclick, 'aria-label': `${n} ${label}` }, h('b', null, String(n)), label)
+  box.hidden = false
+  fill(box, h('h2', null, 'For you'),
+    item(d.counts.ok, 'waiting for your OK', toAgent),
+    item(d.counts.vote, 'need your vote', () => go('decide')),
+    item(d.counts.waiting, 'waiting on you', () => go('steps')),
+    item(d.counts.replies, d.counts.replies === 1 ? 'unread reply' : 'unread replies', toRoom))
 }
 
 // an agent is in the room once it has been heard; before that it is being set up, on its person's card only
@@ -527,8 +558,9 @@ function chatItem (e) {
       canEdit(e) && !deleted ? h('button', { class: 'btn tiny', title: 'Delete your line: shown as deleted by its author', onclick: () => deleteLine(e) }, 'Delete') : null,
       h('button', { class: 'btn tiny', title: 'Copy this message', onclick: () => navigator.clipboard?.writeText(text ?? '').then(() => toast('Copied.'), () => toast('Select the text and copy it by hand.')) }, 'Copy'))
     const mineToAnswer = forMe(e)
-    return h('div', { class: 'msg' + (e.author === me?.did ? ' mine' : '') + (agent ? ' agent' : '') + (mineToAnswer ? ' for-me' : '') },
-      h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${colorFor(e.author)}` }), nameOf(e.author), agent ? listenDot(e.author) : null, agent ? waitingBadge(e.author) : null, agent && saysIt(e.author) ? h('span', { class: 'for', title: 'The agent’s own word: the room cannot check it' }, ` · ${saysIt(e.author)}`) : null, agent && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
+    const weaver = e.author === S.workspace // every line the weaver signs reads as a notice, like its rounds: centred and quieter
+    return h('div', { class: 'msg' + (weaver ? ' weaver' : '') + (e.author === me?.did ? ' mine' : '') + (agent && !weaver ? ' agent' : '') + (mineToAnswer ? ' for-me' : '') },
+      h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${weaver ? 'var(--gold)' : colorFor(e.author)}` }), weaver ? 'The weaver' : nameOf(e.author), agent && !weaver ? listenDot(e.author) : null, agent && !weaver ? waitingBadge(e.author) : null, agent && !weaver && saysIt(e.author) ? h('span', { class: 'for', title: 'The agent’s own word: the room cannot check it' }, ` · ${saysIt(e.author)}`) : null, agent && !weaver && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
         d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, latest ? h('span', { class: 'badge edited', title: `Changed by its author ${ago(latest.timestamp)}` }, deleted ? 'deleted' : 'edited') : null, mineToAnswer ? h('span', { class: 'badge for-me' }, 'for you') : null, ' ', time, actions),
       parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${splitLayers(parent.document.payload.text ?? parent.document.payload.title ?? '').short.slice(0, 100)}`) : null,
       p.media?.length ? h('div', { class: 'photos' }, p.media.map((m) => h('a', { href: `/media/${m.sha256}`, target: '_blank', rel: 'noopener' }, h('img', { src: `/media/${m.sha256}`, loading: 'lazy', width: m.w, height: m.h, alt: 'a photo' })))) : null,
@@ -1115,9 +1147,9 @@ function weaveEntry (e, { fast = false, age = 0, speak = !fast } = {}) {
   } else if (name === 'round') {
     loom.weaverPulse()
     for (const c of p.connections ?? []) loom.thread(c.between[0], c.between[1], { gold: true, fast, age })
-    if (speak) {
+    if (speak && !silentRound(p)) { // a round with nothing for anyone says nothing
       const c = p.connections?.[0]
-      loom.say(S.workspace, 'the weaver', c ? `${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}` : p.next?.[0]?.action ?? 'Listening.', { gold: true })
+      loom.say(S.workspace, 'the weaver', c ? `${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}` : p.next[0].action, { gold: true })
     }
   }
 }
@@ -1138,6 +1170,7 @@ function caption (e, age = 0) {
   const fade = `animation-delay:-${Math.round(age)}ms` // each line fades on the loom's clock, from when it was said
   const dot = h('span', { class: 'dot', style: `background:${e.author === S.workspace ? 'var(--gold)' : colorFor(e.author)}` })
   if (name === 'round') {
+    if (silentRound(d.payload)) return null // a silent round is a record, not a line
     const c = d.payload.connections?.[0]
     return h('li', { class: 'cap fading weaver', style: fade }, dot, h('span', null, h('strong', null, 'The weaver '), c ? `thinks ${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}` : `suggests: ${d.payload.next?.[0]?.action ?? 'keep talking'}`))
   }
@@ -1640,6 +1673,7 @@ function render () {
   if (!S) return
   renderTop()
   if (document.body.dataset.tab === 'talk' && !document.hidden) markForMeSeen(); else drawForMeCount()
+  loadForYouSoon()
   for (const [name, draw] of Object.entries(TABS)) {
     const el = $('#tab-' + name)
     if (!['talk', 'watch'].includes(name) && typing(el)) stale.add(name); else { stale.delete(name); draw() } // the chat and the loom redraw around the typing, not over it

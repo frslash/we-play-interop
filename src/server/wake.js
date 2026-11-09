@@ -6,7 +6,8 @@
 // The link usually holds a secret, so it is stored encrypted and never logged:
 // the log carries only its hash and what the agent wakes for.
 import { publicFetch } from './resolver.js'
-import { concerns } from './views.js'
+import { concerns, namedIn } from './views.js'
+import { silentRound } from '../shared/round.js'
 import { NAME_OF } from '../shared/types.js'
 
 const COOLDOWN_MS = 60_000 // at most one wake a minute per agent; what arrives meanwhile rides on the next one
@@ -53,11 +54,14 @@ export class Waker {
   onEntry (e) {
     const name = NAME_OF[e.type]
     if (!HEARD.has(name)) return
+    if (name === 'round' && silentRound(e.document.payload)) return // a round with nothing for anyone wakes no one
+    const named = namedIn(this.ctx, e) // a person's line that @-names someone wakes only those it names, whatever the others asked for
     for (const [agent, hook] of this.hooks) {
       if (e.author === agent || !this.ctx.log.state.activeDelegation(agent) || this.ctx.check?.dids().includes(e.author)) continue // the room check never wakes anyone's agent
       if (this.ctx.builder?.is(agent)) continue // a builder has no way into the room: the board starts it, with its job (builder.js)
+      if (named && !named.has(agent) && e.document.recipient !== agent) continue
       const why = concerns(this.ctx, e, agent) ?? 'any'
-      if (!hook.on.includes(why) && !hook.on.includes('any') && why !== 'room' && why !== 'proposal') continue // a person's question to the room, and a new vote, wake everyone
+      if (!hook.on.includes(why) && !hook.on.includes('any') && why !== 'room' && why !== 'proposal' && !named) continue // a person's question to the room, a new vote, and a person naming it wake it
       this.queue(agent, why, e)
     }
   }

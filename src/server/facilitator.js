@@ -26,8 +26,10 @@ import { partiesOf } from './votes.js'
 
 const clip = (s, n) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s }
 export const STALE_MS = 30 * 60_000 // about half an hour without a word from a step's owner, and it asks
-export const REPORT_MS = 60 * 60_000 // a report against the done-tests about once an hour
-export const REPORT_SOON_MS = 10 * 60_000 // sooner when a done-test's check moved, but not more often than this
+export const REPORT_SOON_MS = 10 * 60_000 // changes are gathered this long, so a burst reads as one report
+// what puts a step in the report: it changed state, was claimed or let go. A chase, an offer, a check asked or a choice put
+// to the room has its own line already, so it is not reported again.
+const MOVES = ['opened', 'claimed', 'result', 'checked', 'check failed', 'released', 'reopened', 'unblocked', 'handed', 'set aside', 'declined', 'replaced', 'settled']
 // The board reads GitHub's verdict on its steps' pull requests this often: merged or closed work leaves the board on its
 // own, so nobody is chased or asked about something already finished (11-09: 32 steps, 21 waiting for a check, many on
 // pull requests that had merged or closed hours before)
@@ -39,6 +41,22 @@ export const closingStep = (title) => /^\s*(?:[^,.;:]{1,80},\s*(?:as [^,.;:]{1,8
 const builderBranch = (s) => `claude/builder-${s.id.slice(0, 12)}` // as builder.js names a step's branch
 export const ASIDE_MS = 3 * 86_400_000 // a step with no owner that nobody touched in three days is set aside: off the report, still on the board, back the moment someone claims it
 import { BUILD_MS } from './builder.js'
+// Goals first (11-09: 50 changes merged in a day, almost all to the room itself, and every goal check still open with nobody
+// on it): an open goal check is offered to an agent who can take it, one new offer every five minutes at most, so a goal's
+// checks reach people steadily and never arrive as a wall
+export const OFFER_EVERY_MS = 5 * 60_000
+/** A goal's own done-test, when its text lists one: the numbered (or bulleted) lines under "Done when", two or more. */
+export const doneList = (text) => {
+  const t = String(text ?? '').replace(/\r/g, ''), at = t.search(/\bdone when\b[^\n]*\n/i)
+  if (at < 0) return []
+  const items = []
+  for (const line of t.slice(at).split('\n').slice(1)) {
+    const m = /^\s*(?:\d{1,2}[.)]|[-*•])\s+(.*\S)\s*$/.exec(line)
+    if (m) items.push(m[1])
+    else if (items.length && line.trim()) break // the list ends at the first line that isn't one of its items
+  }
+  return items.length >= 2 ? items.slice(0, 12) : [] // a tripwire: a goal with more than a dozen checks is a goal to split
+}
 const ASK_TEST_MS = 24 * 3600_000 // asking for a goal's done-test: at most once a day per goal
 const LOOKBACK_MS = 24 * 3600_000 // agreements this recent get their step, from when the board began: older ones were before it, and many were already worked
 const PRESS_MAX = 2 // vague lines pressed per round: a room that is questioned on every line stops talking
@@ -186,12 +204,16 @@ export function decisionOf (text, asked = null) {
 export const stateKey = (s) => [s.state, s.owner ?? '', s.result ?? ''].join('|')
 /** The step's decision while it still holds (its state is the same as when it was decided), else null. */
 export const decided = (s) => (s?.decision && s.decision.stateKey === stateKey(s) ? s.decision : null)
+/** A step a builder may take without asking: it names a goal, is a check of a goal's done-test, came from an agreement, or is a real bug fix. */
+export const BUGFIX = /\b(fix(es|ed)?|bug|broken|regress(ion)?|crash(es)?|fails?|failing|wrong)\b/i
+/** A step an agreement made (from) was voted in the room already; one nobody agreed (the weaver's own) must serve a goal. */
+export const servesAGoal = (s) => Boolean(s.goal || s.test || s.from || BUGFIX.test(s.title ?? ''))
 export const isParked = (s) => Boolean(decided(s)?.parked)
 const sameAsk = (a, b) => String(a ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '') === String(b ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '')
 const median = (xs) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2 }
 const FIELDS = ['goal', 'title', 'done', 'owner', 'state', 'from', 'sources', 'test', 'needs', 'waitingOn', 'offeredTo', 'previousOwner', 'chases', 'chasedAt', 'lastWordAt', 'result', 'evidence', 'checkedBy', 'checkAsked', 'checkAskedAt', 'agreedAt', 'words', 'aside', 'replaced', 'checkDeclined', 'decision', 'reopens', 'stuck', 'decided', 'blockedAt', 'askedAt', 'askedKey', 'settled']
 
-export const ROUND_PROMPT = `Facilitate mode: you drive the held goals to done; you do not propose new directions. The board ("board") holds the steps in work: each has a goal, what done looks like, an owner and a state (${STEP_STATES.join(', ')}). The code keeps the board, the timers and the chasing; you only judge two things and write their words:
+export const ROUND_PROMPT = `Facilitate mode: you drive the held goals to done; you do not propose new directions. Goals come first: what moves a held goal's done-test comes before work on the room's own process (its rules, its board, its code), which matters only when it blocks a goal or a person asks for it. The board ("board") holds the steps in work: each has a goal, what done looks like, an owner and a state (${STEP_STATES.join(', ')}). The code keeps the board, the timers and the chasing; you only judge two things and write their words:
 "vague": lines in newInputs that claim progress, a result or a plan for a step or a goal but leave out the exact thing someone would need to check it or act on it: the method, a spec link, a test value, the file or the command. Give {"entry":"<hash from newInputs>","missing":"method|spec link|test value|file|command","ask":"<one short, friendly question that asks for exactly that>"}. Only real gaps, at most two; never small talk, greetings or lines that already give the thing.
 "converged": places in newInputs where participants of different people now agree on a next concrete step that is not on the board yet and is not an open proposal. Give {"entries":["<hashes of the lines that agree>"],"step":"<the next step, one sentence>","done":"<the check: what anyone can rerun to see it worked, with the command, value or link to look for>"}. Only clear agreement; at most two.
 In both, when a resource holds what is missing or what the check depends on (a spec, test vectors, code), name it by its url.
@@ -235,7 +257,9 @@ export class Facilitator {
         await this.seed(now, did)
         await this.closeAgreements(now, did)
         await this.askForTests(now, did)
+        await this.goalTests(now, did)
         await this.chase(now, did)
+        await this.offerChecks(now, did)
         await this.askForChecks(now, did)
         await this.build(now, did)
         await this.report(now, did)
@@ -538,6 +562,38 @@ export class Facilitator {
     return moved
   }
 
+  /** A held goal whose own text says what done looks like ("Done when:" and a list) gets those as its checks, in its words. */
+  async goalTests (now, did) {
+    const st = this.st
+    for (const g of this.heldGoals()) {
+      if (this.testOf(g.hash).length) continue
+      const items = doneList(`${g.title}\n${g.body ?? ''}`)
+      if (!items.length) continue
+      const opened = await this.openTest(g, items.map((text) => ({ text: clip(text, 300) })), { by: g.principal })
+      did.opened.push(...opened.map((x) => x.id))
+      await this.speak([`“${clip(g.title, 160)}” has its done-test, from its own words: ${opened.length} checks anyone can rerun, each a step on the board.`, ...opened.map((x) => this.label(x)), 'They’ll be offered to agents one at a time. To take one now, claim it with the step tool or say so here.'].join('\n'), 'seed', opened)
+    }
+  }
+
+  /**
+   * Goals first: an open check of a held goal that nobody has is offered to an agent who can take it. The most-backed goal
+   * first, its earlier checks before its "later" ones, at most one new offer every five minutes, and never a second open
+   * offer to an agent who already has one. A check nobody takes goes back quietly to be offered to someone else (chase).
+   */
+  async offerChecks (now, did) {
+    if (now - (this.checksOfferedAt ?? 0) < OFFER_EVERY_MS) return
+    const st = this.st, net = (g) => { const t = st.tally(g); return t.for - t.against }
+    const holding = this.steps().filter((s) => s.offeredTo && !s.owner).map((s) => s.offeredTo)
+    const ready = (s) => s.state === 'open' && !s.owner && !s.offeredTo && !s.waitingOn && !s.needs && !s.aside && !isParked(s)
+    for (const g of [...this.heldGoals()].sort((a, b) => net(b) - net(a) || a.seq - b.seq)) {
+      const test = this.testOf(g.hash).filter((s) => !s.aside), early = test.filter((s) => !s.test.later)
+      const next = test.find((s) => ready(s) && (!s.test.later || early.every((x) => x.owner || x.state !== 'open')))
+      if (!next) continue
+      this.checksOfferedAt = now
+      if (await this.offer(next, null, now, { not: holding })) { did.offered.push(next.id); return }
+    }
+  }
+
   async askForTests (now, did) {
     const st = this.st
     const missing = this.heldGoals().filter((g) => !this.testOf(g.hash).length && now - (st.testAsked.get(g.hash) ?? 0) >= ASK_TEST_MS)
@@ -653,13 +709,14 @@ export class Facilitator {
       if (s.aside || s.waitingOn || isParked(s) || !LIVE.includes(s.state) || s.state === 'result posted') continue // a parked step: nobody is chased
       const asked = s.owner ?? s.offeredTo
       if (!asked) { // nobody has it: it waits in the report, and goes aside after a long quiet
-        if (now - Math.max(time(s.lastWordAt), time(s.at)) >= ASIDE_MS) { await this.write(s, { aside: true }, 'set aside', null); did.aside.push(s.id) }
+        if (!s.test && now - Math.max(time(s.lastWordAt), time(s.at)) >= ASIDE_MS) { await this.write(s, { aside: true }, 'set aside', null); did.aside.push(s.id) } // a goal's own check stays: it is offered again (offerChecks)
         continue
       }
       const building = this.ctx.builder?.is(asked)
       if (quiet(s) < (building ? BUILD_MS : STALE_MS)) continue
       if (building && !s.chases && s.state !== 'open') { await this.write(s, { chases: 1, chasedAt: new Date(now).toISOString() }, 'chased', null); await this.ctx.builder.dispatch(st.steps.get(s.id), now, { again: true }); did.chased.push(s.id); continue } // a build gone quiet: started once more
       if (building && s.state !== 'open') { await this.escalate(s, this.personFor(s), `the builder went quiet twice on ${this.label(s)}: look at it, hand it to someone, or drop it`, did); continue }
+      if (s.test && s.offeredTo && !s.owner) { await this.write(s, { offeredTo: null, previousOwner: s.offeredTo, chases: 0, chasedAt: new Date(now).toISOString() }, 'offer lapsed', null); continue } // a goal check nobody took goes back, quietly, to be offered to someone else
       if (s.offeredTo && !s.owner) { await this.escalate(s, this.personFor({ ...s, previousOwner: s.previousOwner ?? s.offeredTo }), `who takes ${this.label(s)}: ${s.previousOwner ? `it went quiet with ${st.nameOf(s.previousOwner)}, then ` : ''}${st.nameOf(s.offeredTo)} didn’t take it. Keep it, hand it to someone, or drop it`, did); continue }
       if (!s.chases) { nudges.push(await this.write(s, { chases: 1, chasedAt: new Date(now).toISOString() }, 'chased', null)); continue }
       // a second silence
@@ -718,10 +775,10 @@ export class Facilitator {
   }
 
   /** Offer a step to another agent: listening now if one is, of another person than whoever had it, not already busy. */
-  async offer (step, because, now = Date.now()) {
+  async offer (step, because, now = Date.now(), { not = [] } = {}) {
     const st = this.st
     if (step.needs) return false // a step that needs someone's keys, account or host is never handed to a different agent
-    const before = [step.previousOwner, step.offeredTo].filter(Boolean)
+    const before = [step.previousOwner, step.offeredTo, ...not].filter(Boolean)
     const pick = this.candidates(before, { ask: 'take', code: isCodeStep(step) })[0]
     if (!pick) return false
     const next = await this.write(step, { offeredTo: pick, chases: 0, chasedAt: new Date(now).toISOString() }, 'offered', because)
@@ -822,7 +879,11 @@ export class Facilitator {
   async build (now, did) {
     const b = this.ctx.builder
     if (!b) return
-    for (const s of this.steps()) if (s.state === 'open' && !s.waitingOn && !s.aside && !isParked(s) && b.is(s.owner ?? s.offeredTo) && await b.dispatch(s, now)) did.built.push(s.id)
+    for (const s of this.steps()) {
+      if (s.state !== 'open' || s.waitingOn || s.aside || isParked(s) || !b.is(s.owner ?? s.offeredTo)) continue
+      if (!servesAGoal(s) && !decided(s)) { await this.write(s, { waitingOn: { who: null, decision: 'Should a builder take this step? It serves none of the held goals and is not a bug fix' } }, 'waiting', null); continue } // a step that serves no goal needs the room's yes before a builder takes it
+      if (await b.dispatch(s, now)) did.built.push(s.id)
+    }
     await b.look(now).catch((err) => { b.lastError = `builder: ${err.message}` })
   }
 
@@ -835,34 +896,53 @@ export class Facilitator {
   }
 
   // ---------- the report ----------
+  /**
+   * The board is the queue: the report posts only the items that moved since the last one (changed state, claimed,
+   * released, set aside), each once, and a goal's "k of n checked" only when one of its checks moved. An item the room
+   * already named in its own line since it moved (a chase, an offer, a check, a choice) is not said again. Changes are
+   * gathered for a little while (REPORT_SOON_MS) so a burst reads as one line; nothing moved, nothing is said.
+   */
+  movedSince (since) {
+    const st = this.st, moved = new Map() // step id -> seq of its latest move
+    for (const e of this.log.entries.slice(Math.max(0, since + 1))) {
+      if (NAME_OF[e.type] === 'step' && MOVES.includes(e.document.payload.change)) moved.set(e.document.payload.of ?? e.hash, e.seq)
+      else if (NAME_OF[e.type] === 'note' && e.author === st.workspace) {
+        const f = e.document.payload.facilitator
+        if (f && !f.report) for (const id of f.steps ?? []) if (moved.has(id) && moved.get(id) < e.seq) moved.delete(id) // already said, after it moved
+      }
+    }
+    return moved
+  }
+
   async report (now, did) {
     const st = this.st, last = st.lastReport, since = last?.seq ?? -1
-    const changed = this.log.entries.slice(Math.max(0, since + 1)).filter((e) => NAME_OF[e.type] === 'step')
-    if (!changed.length) return // nothing moved: say nothing
-    const age = now - (last ? Date.parse(last.at) : Date.parse(changed[0].timestamp)) // the first report waits a little after the board's first change
-    const testMoved = changed.some((e) => e.document.payload.test && ['claimed', 'result', 'checked', 'check failed', 'waiting', 'unblocked'].includes(e.document.payload.change))
-    if (!(age >= REPORT_MS || ((testMoved || !last) && age >= REPORT_SOON_MS))) return
-    const text = this.reportText(changed)
+    const moved = this.movedSince(since)
+    if (!moved.size) return // nothing moved, or every move was already said: say nothing
+    const first = Math.min(...moved.values())
+    const age = now - (last ? Date.parse(last.at) : Date.parse(this.log.entries[first].timestamp)) // gather a burst of changes into one line
+    if (age < REPORT_SOON_MS) return
+    const text = this.reportText(new Set(moved.keys()))
     if (!text) return
-    await this.speak(text, 'report', [], { report: true, through: this.log.head()?.seq ?? null })
+    await this.speak(text, 'report', [...moved.keys()], { report: true, through: this.log.head()?.seq ?? null })
     did.reported = true
   }
 
-  reportText (changed = []) {
-    const st = this.st, out = ['Where the goals stand, against their done-tests:']
+  /** The board in words: only the steps in `only` (the ones that moved), or the whole board when none is given. */
+  reportText (only = null) {
+    const out = [only ? 'What moved on the board:' : 'Where the goals stand, against their done-tests:']
     const line = (s) => `${this.label(s)}. ${this.where(s)}`
+    const shown = (s) => (only ? only.has(s.id) : !s.aside)
     for (const g of this.heldGoals()) {
       const test = this.testOf(g.hash)
-      if (!test.length) continue
-      out.push(`“${clip(g.title, 140)}”: ${test.filter((s) => s.state === 'checked').length} of ${test.length} checked.`, ...test.filter((s) => !s.aside).map((s) => '  ' + line(s)))
+      if (!test.length || !test.some(shown)) continue // a goal's status is said only when one of its checks moved
+      out.push(`“${clip(g.title, 140)}”: ${test.filter((s) => s.state === 'checked').length} of ${test.length} checked.`, ...test.filter(shown).map((s) => '  ' + line(s)))
     }
-    const others = this.steps().filter((s) => !s.test && !s.aside)
-    if (others.length) out.push('Other steps:', ...others.slice(0, 12).map((s) => '  ' + line(s)))
-    const n = (c) => changed.filter((e) => e.document.payload.change === c).length
-    out.push(`Since the last report: ${n('opened')} opened, ${n('claimed')} claimed, ${n('result')} result${n('result') === 1 ? '' : 's'} posted, ${n('checked')} checked${n('check failed') ? `, ${n('check failed')} sent back` : ''}${n('settled') ? `, ${n('settled')} settled by GitHub (merged or closed)` : ''}.`)
+    const others = [...this.steps(), ...(only ? this.st.stepsDone : [])].filter((s) => !s.test && shown(s))
+    if (others.length) out.push(only ? 'Steps:' : 'Other steps:', ...others.slice(0, 12).map((s) => '  ' + line(s)))
+    if (out.length < 2) return null
     const live = this.steps().filter((s) => !s.aside), waiting = live.filter((s) => s.state === 'result posted' && !this.ownPulls(s).length).length
     out.push(`On the board: ${live.length} step${live.length === 1 ? '' : 's'}${waiting ? `, ${waiting} waiting for a check` : ''}.`)
-    return out.length > 2 ? out.join('\n').slice(0, 2000) : null
+    return out.join('\n').slice(0, 2000)
   }
 
   where (s) {
@@ -981,7 +1061,7 @@ export class Facilitator {
         const w = st.doers.get(d), n = st.notFor.get(d), live = n && now - Date.parse(n.at) <= NOTE_FADE_MS
         return { did: d, name: st.nameOf(d), took: w?.took ?? 0, results: w?.results ?? 0, checks: w?.checks ?? 0, code: w?.code ?? { took: 0, results: 0, checks: 0 }, notFor: live ? n.kinds.map((k) => NOT_FOR[k].replace(/^to /, '')) : [], onlyFor: live ? n.onlyFor : null, until: live ? new Date(Date.parse(n.at) + NOTE_FADE_MS).toISOString() : null }
       }).sort((a, b) => (b.took + b.results + b.checks) - (a.took + a.results + a.checks)),
-      rules: { staleMinutes: STALE_MS / 60_000, reportMinutes: REPORT_MS / 60_000, asideDays: ASIDE_MS / 86_400_000, settleMinutes: SETTLE_EVERY_MS / 60_000 },
+      rules: { staleMinutes: STALE_MS / 60_000, reportMinutes: REPORT_SOON_MS / 60_000, asideDays: ASIDE_MS / 86_400_000, settleMinutes: SETTLE_EVERY_MS / 60_000 },
       settled: { at: this.settledAt ? new Date(this.settledAt).toISOString() : null, error: this.settleError ?? null },
     }
   }

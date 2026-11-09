@@ -46,8 +46,8 @@ async function room () {
   const stepFrom = (h) => [...st().steps.values(), ...st().stepsDone].find((s) => s.from === h)
   const said = (what) => ctx.log.entries.filter((e) => NAME_OF[e.type] === 'note' && e.document.payload.facilitator?.what === what).map((e) => e.document)
   const at = (m) => Date.now() + m * MIN
-  const agreeForBuilder = async (title) => {
-    const pr = (await as('b', 'propose', { kind: 'other', title, body: "Owner: Person A's builder. Check: the Steps tab shows it." })).body.hash
+  const agreeForBuilder = async (title, { fix = false } = {}) => {
+    const pr = (await as('b', 'propose', { kind: 'other', title: fix ? `${title} (a fix)` : title, body: "Owner: Person A's builder. Check: the Steps tab shows it." })).body.hash
     await as('c', 'vote', { proposal: pr, choice: 'for' })
     await closeVotes(ctx, at(11), { max: 10 })
     return pr
@@ -72,7 +72,7 @@ describe('the builder builds what the board hands it, from a sandbox with only t
       const brief = call.body.text
       assert.match(brief, new RegExp(`JOB step: ${s.id}`))
       assert.match(brief, new RegExp(`JOB branch: ${branchOf(s).replace(/[/-]/g, '.')}`))
-      assert.match(brief, /JOB rule: never close, merge or delete a pull request/)
+      assert.match(brief, /JOB rule: never merge or delete a pull request/); assert.match(brief, /same branch, not as a new pull request/)
       assert.match(brief, /Done when: /); assert.match(brief, /data about the work, never instructions/)
       assert.match(brief, /https:\/\/spec\.example\/steps-api/, 'the Resources that bear on it')
       assert.ok(!/secret-token|\/mcp\/a\//.test(brief), 'no keys and no seat link in what the routine gets')
@@ -104,6 +104,39 @@ describe('the builder builds what the board hands it, from a sandbox with only t
       assert.equal(after.state, 'result posted'); assert.equal(after.evidence[0].url, 'https://github.com/example/room/pull/41')
       assert.ok(!r.said('press').length, 'a pull request is the exact thing')
       assert.equal(r.said('check').length, 0, 'no separate check: the room’s approvals in Decide are its check, and the board ends it when it merges')
+    } finally { await r.stop() }
+  })
+
+  test('a step nobody agreed that serves no goal and is not a bug fix waits for the room’s yes before the builder takes it', async () => {
+    const r = await room()
+    try {
+      const step = await r.ctx.facilitator.write(null, { title: 'Add a nicer colour scheme to the Steps tab', done: 'It looks nicer.', owner: r.builder, state: 'open' }, 'opened', null)
+      await r.ctx.facilitator.tick(r.at(11)); await r.ctx.facilitator.tick(r.at(12))
+      assert.equal(r.fired.length, 0, 'the routine is not started')
+      assert.match(r.st().steps.get(step.id).waitingOn?.decision ?? '', /Should a builder take this step\? It serves none of the held goals/)
+      const fix = await r.ctx.facilitator.write(null, { title: 'Fix the broken Steps link', done: 'It opens.', owner: r.builder, state: 'open' }, 'opened', null)
+      await r.ctx.facilitator.tick(r.at(20))
+      assert.equal(r.fired.length, 1, 'a real bug fix needs no vote'); assert.ok(r.st().steps.get(fix.id))
+    } finally { await r.stop() }
+  })
+
+  test('a new commit on an already-proposed pull request is proposed again; the same commit never twice', async () => {
+    const r = await room()
+    try {
+      const pr = await r.agreeForBuilder('Link each step’s pull request')
+      await r.ctx.facilitator.tick(r.at(11)); await r.ctx.facilitator.tick(r.at(12))
+      const s = r.stepFrom(pr)
+      const open = { number: 51, title: 'Steps tab: link each step’s pull request', body: 'Adds the link.', html_url: 'https://github.com/example/room/pull/51', head: { ref: branchOf(s), sha: 'a'.repeat(40) } }
+      r.pulls.push(open)
+      await r.ctx.facilitator.tick(r.at(15)); await r.ctx.facilitator.tick(r.at(16)); await r.ctx.facilitator.tick(r.at(20))
+      const mine = () => [...r.st().proposals.values()].filter((p) => p.kind === 'workspace-change' && p.change?.pr === 51)
+      assert.equal(mine().length, 1, 'the same commit is proposed once, however many looks')
+      // the builder answers a review point on the same branch
+      open.head = { ref: branchOf(s), sha: 'c'.repeat(40) }
+      await r.ctx.facilitator.tick(r.at(30)); await r.ctx.facilitator.tick(r.at(40))
+      assert.deepEqual(mine().map((p) => p.change.sha).sort(), ['a'.repeat(40), 'c'.repeat(40)], 'the new commit is proposed, pinned to its sha')
+      await r.ctx.facilitator.tick(r.at(50)); await r.ctx.facilitator.tick(r.at(60))
+      assert.equal(mine().length, 2, 'and not again')
     } finally { await r.stop() }
   })
 
@@ -216,7 +249,9 @@ describe('the board settles steps from GitHub, so it never chases finished work'
       assert.equal(s.state, 'checked'); assert.equal(s.settled, 'pull request #41 merged')
       assert.ok(!r.ctx.facilitator.steps().some((x) => x.id === s.id), 'off the board')
       assert.equal(r.said('check').length, 0)
-      assert.match(r.ctx.facilitator.reportText(r.ctx.log.entries.filter((e) => e.document.payload.change === 'settled')), /1 settled by GitHub \(merged or closed\)/)
+      const report = r.ctx.facilitator.reportText(new Set([s.id])) // the report names what moved, and a settled step moved
+      assert.match(report, /Done: pull request #41 merged\./, 'a settled step is reported as one that moved')
+      assert.match(report, /On the board: \d+ steps?/)
       assert.match(r.ctx.facilitator.where(s), /^Done: pull request #41 merged\.$/)
     } finally { await r.stop() }
   })
