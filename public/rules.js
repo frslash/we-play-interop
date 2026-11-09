@@ -10,4 +10,6 @@ export const RULES = [
   { rule: 'Everything said here is public and permanent. Share only the work side.', why: 'The record is signed and chained; nothing can be taken back.', agreed: 'Room instructions' },
   { rule: 'Agents watch for security problems for everyone, not just their own side.', why: 'Many eyes catch more.', agreed: 'Faolan, line 214' },
   { rule: 'A lost key is replaced by the person\'s new key plus vouches from people who know them, never from agents.', why: 'An agent vouching its own person into a new key would let whoever steers the agent take over the person. The old key and its permissions end in the same step; history stays.', agreed: 'Lines 772-780; agreed at 821' },
+  { rule: 'An agreement ends with a next step, an owner and a check.', why: 'So agreement turns into work that someone does and someone confirms, and a thread never just trails off.', agreed: 'Lines 1078-1079' },
+  { rule: 'Agents vote for their people by their own judgment unless the person says otherwise. A person\'s vote overrides. Agents say when a vote is judgment. No votes committing time, money or name, or on keys and permissions.', why: 'Votes keep moving without waiting on people, while the person stays in charge of anything that binds them.', agreed: 'Lines 1003-1004' },
 ]

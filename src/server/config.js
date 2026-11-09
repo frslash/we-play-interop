@@ -1,4 +1,6 @@
-// All configuration comes from the environment (see .env.example).
+// All configuration comes from the environment (see .env.example). The room's rules default to the agreed ones in
+// rules.json; a host can set some of them for their room here, and the Rules tab shows where they differ.
+import { AGREED } from './rules.js'
 const env = process.env
 const int = (v, d) => (v === undefined || v === '' ? d : Number.parseInt(v, 10))
 
@@ -6,15 +8,16 @@ export const config = {
   port: int(env.PORT, 3000),
   production: env.NODE_ENV === 'production',
   publicUrl: (env.PUBLIC_URL || '').replace(/\/$/, ''),
+  activitypub: env.ACTIVITYPUB !== '0', // the room's public lines, followable from Mastodon as @room@<the host of PUBLIC_URL>; 0 turns it off
   workspaceName: env.WORKSPACE_NAME || 'We Play Interop',
   workspaceKey: env.WORKSPACE_KEY || '',
   databaseUrl: env.DATABASE_URL || '',
   dataDir: env.DATA_DIR || './data',
   sandbox: env.SANDBOX === '1', // a sandbox room: no real people's data, and agents approve and merge its code by themselves
   workspaceBranch: env.WORKSPACE_BRANCH || 'main', // the branch the room merges approved changes into
-  agentApprovals: env.AGENT_APPROVALS !== '0', // agents may approve changes to the room's own code (an experiment)
-  agentApprovers: Math.max(1, int(env.AGENT_APPROVERS, 3)), // how many different people's agents must approve a code change
-  protectedPaths: (env.PROTECTED_PATHS || 'src/server/actions.js,src/server/log.js,src/server/hosted.js,src/server/never.js,src/server/drafts.js,src/shared/guard.js,src/shared/types.js,src/shared/chain.js,src/shared/did.js,src/shared/crypto.js,sandbox/,.github/,package.json,package-lock.json').split(',').map((x) => x.trim()).filter(Boolean), // changes here need a person's approval too
+  agentApprovals: env.AGENT_APPROVALS === undefined || env.AGENT_APPROVALS === '' ? AGREED.codeChanges.agentsMayApprove : env.AGENT_APPROVALS !== '0', // agents may approve changes to the room's own code (an experiment)
+  agentApprovers: Math.max(1, int(env.AGENT_APPROVERS, AGREED.codeChanges.agentsOfDifferentPeopleNeeded)), // how many different people's agents must approve a code change
+  protectedPaths: (env.PROTECTED_PATHS || AGREED.codeChanges.needAPerson.join(',')).split(',').map((x) => x.trim()).filter(Boolean), // changes here need a person's approval too
 
   boardRepo: env.BOARD_REPO || 'Project-Weave-Tech/dtg-interop',
   boardDataUrl: env.BOARD_DATA_URL || 'https://project-weave-tech.github.io/dtg-interop/data.json',
@@ -38,10 +41,10 @@ export const config = {
   weaverIntervalMinutes: int(env.WEAVER_INTERVAL_MINUTES, 10),
   checkEveryMinutes: int(env.ROOM_CHECK_MINUTES, 180), // the room check walks the newcomer's path this often, and after every start
   weaverQuietMinutes: int(env.WEAVER_QUIET_MINUTES, 2),
-  vetoWindowMinutes: int(env.VETO_WINDOW_MINUTES, 10),
+  vetoWindowMinutes: int(env.VETO_WINDOW_MINUTES, AGREED.proposals.vetoWindowMinutes),
   operator: env.ROOM_OPERATOR || '', // who runs this room, named on its safety card
-  voteMinutes: int(env.VOTE_MINUTES, 10), // a vote that isn't a goal or an outside change closes this long after it was proposed, and the room prompts whoever has to act
-  approvalsRequired: Math.max(1, int(env.APPROVALS_REQUIRED, 1)),
+  voteMinutes: int(env.VOTE_MINUTES, AGREED.votes.closeAfterMinutes), // a vote that isn't a goal or an outside change closes this long after it was proposed, and the room prompts whoever has to act
+  approvalsRequired: Math.max(1, int(env.APPROVALS_REQUIRED, AGREED.proposals.peopleNeeded)),
 
   githubToken: env.GITHUB_TOKEN || '',
   workspaceRepo: env.WORKSPACE_REPO || 'Project-Weave-Tech/we-play-interop',
