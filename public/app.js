@@ -534,7 +534,7 @@ function chatItem (e) {
   if (name === 'card') return system(`${nameOf(e.onBehalfOf)} updated their card${p.goals?.length ? ': ' + p.goals.join(' · ') : ''}.`)
   if (name === 'veto') return system(`${nameOf(e.author)} stopped a proposal: ${p.reason}`)
   if (name === 'mode') return system(`${nameOf(e.author)} set how the weaver decides: ${p.mode}.`)
-  if (name === 'result') return system(p.status === 'agreed' || p.status === 'not agreed' ? `The vote closed: ${p.status} (${p.detail ?? ''}).` : `${p.status === 'prepared' ? 'Ready for a person to open' : 'Done'}: ${p.detail ?? ''}`)
+  if (name === 'result') return system(p.status === 'agreed' || p.status === 'not agreed' ? `The vote closed: ${p.status} (${p.detail ?? ''}).` : `${p.status === 'prepared' ? 'Ready for a person to open' : p.status === 'failed' ? 'Didn’t go through' : 'Done'}: ${p.detail ?? ''}`)
   return ['vote', 'approve', 'score', 'hosted', 'genesis', 'wake', 'way'].includes(name) ? (name === 'way' || name === 'vote' ? tech(system(says(e))) : null) : null
 }
 // a two-layer message: a card for the short of it, a card for the depth, and a switch between them
