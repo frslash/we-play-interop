@@ -109,3 +109,25 @@ describe('P2 sealed notebooks (test members only)', () => {
     await assert.rejects(() => openNote(s.key, { room: 'did:key:other', recordId: 'a', epoch: 0 }, sealed))
   })
 })
+
+describe('P2 security must-fix (Security read of c9ab031)', () => {
+  test('a second member cannot overwrite the first member\'s record', async () => {
+    const s = setup()
+    const b = newRoomPersona(); const bCred = issueCredential(s.room, { subject: b.did, role: 'member', scopes: ['notes:read', 'notes:write'], notBefore: new Date(s.clock.now()), ttlMs: 24 * HOUR })
+    await s.write(s.person, s.memberCred, 'note-1', 'mine')
+    await refused(() => s.write(b, bCred, 'note-1', 'theirs'), /not yours/)
+    const got = await s.call(s.person, s.memberCred, 'read', { recordId: 'note-1' })
+    assert.equal(await openNote(s.key, { room: s.room.did, recordId: 'note-1', epoch: got.epoch }, got.sealed), 'mine')
+    // same answer for a stale epoch, so existence does not leak
+    await refused(() => s.write(b, bCred, 'note-1', 'theirs', 99), /not yours/)
+  })
+
+  test('the nonce store is swept and capped', async () => {
+    const s = setup()
+    for (let i = 0; i < 50; i++) s.host.challenge()
+    s.clock.advance(61e3); s.host.challenge()
+    assert.equal(s.host.nonces.size, 1, 'expired nonces swept')
+    for (let i = 0; i < 20000; i++) { try { s.host.challenge() } catch (e) { assert.equal(e.constructor.name, 'Refused'); break } }
+    assert.ok(s.host.nonces.size <= 10000)
+  })
+})

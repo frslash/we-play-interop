@@ -8,6 +8,7 @@ const HOST_NOTE_CAP = 64 * 1024
 export const LOG_MAX_AGE_MS = 3600e3 // stale log: deny
 export const STATUS_MAX_AGE_MS = 24 * 3600e3 // stale status list: deny
 const NONCE_TTL_MS = 60e3
+const NONCE_CAP = 10000 // refuse new challenges beyond this; expired ones are swept on every call
 const OPS = { write: 'notes:write', list: 'notes:read', read: 'notes:read', add_member: 'members:admin', remove_member: 'members:admin' }
 
 export class SealedHost {
@@ -27,7 +28,11 @@ export class SealedHost {
   /** After a removal the room moves to a new epoch; clients seal new notes with the new key. */
   nextEpoch (roomDid) { return ++this.rooms.get(roomDid).epoch }
 
-  challenge () { const nonce = toHex(randomBytes(16)); this.nonces.set(nonce, this.now() + NONCE_TTL_MS); return nonce }
+  challenge () {
+    const t = this.now(); for (const [n, e] of this.nonces) if (e < t) this.nonces.delete(n)
+    if (this.nonces.size >= NONCE_CAP) throw new Refused('too many open challenges')
+    const nonce = toHex(randomBytes(16)); this.nonces.set(nonce, t + NONCE_TTL_MS); return nonce
+  }
 
   /** { presentation, args } -> result. Throws Refused with a reason that never contains note content. */
   call (presentation, args = {}) {
@@ -78,6 +83,8 @@ export class SealedHost {
   #write (room, who, c, { recordId, epoch, sealed }) {
     if (typeof sealed !== 'string' || !/^[0-9a-f]+$/.test(sealed) || typeof recordId !== 'string' || !/^[\w-]{1,64}$/.test(recordId)) throw new Refused('malformed record')
     if (sealed.length / 2 > HOST_NOTE_CAP || sealed.length / 2 - 28 > MAX_NOTE_BYTES) throw new Refused('note too large')
+    const prior = room.records.get(recordId)
+    if (prior && prior.owner !== who) throw new Refused('not yours') // same answer as "missing"; checked before the epoch so existence doesn't leak
     if (epoch !== room.epoch) throw new Refused('stale epoch')
     const k = this.#h(c.id), now = this.now(), hits = (this.hits.get(k) ?? []).filter((x) => now - x < 60e3)
     if (hits.length >= this.writesPerMinute) { throw new Refused('too many writes') }
