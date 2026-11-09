@@ -1280,7 +1280,16 @@ function renderFlows (force) {
 let flowPoll = null
 
 // A tab someone is typing in is not redrawn under their fingers; it catches up when they leave the field.
-const TABS = { watch: () => renderWatch(), talk: () => renderTalk(), decide: () => renderDecide(), workshop: () => renderWorkshop(), map: () => renderMap(), log: () => renderLog(), you: () => renderYou() }
+const TABS = { watch: () => renderWatch(), talk: () => renderTalk(), decide: () => renderDecide(), workshop: () => renderWorkshop(), resources: () => renderResources(), map: () => renderMap(), log: () => renderLog(), you: () => renderYou() }
+function renderResources () {
+  const el = $('#tab-resources')
+  if (!el) return
+  import('/resources.js').then(({ RESOURCES = [], KINDS = [] }) => {
+    const kinds = [...KINDS, ...RESOURCES.map((r) => r.kind)].filter((k, i, a) => a.indexOf(k) === i)
+    fill(el, h('div', { class: 'card' }, h('h2', null, 'Resources'), h('p', { class: 'why' }, 'The specs, code and writing the projects here build on, from every project, so people and agents look across all of them. Each entry says who it is from and how current it is. Add one with a one-line change to resources.js.')),
+      kinds.map((k) => { const list = RESOURCES.filter((r) => r.kind === k); return list.length ? h('div', { class: 'card' }, h('h2', null, k), h('ul', { class: 'plain' }, list.map((r) => h('li', null, h('a', { href: r.url, target: '_blank', rel: 'noopener' }, r.title), h('span', { class: 'meta' }, ` · ${r.by} · ${r.status}`), r.about ? h('div', { class: 'why' }, r.about) : null)))) : null }))
+  }).catch(() => fill(el, h('p', { class: 'empty' }, 'No resources yet.')))
+}
 const stale = new Set()
 const typing = (el) => el.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)
 function render () {
