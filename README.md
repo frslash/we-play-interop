@@ -412,7 +412,7 @@ By default an agent's notebook sits on the room's server, encrypted with a key t
 **What you need first** (from your trust agent and the host of your room, not from this room):
 
 1. **A trust agent of your own** (an OpenVTC VTA), run by you or by a host you chose.
-2. **A credential for the bridge** at that trust agent: the one line it hands an app (the openvti starter kit calls it `VTA_CREDENTIAL`). Register it as your own client (the kit's `application` role), not as an AI agent: a trust agent refuses to act as you for a caller it has down as a delegate. It needs the room capabilities (`room-present`, `room-open`).
+2. **A credential for the bridge** at that trust agent: the one line it hands an app (the openvti starter kit calls it `VTA_CREDENTIAL`). Register it as your own client (the kit's `application` role), not as an AI agent: a trust agent refuses to act as you for a caller it has down as a delegate. It needs the room capabilities (`room-present`, `room-open`). For joining a community (below) it must be registered with write scope: it can then sign as you, within your trust agent's own policy and quota, and a delegate credential is refused for these tasks. Your trust agent's address (`VTA_URL`, or the one in the credential) must be `https://`; plain `http://` is taken only for this machine (localhost), because the sign-in token would otherwise cross the network in the clear.
 3. **A sealed room**: one on the `attributed` tier, registered at a room host (OpenVTC's `room-host`, or a community's VTC that serves rooms), in which a persona your trust agent holds is a member with `read` and `write`, and whose group keys your trust agent holds. If you own the room, OpenVTC's `pnm rooms owner` commands make it (register, issue-membership, issue-authority, group-create). If a community owns it, accept its offer (`pnm rooms offers accept`). You need two things from this step: the room's DID and its host's DID.
 
 **The three settings**, in the bridge's environment (set all three, or none; some but not all stops the bridge with a message that names what is missing):
@@ -482,6 +482,24 @@ To sign without the bridge, using any Ed25519 library:
 1. Sign the bytes of `signingInputHex`, which is `SHA-256(JCS(proof options)) ‖ SHA-256(JCS(document))`.
 2. Set `proof.proofValue` to `"z" + base58btc(signature)`.
 3. POST the document within 10 minutes.
+
+### Join your community, and use its room, from the bridge
+
+The same bridge can join a trust community as your own persona and enter the community's encrypted room. Your own trust agent signs everything; the community's door is the only place anything is sent, and the room's server sees none of it. These settings belong in the bridge's environment, with `COMMUNITY_DID` (above) and `VTA_CREDENTIAL` (or `VTA_CREDENTIAL_FILE`):
+
+| Setting | |
+|---|---|
+| `COMMUNITY_PERSONA` | The member DID that applies and speaks; your trust agent must hold a key for it. Required, except for `--status`. |
+| `COMMUNITY_URL` (optional) | The community's door, when you want to name it yourself (`https://`, or `http://` on this machine). |
+| `COMMUNITY_ROOM` (optional) | Which community room to use, when you have joined several; with exactly one it is that one. |
+| `COMMUNITY_TALK_AGENT_MAY_SAY` (default: ask) | `yes` lets the agent speak in the community's room on its own. Otherwise what it wants to say is kept as a numbered draft and you send it. |
+
+```bash
+wpi-agent join-community [--yes] [--registry-consent] [--status] [--show-pass]   # also: --criterion <id or digest>, --attr <type>=<value>
+wpi-agent community-room offers | accept <roomId> | status | say "<text>"        # also: drafts | send <n> | discard <n>
+```
+
+`join-community` prints what will be sent and waits for your `yes`; registry consent is off unless you pass `--registry-consent`. `--status` shows where a join stands, and `--show-pass` makes the pass check `POST /api/community/pass` takes. Accepting an offer and saying something in the room are your own acts, which is why neither happens without you (or, for the agent, without `COMMUNITY_TALK_AGENT_MAY_SAY=yes`). The whole of it, with what is not verified, is in [`docs/community-join.md`](docs/community-join.md) and [`docs/community-room.md`](docs/community-room.md). The room's page can also send a person to the community's own join page: [`docs/community-join-page.md`](docs/community-join-page.md).
 
 ### The Trust Task door: for other projects' software
 
@@ -556,7 +574,19 @@ const reply = await (await fetch(`${room}${pass.check}`, { method: 'POST', heade
 reply.payload.member // true, or false with reply.payload.reason
 ```
 
-Not tried against a live community yet: `LIVE_COMMUNITY_DID=<did:webvh> node --test test/live/community-live.test.js` does that (and with `LIVE_MEMBERSHIP_CREDENTIAL=<file>`, checks a real pass and its place on the real list).
+A pass can carry any of the three DTG context addresses in use; the room reads all three and says which one a pass carried ([`docs/dtg-contexts.md`](docs/dtg-contexts.md)). Not tried against a live community yet: `LIVE_COMMUNITY_DID=<did:webvh> node --test test/live/community-live.test.js` does that (and with `LIVE_MEMBERSHIP_CREDENTIAL=<file>`, checks a real pass and its place on the real list). The other live checks in `test/live/` skip themselves unless their variables are set; none has been run against a real community:
+
+| Variable | Used by | What |
+|---|---|---|
+| `LIVE_COMMUNITY_DID` | all the community checks | The community's `did:webvh`. |
+| `LIVE_COMMUNITY_URL` | room and talk checks | The community's door, when its DID document lists none the machine can reach. |
+| `LIVE_PERSONA_DID` | join, room and talk checks | The member DID your trust agent holds a key for. With `VTA_CREDENTIAL` (or `VTA_CREDENTIAL_FILE`, and `VTA_URL`): your own client, registered with write scope. |
+| `LIVE_JOIN` | `community-join-live` | `yes` makes a real join request (a test member on a test community only). Otherwise it reads the manifest only. |
+| `LIVE_ACCEPT_ROOM` | `community-room-live` | A room id: accepts that offer (it spends the invitation). Otherwise it lists offers only. |
+| `LIVE_TALK_ROOM` | `community-talk-live` | The community room's DID. It reads the room and nothing else. |
+| `LIVE_TALK_SAY` | `community-talk-live` | `yes` writes one test message that every member reads and nobody can take back from here. |
+
+`community-manifest-live.test.js` needs only `LIVE_COMMUNITY_DID`.
 
 ## Run it
 
@@ -581,6 +611,7 @@ One small container, with Postgres either pointed at or embedded on a volume. Al
 | `ROOM_DID_NEXT_KEY` | no | A public Ed25519 multikey (`z6Mk…`) the room's people make as the recovery key, separate from every update key. Only its hash goes into the DID log (pre-rotation, `nextKeyHashes`), so after that only this key can take the DID over next; the host never holds it and the secret never reaches the host. Empty: no commitment. |
 | `ROOM_DID_UPDATE_KEY` | no | On each start the room adds a signed entry to its DID log when the log is behind: the document carries the room's signing key (`#room`, from `WORKSPACE_KEY`) and its services for `PUBLIC_URL` (`LinkedDomains` for the site, `DIDCommMessaging` for the join desk, `TrustTaskHTTPS` for the Trust Task door, and `SignInPortal` for wallet sign-in when the address is https), and the rehearsal update key is retired. A room whose DID was written before one of these services existed gets one more entry on its next start. Set this to a public Ed25519 multikey (`z6Mk…`) held by the room's people and the DID hands its update power to them (the host then keeps no update key). Empty: the host makes a fresh update key next to the log (0600) and keeps it until this is set. |
 | `COMMUNITY_DID` | no | The community (a `did:webvh`) whose membership pass the room takes: see [Credentials the room reads](#credentials-the-room-reads). Empty: none, and the page and `/api/info` say so. A value that is not a `did:webvh` is not used, and `/api/info` says why. |
+| `COMMUNITY_JOIN_URL` | no | The `https://` address the "Join" button on the You tab opens. Empty: the community's own sign-in portal from its DID document, else `/members/?join` on its API address. See [`docs/community-join-page.md`](docs/community-join-page.md). |
 | `SIGNIN_LINK_HOST` | no | The host of the link in a wallet sign-in code. Empty: `link.trustoverip.org`, the host OpenVTC's wallets open. It must be a public DNS name and never the room's own domain or under it (a link to the page's own domain opens in the browser, not the wallet); the room says so in `/api/info` and offers no code if it is. |
 | `DATABASE_URL` | recommended | Postgres. When empty, it uses embedded Postgres in `DATA_DIR`. |
 | `SHELF_MAX_MB` | no | How much of the data disk the projects shelf may use for other projects' public code. Default 300. |
