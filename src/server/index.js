@@ -41,6 +41,7 @@ import { Cursors } from './cursors.js'
 import { AGREED } from './rules.js'
 import { ActivityPub } from './activitypub.js'
 import { CODE_RE, Visits, interaction, visitLocation } from './visits.js'
+import { SignIn, registerSignIn } from './signin.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { MAX_DOCUMENT_BYTES } from '../shared/trusttask.js'
@@ -157,6 +158,11 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.door = serveRoomTasks(new Door({ ctx }), ctx)
   // the community whose membership pass the room takes (COMMUNITY_DID); it answers as the DID the join desk speaks as
   ctx.community = new Community({ config, resolver, identity, room: () => ctx.join.desk.room, ...(communityFetch ? { fetch: communityFetch } : {}) })
+  // ── wallet sign-in (auth/oob/*, src/server/signin.js). This and the one line marked the same way in route() are all of it here.
+  ctx.signIn = new SignIn({ identity, config, resolver, log, door: () => ctx.door })
+  registerSignIn(ctx.door, ctx) // its six tasks go on the room's Trust Task door, beside discovery, ping and the log's lines
+  await ctx.signIn.refresh(true)
+  // ── end wallet sign-in
   ctx.types = TYPES
   ctx.changes = new Changes({ ctx, dataDir: config.dataDir })
   log.on('entry', (e) => ctx.changes.onEntry(e))
@@ -302,9 +308,10 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (DOOR_PATHS.has(path)) { // the Trust Task door: a signed standard document in, a signed answer out
       if (req.method !== 'POST') return send(res, 405, { error: 'POST a signed Trust Task document here (application/json). /api/info says what this door serves and which DID to address.' }, { allow: 'POST' })
       const { raw, bytes, cut } = await readDoorBody(req)
-      return sendDoor(res, await ctx.door.handle(raw, { origin: baseOf(req), host: String(req.headers.host ?? ''), ip: ipOf(req), userAgent: String(req.headers['user-agent'] ?? '').slice(0, 300), https: (req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http')) === 'https', bytes, cut }))
+      return sendDoor(res, await ctx.door.handle(raw, { origin: baseOf(req), pageOrigin: String(req.headers.origin ?? '').slice(0, 300), host: String(req.headers.host ?? ''), ip: ipOf(req), userAgent: String(req.headers['user-agent'] ?? '').slice(0, 300), https: (req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http')) === 'https', bytes, cut }))
     }
     if (await ctx.community.handle(req, res, path, readBody, send)) return
+    if (await ctx.signIn.handle(req, res, path, q, send)) return // ── wallet sign-in: what a page reads to start one, and what the room holds for a browser key (reads only)
     if (path === '/.well-known/webfinger' || path.startsWith('/ap/')) return ctx.activitypub.handle(req, res, url)
     if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
     if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), keyring: ctx.join.readiness({ oob: true }), door: ctx.door.info(baseOf(req)) }) }

@@ -48,6 +48,7 @@ export const config = {
   vetoWindowMinutes: int(env.VETO_WINDOW_MINUTES, AGREED.proposals.vetoWindowMinutes),
   operator: env.ROOM_OPERATOR || '', // who runs this room, named on its safety card
   communityDid: (env.COMMUNITY_DID || '').trim(), // the community (a did:webvh) whose membership pass this room takes; empty: none, and the page says so
+  signInLinkHost: (env.SIGNIN_LINK_HOST || '').trim().toLowerCase(), // the host of the link in a wallet sign-in code; empty: link.trustoverip.org, the one OpenVTC's wallets are registered to open. Never this room's own domain
   joinTestMembers: (env.JOIN_TEST_MEMBERS || '').split(',').map((x) => x.trim()).filter((x) => /^did:key:/.test(x)), // the test community's members (did:key): only they can say yes to a wallet that joined it
   hosts: (env.ROOM_HOSTS || '').split(',').map((x) => x.trim()).filter((x) => /^did:[a-z0-9]+:/.test(x)), // the people (DIDs) who host this room: they mark an account replaced once people have vouched for a lost key
   voteMinutes: int(env.VOTE_MINUTES, AGREED.votes.closeAfterMinutes), // a vote that isn't a goal or an outside change closes this long after it was proposed, and the room prompts whoever has to act

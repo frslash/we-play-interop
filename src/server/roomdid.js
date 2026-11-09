@@ -83,9 +83,19 @@ export function trustTaskBase (publicUrl) {
   try { return publicUrl ? new URL(publicUrl).origin : '' } catch { return '' }
 }
 
-/** The document the room's DID should have: the room's signing key, a service pointing at the room's site, its DIDComm inbox and its Trust Task door. */
+/**
+ * The page a wallet sign-in is started from, for PUBLIC_URL: the room's own page. A wallet refuses a sign-in code
+ * unless the DID that sent it lists a SignInPortal service on the same origin as the page the code was shown on
+ * (OpenVTC vta-sdk/src/did_templates/sign_in_portal.rs). Only for an https address: a wallet will not sign in to a
+ * plain-http page, and an entry it would refuse hides the real gap. '' when there is none.
+ */
+export function signInPortalEndpoint (publicUrl) {
+  try { const u = new URL(publicUrl); return u.protocol === 'https:' ? u.origin + '/' : '' } catch { return '' }
+}
+
+/** The document the room's DID should have: the room's signing key, a service pointing at the room's site, its DIDComm inbox, its Trust Task door, and the page people sign in on. */
 export function roomDidDocument ({ did, roomPublicKey, publicUrl }) {
-  const vm = `${did}#room`
+  const vm = `${did}#room`, portal = signInPortalEndpoint(publicUrl)
   return {
     '@context': ['https://www.w3.org/ns/did/v1', 'https://w3id.org/security/multikey/v1'],
     id: did,
@@ -96,15 +106,16 @@ export function roomDidDocument ({ did, roomPublicKey, publicUrl }) {
       { id: `${did}#room-site`, type: 'LinkedDomains', serviceEndpoint: new URL(publicUrl).origin + '/' },
       { id: `${did}#didcomm`, type: 'DIDCommMessaging', serviceEndpoint: { uri: didcommEndpoint(publicUrl), accept: ['didcomm/v2'] } },
       { id: `${did}#trust-tasks`, type: HTTPS_SERVICE, serviceEndpoint: trustTaskBase(publicUrl) }, // found by its type, never by this #id
+      ...(portal ? [{ id: `${did}#sign-in-portal`, type: 'SignInPortal', serviceEndpoint: portal }] : []),
     ],
   }
 }
 
 /**
  * What the room's DID says right now, read from the same log /.well-known/did.jsonl serves (so it is what a wallet
- * resolves): its id, its DIDComm endpoint, the base of its Trust Task door, and the key it lists as #room for
- * authentication (the room can answer as this DID only when that is its own key). Nulls when there is no log or it
- * does not verify. Never throws.
+ * resolves): its id, its DIDComm endpoint, the base of its Trust Task door, the key it lists as #room for
+ * authentication (the room can answer as this DID only when that is its own key), and the whole document. Nulls
+ * when there is no log or it does not verify. Never throws.
  */
 export async function roomDidStatus ({ dataDir, file = '' }) {
   const none = { did: null, didcomm: null, trustTasks: null, roomKey: null }
@@ -114,7 +125,7 @@ export async function roomDidStatus ({ dataDir, file = '' }) {
     const doc = (await resolveDIDFromLog(text.trim().split('\n').map((l) => JSON.parse(l)))).didDocument
     const room = `${doc.id}#room`
     const key = (doc.authentication ?? []).includes(room) ? (doc.verificationMethod ?? []).find((m) => m.id === room)?.publicKeyMultibase : null
-    return { did: doc.id ?? null, didcomm: serviceEndpoint(doc, 'DIDCommMessaging'), trustTasks: serviceEndpoint(doc, HTTPS_SERVICE), roomKey: key ?? null }
+    return { did: doc.id ?? null, didcomm: serviceEndpoint(doc, 'DIDCommMessaging'), trustTasks: serviceEndpoint(doc, HTTPS_SERVICE), roomKey: key ?? null, document: doc }
   } catch { return none }
 }
 

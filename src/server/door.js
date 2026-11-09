@@ -47,6 +47,12 @@ const MAX_RECORDED_BYTES = 4 * 1024 * 1024
 const PURPOSES = ['authentication', 'assertionMethod'] // a request, or something a person attests; never keyAgreement
 const EXTENDED = /^[a-z][a-z0-9]*(-[a-z0-9]+)*(\/[a-z][a-z0-9]*(-[a-z0-9]+)*)*:[a-z][a-zA-Z0-9_]*$/ // a task's own code, "<family>:<local>", in the form RLTP's reader holds one to (lib/src/adapters/vti-mediator.ts)
 const OPAQUE = 'the room could not complete this task; nothing was wrong with the document itself' // never the cause: that goes to the host's log
+/**
+ * The mark on an answer a task signed itself (wallet sign-in's attestations: a wallet checks them for assertionMethod,
+ * and a grant is bound to their exact bytes). The door sends such an answer as it is, once it has checked that it
+ * answers this document and is signed as one of the room's own DIDs; signing it again would break both.
+ */
+export const SIGNED = Symbol.for('wpi.trusttask.signedAnswer')
 
 /** What a task throws to say no: a shared code (or its own "<family>:<local>"), words for a person, small details for a program. */
 export class Refusal extends Error {
@@ -144,8 +150,10 @@ export class Door {
   }
 
   /**
-   * Serve a task. `typeUri` is its full address. `handler({ doc, payload, signer, http: { origin, host, ip, userAgent,
-   * https } })` returns the answer's payload (an object) or throws new Refusal(code, message, details). `signer` is
+   * Serve a task. `typeUri` is its full address. `handler({ doc, payload, signer, http: { origin, pageOrigin, host, ip,
+   * userAgent, https } })` returns the answer's payload (an object), or a whole answer it signed itself and marked
+   * with SIGNED, or throws new Refusal(code, message, details). `origin` is the room's own address; `pageOrigin` is
+   * the Origin header the sender's browser put on the request ('' when there was none: wallets and servers send none). `signer` is
    * the DID whose proof verified; it is the document's issuer. `purposes`: the proof purposes this task takes
    * (a request is signed for authentication; something a person attests, an approval or a grant, for assertionMethod).
    * `record: false` for an answer that must not be kept or sent twice (it carries a secret): a redelivery gets 204.
@@ -204,7 +212,7 @@ export class Door {
   /**
    * One document in, one answer out: { status, body, headers? }. `raw` is the body exactly as it arrived (a Buffer);
    * `body` is the signed answer as JSON text, or '' for the answers that carry no document (202, 204, 429).
-   * `http`: { origin, host, ip, userAgent, https } for the task, and `bytes` / `cut` when the caller stopped reading
+   * `http`: { origin, pageOrigin, host, ip, userAgent, https } for the task, and `bytes` / `cut` when the caller stopped reading
    * a body that was too large (the size is then what it counted, and "more than" that).
    */
   async handle (raw, http = {}) {
@@ -258,10 +266,15 @@ export class Door {
     // 7. the task; 8. its answer, signed. A refusal gives the id back, so a corrected document may use it.
     let body
     try {
-      const said = await task.handler({ doc, payload: doc.payload, signer, http: { origin: String(http.origin ?? ''), host: String(http.host ?? ''), ip: String(http.ip ?? ''), userAgent: String(http.userAgent ?? ''), https: Boolean(http.https) } }) ?? {} // a task with nothing to say acknowledges with {}
-      const payload = plain(said)
-      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('a task answers with an object')
-      body = this.#signed(responseTo({ ...doc, type }, payload, as.did), as)
+      const said = await task.handler({ doc, payload: doc.payload, signer, http: { origin: String(http.origin ?? ''), pageOrigin: String(http.pageOrigin ?? ''), host: String(http.host ?? ''), ip: String(http.ip ?? ''), userAgent: String(http.userAgent ?? ''), https: Boolean(http.https) } }) ?? {} // a task with nothing to say acknowledges with {}
+      if (said?.[SIGNED]) { // signed by the task itself: sent as it is, if it is this document's answer and the room's own
+        if (said.type !== `${type}#response` || said.threadId !== responseTo(doc, {}, as.did).threadId || !said.proof || !mine.some((i) => sameDid(i.did, said.issuer))) throw new Error('a task signed an answer that is not the room\'s answer to this document')
+        body = JSON.stringify(said)
+      } else {
+        const payload = plain(said)
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('a task answers with an object')
+        body = this.#signed(responseTo({ ...doc, type }, payload, as.did), as)
+      }
     } catch (err) {
       this.accepted.release(doc.id, claim.fresh)
       return this.#refuse(doc, this.#refusalOf(err, type), as)

@@ -137,7 +137,9 @@ test('the DID names the room\'s Trust Task door: TrustTaskHTTPS, its endpoint th
   assert.deepEqual(ours(doc), ['LinkedDomains', 'DIDCommMessaging', 'TrustTaskHTTPS']) // the services it had stay
   assert.ok(doc.service.some((s) => s.type === 'LinkedDomains' && s.serviceEndpoint === 'https://inwove.org/'))
   assert.deepEqual(doc.service.find((s) => s.type === 'DIDCommMessaging').serviceEndpoint, { uri: 'https://inwove.org/didcomm', accept: ['didcomm/v2'] })
-  assert.deepEqual(await roomDidStatus({ dataDir: dir }), { did: doc.id, didcomm: 'https://inwove.org/didcomm', trustTasks: 'https://inwove.org', roomKey: ed25519Multikey(room.publicKey) })
+  const { document, ...status } = await roomDidStatus({ dataDir: dir })
+  assert.deepEqual(status, { did: doc.id, didcomm: 'https://inwove.org/didcomm', trustTasks: 'https://inwove.org', roomKey: ed25519Multikey(room.publicKey) }); assert.deepEqual(document, doc)
+  assert.equal(serviceEndpoint(doc, 'SignInPortal'), 'https://inwove.org/') // wallet sign-in's page, beside the door
 })
 
 test('a DID grown before the room had a door gets one more entry on the next start, for the service alone', async () => {

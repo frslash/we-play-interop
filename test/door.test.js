@@ -65,7 +65,7 @@ describe('a door on its own: each step, in order', () => {
     await signedBy(out.reply, room.did, person.did)
     assert.equal(out.reply.proof.proofPurpose, 'authentication'); assert.equal(out.reply.proof.created, out.reply.issuedAt); assert.doesNotMatch(out.reply.issuedAt, /\.\d+Z$/)
     assert.equal(runs.length, 1); assert.deepEqual(runs[0].doc, d); assert.equal(runs[0].signer, person.did)
-    assert.deepEqual(runs[0].http, { origin: 'https://room.example', host: 'room.example', ip: '203.0.113.7', userAgent: 'test/1', https: true })
+    assert.deepEqual(runs[0].http, { origin: 'https://room.example', pageOrigin: '', host: 'room.example', ip: '203.0.113.7', userAgent: 'test/1', https: true })
     assert.equal(classify(out.reply, ECHO).kind, 'response')
     assert.equal(door.counts.received, 1); assert.equal(door.counts.answered, 1); assert.deepEqual(door.counts.answeredByType, { [ECHO]: 1 })
   })
