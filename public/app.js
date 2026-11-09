@@ -12,7 +12,7 @@ import { splitLayers } from '/shared/layers.js'
 import { whyNot } from '/shared/steps.js'
 import { mentionOptions } from '/shared/mentions.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
-import { WAITING_FOR_PERSON, heard, lineIsFor, waitsForPerson } from '/shared/presence.js'
+import { WAITING_FOR_PERSON, allDrafts, heard, lineIsFor, waitingForOk, waitingLabel, waitsForPerson } from '/shared/presence.js'
 
 // ---------- tiny DOM helpers (user text only ever goes in as text) ----------
 const $ = (s) => document.querySelector(s)
@@ -81,6 +81,10 @@ function drawForMeCount () {
   const n = feed.filter((e) => e.seq > seenForMe() && forMe(e)).length
   b.querySelector('.for-me-count')?.remove()
   if (n) b.append(h('span', { class: 'for-me-count', 'aria-label': `${n} for you` }, String(n)))
+  // lines your agents hold for your OK, from all of them, in plain words on the tab
+  const w = joined() ? waitingForOk(S?.people, me.did) : 0
+  b.querySelector('.ok-count')?.remove()
+  if (w) b.append(h('span', { class: 'ok-count', title: 'Lines your agents wrote and hold until you say send' }, waitingLabel(w)))
 }
 // a notification from this browser when a line is for you and you're not looking (only while the page is open)
 const notifyOn = () => store.get('wpi.notify') === '1' && 'Notification' in window && Notification.permission === 'granted'
@@ -339,20 +343,24 @@ async function refreshNotes (force) {
   if (!agent) { talk.notes = []; return }
   if (!force && Date.now() - notesAsked < 10_000) return
   notesAsked = Date.now()
-  const [r, dr] = await Promise.all([privateCall('/api/notebook', 'notebook', { agent: agent.did, op: 'read' }), agent.hosted ? privateCall('/api/drafts', 'draft', { agent: agent.did, op: 'list' }) : null])
-  if (!r.ok) return
-  talk.drafts = dr?.ok ? dr.body.drafts : []
+  // drafts from every agent of yours whose key the room holds (only those can hold a line for your OK)
+  const holders = myLiveAgents().filter((a) => a.hosted)
+  const [r, ...dr] = await Promise.all([privateCall('/api/notebook', 'notebook', { agent: agent.did, op: 'read' }), ...holders.map((a) => privateCall('/api/drafts', 'draft', { agent: a.did, op: 'list' }))])
+  talk.drafts = allDrafts(holders.map((a, i) => ({ agent: a, drafts: dr[i]?.ok ? dr[i].body.drafts : [] })))
+  talk.draftsLoaded = true
+  if (!r.ok) return renderTalk()
   talk.notes = (r.body.notes ?? []).slice(-40)
   talk.readUpTo = r.body.readUpTo ?? null
   talk.notesFor = agent
   renderTalk()
 }
 function draftBubble (d) {
-  const agent = talk.notesFor, words = d.payload.text ?? d.payload.title ?? (d.kind === 'vote' ? `vote ${d.payload.choice}` : d.kind)
+  const agent = d.agent ?? talk.notesFor, words = d.payload.text ?? d.payload.title ?? (d.kind === 'vote' ? `vote ${d.payload.choice}` : d.kind)
   const act = async (op, text) => {
     const r = await privateCall('/api/drafts', 'draft', { agent: agent.did, op, id: d.id, ...(text ? { text } : {}) })
     if (!r.ok) return toast(r.body?.payload?.message ?? 'refused')
-    talk.drafts = r.body.drafts; toast(op === 'drop' ? 'Dropped. It was never posted.' : 'Sent, as your agent.'); await refresh(); renderTalk(true)
+    talk.drafts = allDrafts([...new Map((talk.drafts ?? []).map((x) => [x.agent.did, x.agent])).values()].map((a) => ({ agent: a, drafts: a.did === agent.did ? r.body.drafts : talk.drafts.filter((x) => x.agent.did === a.did) })))
+    toast(op === 'drop' ? 'Dropped. It was never posted.' : 'Sent, as your agent.'); await refresh(); renderTalk(true)
   }
   return h('div', { class: 'msg mine private draft' }, h('div', { class: 'who' }, `🔒 ${agent?.name ?? 'Your agent'} wants to ${d.kind === 'note' ? 'say' : d.kind} · waiting for you · `, h('span', { class: 'time' }, ago(d.at))),
     layered('draft-' + d.id, words, d.payload.tech),
@@ -584,6 +592,7 @@ function renderTalk (scrollDown, { holdAt = null } = {}) {
   const root = $('#tab-talk')
   if (!talk.list) {
     talk.goals = h('div', { class: 'goals-strip' })
+    talk.waiting = h('div', { class: 'waiting-strip', hidden: true })
     talk.list = h('div', { class: 'chat', 'aria-live': 'polite' })
     talk.older = []; talk.olderDone = false
     talk.list.addEventListener('scroll', () => { if (talk.list.scrollTop < 300 && talk.scrolled) loadOlder().catch(() => {}) }, { passive: true })
@@ -637,10 +646,15 @@ function renderTalk (scrollDown, { holdAt = null } = {}) {
     }
     talk.composer = h('div', { class: 'composer' }, talk.reply, talk.tray, talk.mentions, h('div', { class: 'composer-row' }, h('button', { class: 'btn attach', 'aria-label': 'Add a photo or file', title: 'Add a photo or a file (a photo’s location and camera data are removed)', onclick: () => talk.picker.click() }, '📎'), talk.picker, talk.micBtn, talk.input, h('button', { class: 'btn primary send', onclick: sendChat, 'aria-label': 'Send' }, '↑')), talk.toggle)
     talk.input.addEventListener('paste', (ev) => { const files = [...(ev.clipboardData?.files ?? [])].filter((f) => f.type.startsWith('image/')); if (files.length) { ev.preventDefault(); addPhotos(files) } })
-    fill(root, talk.goals, talk.list, talk.composer)
+    fill(root, talk.goals, talk.waiting, talk.list, talk.composer)
   }
   const held = S.proposals.filter((p) => p.kind === 'goal' && p.status !== 'vetoed' && p.tally.for > p.tally.against)
   fill(talk.goals, held.length ? [h('strong', null, 'The room is going for: '), held.slice(0, 3).map((g) => g.title).join(' · ')] : h('span', { class: 'meta' }, 'Just talk. The weaver picks up what people want and suggests goals and next steps here.'))
+  // every line your agents hold for your OK, from all of them, together above the chat so none scrolls away
+  const waiting = talk.drafts ?? [], count = talk.draftsLoaded ? waiting.length : joined() ? waitingForOk(S.people, me.did) : 0
+  talk.waiting.hidden = !count
+  fill(talk.waiting, count ? [h('div', { class: 'waiting-head' }, h('strong', null, waitingLabel(count)), h('span', { class: 'meta' }, ' · only you see these; nothing goes out until you say send')),
+    waiting.length ? waiting.map(draftBubble) : h('p', { class: 'meta' }, 'Loading them…')] : null)
   const agents = myLiveAgents()
   talk.toggle.hidden = !agents.length
   if (!agents.length) talk.to = 'room'
@@ -654,7 +668,6 @@ function renderTalk (scrollDown, { holdAt = null } = {}) {
   const seen = new Set(), shown = [...[...talk.older].reverse(), ...feed.slice(0, FEED_KEEP).reverse()].filter((e) => !seen.has(e.hash) && seen.add(e.hash)).sort((a, b) => a.seq - b.seq), oldest = shown[0]?.timestamp ?? ''
   const rows = shown.filter((e) => !checkEntry(e)).map((e) => ({ at: e.timestamp, el: chatItem(e) })).filter((x) => x.el)
   for (const n of talk.notes) if (n.at >= oldest) rows.push({ at: n.at, el: noteBubble(n) })
-  for (const d of talk.drafts ?? []) rows.push({ at: d.at, el: draftBubble(d) })
   rows.sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : 0))
   const top = talk.older.length || talk.loadingOlder ? h('p', { class: 'sys' }, talk.olderDone ? 'The start of the room.' : 'Scroll up for earlier lines.') : null
   fill(talk.list, rows.length ? [top, ...rows.map((x) => x.el)].filter(Boolean) : h('p', { class: 'empty' }, 'Quiet so far. Say hello.'))

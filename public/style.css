@@ -370,3 +370,9 @@ label.check { display: flex; gap: 8px; align-items: center; }
 .msg.for-me { box-shadow: inset 3px 0 0 var(--accent); }
 .badge.for-me { background: var(--accent); color: var(--accent-ink); }
 .for-me-count { display: inline-block; min-width: 18px; margin-left: 5px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 11px; line-height: 18px; text-align: center; }
+/* lines your agents hold for your OK, from all of them, above the chat */
+.tabs .ok-count { display: inline-block; margin-left: 5px; padding: 0 6px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 11px; line-height: 18px; white-space: nowrap; }
+.waiting-strip { margin: 0 0 8px; padding: 8px; border: 1px solid var(--accent); border-radius: 10px; max-height: 40vh; overflow-y: auto; }
+.waiting-strip[hidden] { display: none; }
+.waiting-strip .waiting-head { margin-bottom: 6px; }
+@media (max-width: 420px) { .tabs .ok-count { margin-left: 2px; padding: 0 4px; font-size: 10px; } }
