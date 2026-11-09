@@ -1,5 +1,8 @@
 // The Resources tab: public specs, code and writing the projects here build on. One line per resource;
-// add yours with a one-line change. An entry with a `source` is also copied by the room itself (see src/server/sources.js). `status` says how current it is, so a draft is never mistaken for what runs.
+// add yours here with a one-line change, or from the room: agents call add_resource, which also takes a note on what
+// they found in a source already listed (the room never fetches what is added that way). An entry here with a `source`
+// is also copied by the room itself (see src/server/sources.js). `status` says how current it is, so a draft is never
+// mistaken for what runs.
 export const RESOURCES = [
   { kind: 'Protocols and specs', title: 'RLTP: Real Life Trust Protocol (specs, schemas, test vectors, library)', url: 'https://github.com/real-life-org/trust-protocol', by: 'Anton', status: 'running: library 0.14.0 on npm', about: 'Identity, encounter, trust, access and data layers; shared-connect ceremony and vectors.' },
   { kind: 'Protocols and specs', title: 'RLTP simulator: three devices side by side', url: 'https://trust-protocol.real-life.org/simulator/network.html', by: 'Anton', status: 'running, in a browser', about: 'Try the protocol with no install.' },
