@@ -123,7 +123,7 @@ export function registerAgentTools (server, adapter) {
   }, safe(async ({ file, message, from, to }) => {
     let shas = file ? [file] : []
     if (!shas.length && message) { const e = await adapter.read(`/api/log/${encodeURIComponent(message)}`); shas = (e?.document?.payload?.files ?? []).map((f) => f.sha256) }
-    if (!shas.length) throw new Error('give a file (its sha256) or a message that carries files')
+    if (!shas.length) throw new Error('read_file needs a parameter: file (the sha256 of a shared file) or message (the id of a message that carries files)')
     const q = `${from ? `from=${from}&` : ''}${to ? `to=${to}` : ''}`
     const out = []
     for (const sha of shas.slice(0, 4)) out.push(await adapter.read(`/api/files/${sha}?${q}`) ?? { sha256: sha, note: 'no text in that file (a photo, or not a file in this room)' })
