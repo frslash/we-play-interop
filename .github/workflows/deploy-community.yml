@@ -5,7 +5,8 @@ name: deploy-community
 on:
   push:
     branches: [main]
-    paths: ['community/**']
+    paths: ['community/**', '.github/workflows/deploy-community.yml']
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -18,21 +19,41 @@ jobs:
     environment: production
     env:
       RAILWAY_CLI_VERSION: 5.71.0
-      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
     steps:
       - name: Fail loudly unless this is main, in the production environment, with its token
+        env:
+          HAS_TOKEN: ${{ secrets.RAILWAY_TOKEN != '' }}
         run: |
-          if [ "$GITHUB_REF" != "refs/heads/main" ] || [ "$GITHUB_EVENT_NAME" != "push" ]; then echo "::error::deploys run only on a push to main"; exit 1; fi
-          if [ -z "$RAILWAY_TOKEN" ]; then echo "::error::RAILWAY_TOKEN is missing: it must be an environment secret on 'production' (not a repo-wide secret)"; exit 1; fi
+          if [ "$GITHUB_REF" != "refs/heads/main" ] || { [ "$GITHUB_EVENT_NAME" != "push" ] && [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; }; then echo "::error::deploys run only on a push to main, or a manual run of main"; exit 1; fi
+          if [ "$HAS_TOKEN" != "true" ]; then echo "::error::RAILWAY_TOKEN is missing: it must be an environment secret on 'production' (not a repo-wide secret)"; exit 1; fi
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
-        with:
-          node-version: 22
-      - name: Install the Railway CLI (pinned)
-        run: npm install --global --ignore-scripts "@railway/cli@${RAILWAY_CLI_VERSION}"
+      # The Railway CLI is the release binary, not npm. Asset: railway-v5.71.0-x86_64-unknown-linux-musl.tar.gz
+      # (static). SHA-256 below copied 2026-11-09 from GitHub's releases API `digest` for
+      # railwayapp/cli v5.71.0 (the release publishes no checksums file), and cross-checked by `gh release view`
+      # and by an independent download hashed on a Mac (Emrys, 15:40Z). It is written here, never fetched at run time.
+      - name: Install the Railway CLI (pinned release binary, checksum checked before use)
+        run: |
+          set -euo pipefail
+          asset="railway-v${RAILWAY_CLI_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          sha256="2e682fd2ddf8d6fdf9e46d9d99d99646ff0022a6abb0c2bca93011348a269fb9"
+          mkdir -p "$RUNNER_TEMP/railway"
+          cd "$RUNNER_TEMP/railway"
+          curl --fail --proto '=https' --tlsv1.2 -sSL -o "$asset" "https://github.com/railwayapp/cli/releases/download/v${RAILWAY_CLI_VERSION}/${asset}"
+          echo "${sha256}  ${asset}" | sha256sum -c -
+          tar -xzf "$asset" railway
+          chmod +x railway
+          echo "$RUNNER_TEMP/railway" >> "$GITHUB_PATH"
+      - name: Check the Railway CLI version (no token here)
+        run: |
+          set -euo pipefail
+          v=$(railway --version)
+          echo "$v"
+          case "$v" in *"5.71.0"*) ;; *) echo "::error::expected Railway CLI 5.71.0"; exit 1;; esac
       - name: Deploy each service from its own folder
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
           set +x
           for svc in vta vtc mediator proxy; do
