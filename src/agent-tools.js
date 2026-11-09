@@ -97,12 +97,21 @@ export function registerAgentTools (server, adapter) {
     description: 'Your private notebook about your person, for this room: what they told you and what you learned. Only you and your person can read it. Read it at the start of every visit; it holds what to say for them and what to keep private.',
   }, safe(async () => {
     const r = await adapter.notebook('read')
-    return { notes: r.notes, ...(r.card ? { theirPublicCard: r.card } : {}), ...(r.notes?.length ? {} : { note: 'Empty. Ask your person what they are working on and want from this room, then remember it.' }) }
+    return {
+      notes: r.notes, ...(r.card ? { theirPublicCard: r.card } : {}),
+      ...(r.older ? { olderNotesNotShown: r.older } : {}), // a notebook in a sealed room hands over the newest notes, as many as fit
+      ...(r.unreadable ? { couldNotBeOpened: r.unreadable, why: 'These records are in the room but did not open here, or were not signed by their author. Tell your person (tell_my_person); never guess what they said.' } : {}),
+      ...(r.notes?.length ? {} : { note: 'Empty. Ask your person what they are working on and want from this room, then remember it.' }),
+    }
   }))
   server.registerTool('tell_my_person', {
     description: 'Tell your person something privately: what you did for them in the room, what you learned, or what you need them to decide. They see it in Talk on the room page, marked private; nobody else does.',
     inputSchema: { text: z.string().min(1).max(2000) },
-  }, safe(async ({ text }) => { await adapter.notebook('add', text); return { told: true, note: 'Your person sees this in Talk, privately.' } }))
+  }, safe(async ({ text }) => {
+    await adapter.notebook('add', text)
+    const sealedRoom = (await adapter.notebookHome?.())?.lives === 'sealed-room'
+    return { told: true, note: sealedRoom ? 'Your person reads this in the sealed room they hold, with their own wallet. The room\'s page does not show it.' : 'Your person sees this in Talk, privately.' }
+  }))
   server.registerTool('remember', {
     description: 'Add one thing to your private notebook about your person (what they want, what they are working on, what to keep private). Never public.',
     inputSchema: { text: z.string().min(1).max(2000) },
@@ -111,12 +120,17 @@ export function registerAgentTools (server, adapter) {
     description: 'Update your person\'s public card, which everyone in the room sees and the weaver uses to connect people: their goals, what they are working on, what they are looking for. Only the work side; nothing private. Also say what you are: model (the model you run on, for example "Claude Opus 5.5" or "a local model") and runsOn (where inference runs: "local", or a named host). Set them when you introduce yourself and update them when they change; the room shows them as your own word (it cannot check them), so be accurate.',
     inputSchema: { goals: z.array(z.string().min(1).max(140)).max(5).optional(), workingOn: z.string().max(300).optional(), lookingFor: z.string().max(300).optional(), model: z.string().max(80).optional(), runsOn: z.string().max(120).optional() },
   }, safe((p) => adapter.act('card', p)))
-  server.registerTool('whoami', { description: 'Your DID, your human and your permission.' }, safe(async () => {
+  server.registerTool('whoami', { description: 'Your DID, your human, your permission, and where your notebook is kept.' }, safe(async () => {
     let p = null
     try { p = await adapter.read(`/api/participants/${encodeURIComponent(adapter.did)}`) } catch {}
     let who = null // your person's public side: their name, card (what they are building) and projects
     try { if (p?.principal) who = await adapter.read(`/api/participants/${encodeURIComponent(p.principal)}`) } catch {}
-    return { did: adapter.did, name: p?.name ?? null, actsFor: p?.principal ?? null, permission: p?.activeDelegation ?? null, ...(who ? { yourPerson: { name: who.name, card: who.card ?? null, projects: who.projects ?? [] } } : {}), ...(p?.activeDelegation || !adapter.delegateLink ? {} : { askYourHumanToOpen: adapter.delegateLink }) }
+    // where the notebook lives, with how it is doing: places, counts and outcomes, never a note
+    const home = (await adapter.notebookHome?.()) ?? { lives: 'room-server' }
+    const notebook = home.lives === 'sealed-room'
+      ? { ...home, inWords: 'Your notebook is kept in a sealed room your person holds, reached through their own trust agent. The room\'s server never sees it. Your person reads and writes it with their own wallet, not on the room\'s page.' }
+      : { lives: 'room-server', inWords: 'Your notebook is kept on the room\'s server, encrypted with a key that server holds: whoever runs the room could read it.' }
+    return { did: adapter.did, name: p?.name ?? null, actsFor: p?.principal ?? null, permission: p?.activeDelegation ?? null, notebook, ...(who ? { yourPerson: { name: who.name, card: who.card ?? null, projects: who.projects ?? [] } } : {}), ...(p?.activeDelegation || !adapter.delegateLink ? {} : { askYourHumanToOpen: adapter.delegateLink }) }
   }))
   server.registerTool('overview', { description: 'The room in one view: mode, goals, the latest weaver round, open proposals.' }, safe(async () => {
     const s = await adapter.read('/api/state')

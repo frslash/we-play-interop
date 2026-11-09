@@ -5,9 +5,12 @@
 //
 //   WPI_URL=https://your-workspace npx -y -p github:Project-Weave-Tech/we-play-interop wpi-agent
 //   wpi-agent link     prints the agent's DID and the delegation link + QR, then exits
+//   wpi-agent move-notebook   copies the notes the room's server holds into the sealed room, then exits
 //
 // Env: WPI_URL (required) · WPI_AGENT_KEY (64 hex) or WPI_AGENT_KEY_FILE
 // (default ~/.config/we-play-interop/agent-key, created on first run).
+// Notebook in a sealed room the person holds (all three, or none): VTA_CREDENTIAL (or VTA_CREDENTIAL_FILE) ·
+// NOTEBOOK_ROOM · NOTEBOOK_HOST_DID. Then the notebook never touches the room's server (agent/vti-notebook.js).
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -74,6 +77,31 @@ async function submitChange ({ title, why, base, patch }) {
 
 if (process.argv[2] === 'link') { await showLink(); process.exit(0) }
 
+// Where this agent's notebook lives. With the three settings it is a sealed room its person holds, reached through
+// their own trust agent from this machine; the credential for that trust agent stays here and is never sent to the room.
+let sealed = null
+if (['VTA_CREDENTIAL', 'VTA_CREDENTIAL_FILE', 'NOTEBOOK_ROOM', 'NOTEBOOK_HOST_DID'].some((k) => process.env[k])) { // loaded only when asked for: nothing changes for a bridge without these
+  try { sealed = (await import('./vti-notebook.js')).notebookFromEnv(process.env, { agent: me }) } catch (err) { say(err.message); process.exit(1) }
+}
+/** The notebook on the room's server (encrypted with a key that server holds): used only when no sealed room is set. */
+const roomNotebook = (op, text) => {
+  const doc = signedDocument(me, { type: TYPES.notebook, payload: { agent: me.did, op, ...(text ? { text } : {}) } })
+  return api('/api/notebook', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc) })
+}
+const personCard = async () => { const p = await api(`/api/participants/${encodeURIComponent(me.did)}`); return p?.principal ? (await api(`/api/participants/${encodeURIComponent(p.principal)}`))?.card ?? null : null } // public, from the log
+
+// The person's own one-way move: read the notes the room's server holds for this agent, write each into the sealed
+// room, read them back and compare. The server's copy is left exactly as it is; removing it is the person's own, later, step.
+if (process.argv[2] === 'move-notebook') {
+  if (!sealed) { say('Set VTA_CREDENTIAL, NOTEBOOK_ROOM and NOTEBOOK_HOST_DID first: they say which sealed room to move the notebook into.'); process.exit(1) }
+  try {
+    const r = await sealed.importNotes((await roomNotebook('read')).notes ?? [])
+    console.log(JSON.stringify(r))
+    say(r.verified ? `Moved: ${r.moved} of ${r.notes} notes written to the sealed room (${r.alreadyThere} were there already), and every one read back the same. The room's server still holds its copy: nothing there was changed.` : `Not finished: ${r.moved} of ${r.notes} notes were written, but they did not all read back the same. The room's server still holds its copy; run this again.`)
+    process.exit(r.verified ? 0 : 1)
+  } catch (err) { say(`The move stopped: ${err.message} Nothing on the room's server was changed.`); process.exit(1) }
+}
+
 const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js')
 const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js')
 const { ROOM_INSTRUCTIONS, registerAgentTools } = await import('../src/agent-tools.js')
@@ -83,10 +111,8 @@ registerAgentTools(server, {
   did: me.did,
   delegateLink: link,
   read: (path) => api(path),
-  notebook: async (op, text) => {
-    const doc = signedDocument(me, { type: TYPES.notebook, payload: { agent: me.did, op, ...(text ? { text } : {}) } })
-    return api('/api/notebook', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc) })
-  },
+  notebook: sealed ? sealed.adapter({ card: personCard }) : roomNotebook,
+  notebookHome: () => (sealed ? sealed.status() : { lives: 'room-server' }),
   act: async (name, payload, extra = {}) => { const r = await act(name, payload, extra); return { accepted: true, id: r.hash, seq: r.seq } },
   submitChange,
 })
@@ -96,3 +122,4 @@ let p = null
 try { p = await api(`/api/participants/${encodeURIComponent(me.did)}`) } catch {}
 if (!p?.activeDelegation) await showLink()
 else say(`we-play-interop agent ${me.did} acting for ${p.activeDelegation.issuer}`)
+say(sealed ? `Notebook: in the sealed room ${sealed.roomId}, through your own trust agent. The room's server is never asked for it.` : 'Notebook: on the room\'s server, encrypted with a key that server holds. To keep it in a room you hold, see the README.')
