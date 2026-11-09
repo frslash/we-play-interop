@@ -27,6 +27,9 @@ const noWait = async () => {}
 const T = (family, v) => typeUri(family, v)
 const texts = (r) => r.notes.map((n) => n.text)
 
+/** The stand-in's resolver, except that the host's own DID cannot be read. */
+const unreadableHost = (fake) => ({ ...fake.resolver, resolve: async (did) => { if (did === fake.host.did) throw new Error('cannot resolve this DID here'); return fake.resolver.resolve(did) } })
+
 /** A sealed room at a stand-in host, owned by one persona, with a second persona (the person's member) added: the room is at epoch 2. */
 async function world (opts) {
   const fake = await startFakeVti(opts)
@@ -37,7 +40,9 @@ async function world (opts) {
   /** One machine: its own sign-in at the person's trust agent, acting as `persona`, running the notebook of `agentId`. */
   const device = (persona = member, agentId = agent, more = {}) => {
     const vta = new Vta({ credential: decodeCredential(fake.credential(persona ? [persona] : [], more)), sleep: noWait })
-    const host = new RoomHost({ vta, hostDid: fake.host.did, resolver: fake.resolver, fetch: globalThis.fetch, sleep: noWait })
+    // The stand-in host signs only its successes, and a reader that can read the host's DID now insists on a signature on every answer. So by
+    // default the host is one reached by address, whose DID this machine cannot read (as did:peer:2): its answers go through, counted.
+    const host = new RoomHost({ vta, hostDid: fake.host.did, url: fake.host.url, resolver: unreadableHost(fake), fetch: globalThis.fetch, sleep: noWait })
     return { vta, host, nb: new VtiNotebook({ vta, host, roomId: room, agent: agentId.did, secret: agentId.seed, keyFor: fake.resolver.keyFor }) }
   }
   return { fake, owner, member, room, agent, device }
@@ -316,10 +321,34 @@ describe('an older trust agent and host (the versions the openvti starter kit ta
     try {
       w.fake.host.signs = true
       const { nb, host, vta } = w.device()
+      host.resolver = w.fake.resolver; nb.host.resolver = w.fake.resolver // this host's DID can be read: its signature is checked
       await nb.add('Signed for.'); assert.ok(host.counts.signedAnswers > 0)
+      host.resolver = unreadableHost(w.fake) // the stand-in signs only its successes; a refusal is read on a host whose DID cannot be
       const key = [...nb.records.keys()][0], sealed = await vta.seal(w.room, key, 99, Buffer.from('x'))
       await assert.rejects(host.put(w.room, { key, sealed, expectedVersion: 0 }), (e) => isVersionConflict(e) && e.code === 'taskFailed')
       await assert.rejects(host.put(w.room, { key, sealed, expectedVersion: 7 }), isVersionConflict)
+    } finally { await w.fake.close() }
+  })
+})
+
+describe('an unsigned answer from a host whose DID can be read', () => {
+  test('is refused and counted; from a host whose DID cannot be read it goes through, counted apart; an answer with no body at all is not "unsigned"', async () => {
+    const w = await world()
+    try {
+      const { host } = w.device()
+      host.resolver = w.fake.resolver // the stand-in's host DID resolves, and the stand-in does not sign (signs: false)
+      await assert.rejects(host.info(w.room), (e) => e instanceof VtiError && e.code === 'proofInvalid' && e.from === 'the room host' && /not signed/.test(e.message))
+      assert.deepEqual([host.counts.unsignedRefused, host.counts.uncheckedAnswers, host.counts.signedAnswers], [1, 0, 0])
+      assert.equal(host.last.ok, false)
+      w.fake.host.signs = true
+      assert.equal((await host.info(w.room)).visibility, 'attributed'); assert.equal(host.counts.signedAnswers, 1)
+      // 429 carries no body: it is waited out as before, not counted as an unsigned reply
+      w.fake.slowDown('host', 1)
+      assert.equal((await host.info(w.room)).visibility, 'attributed'); assert.equal(host.counts.slowDowns, 1); assert.equal(host.counts.unsignedRefused, 1)
+      // a host whose DID this machine cannot read (did:peer:2) or one reached only by address: unsigned answers keep going through, counted
+      w.fake.host.signs = false
+      const blind = w.device().host
+      assert.equal((await blind.info(w.room)).visibility, 'attributed'); assert.deepEqual([blind.counts.unsignedRefused, blind.counts.uncheckedAnswers], [0, 1])
     } finally { await w.fake.close() }
   })
 })
@@ -340,7 +369,7 @@ describe('the bridge with the three settings', () => {
   const onServer = async () => { ctx.notebooks.cache.clear(); return ctx.notebooks.get(agent.did) }
 
   before(async () => {
-    w = await world(); cred = w.fake.credential([w.member])
+    w = await world(); w.fake.host.signs = true; cred = w.fake.credential([w.member]) // the bridge can read the host's DID, so the host signs its answers
     dir = mkdtempSync(join(tmpdir(), 'wpi-vti-notebook-'))
     const board = { generated: new Date().toISOString().slice(0, 10), projects: [], credentialProfiles: { profiles: {} }, runs: [] }
     ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(board)), llm: { ...baseConfig.llm, apiKey: '', anthropicKey: '', provider: 'openai' } })
