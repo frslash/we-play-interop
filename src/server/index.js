@@ -33,6 +33,8 @@ import { Media } from './media.js'
 import { Changes, MAX_PATCH } from './changes.js'
 import { Workshop } from './workshop.js'
 import { Sources } from './sources.js'
+import { Shelf, namedRepos, pinsFromCommunity } from './shelf.js'
+import { RESOURCES as CURATED_RESOURCES } from '../../public/resources.js'
 import { Cursors } from './cursors.js'
 import { AGREED } from './rules.js'
 import { ActivityPub } from './activitypub.js'
@@ -113,7 +115,7 @@ function workspaceIdentity (config) {
   return id
 }
 
-export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, apFetch, awayGatherMs, hostWelcomeMs = 3000, sources } = {}) {
+export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, apFetch, awayGatherMs, hostWelcomeMs = 3000, sources, shelf } = {}) {
   const identity = workspaceIdentity(config)
   const db = await openDb(config)
   const log = new Log({ db, identity, resolver, config })
@@ -141,6 +143,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.media = new Media({ dataDir: config.dataDir })
   ctx.cursors = new Cursors({ dataDir: config.dataDir })
   ctx.sources = new Sources({ dataDir: config.dataDir, ...sources }) // `sources` lets tests point it at a fake server; the app passes none
+  // the projects shelf: every project's public code at one named commit, for agents to list, read and search (never fetched with the room's token)
+  ctx.shelf = new Shelf({ dataDir: config.dataDir, maxBytes: (config.shelfMaxMb ?? 300) * 1024 * 1024, own: config.workspaceRepo, pins: pinsFromCommunity(root), named: () => namedRepos(ctx, CURATED_RESOURCES), ...shelf }) // `shelf` lets tests play GitHub from a local server; the app passes none
   ctx.visits = new Visits() // join links for one visit each, in memory
   ctx.join = new JoinRoute({ identity, config, resolver }) // the join desk at /didcomm, for the test community only
   await ctx.join.refresh(true)
@@ -333,6 +337,10 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     }
     if (path.startsWith('/api/files/')) { const r = await views.fileText(ctx, path.slice(11), q); return r ? send(res, 200, r) : send(res, 404, { error: 'no file in this room has that sha256, or it has no text (a photo). The path is /api/files/<the sha256 a message lists under files>' }) }
     if (path.startsWith('/api/photos/')) { const r = views.photo(ctx, path.slice(12)); return r ? send(res, 200, r) : send(res, 404, { error: 'no photo in this room has that sha256' }) }
+    if (path === '/api/shelf' || path.startsWith('/api/shelf/')) { // other projects' public code, each at one commit: list, read, search
+      if (req.method !== 'GET') return send(res, 405, { error: 'GET only' })
+      try { return send(res, 200, await views.shelf(ctx, path, q)) } catch (err) { if (!err.status) console.error('shelf:', err); return send(res, err.status ?? 500, { error: err.status ? err.message : 'the shelf could not answer' }, err.status === 429 ? { 'retry-after': '60' } : {}) }
+    }
     if (path === '/api/sources') return send(res, 200, ctx.sources.view())
     if (path.startsWith('/api/sources/')) { // the cached copy, exactly as the source sent it
       const body = ctx.sources.body(decodeURIComponent(path.slice(13)))
@@ -491,7 +499,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     ctx.sources.start()
     timers.push(setInterval(() => closeVotes(ctx).catch((e) => console.error('closing votes:', e)), 30_000))
   }
-  ctx.stop = async () => { ctx.waits.stop(); timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.sources.stop(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { ctx.waits.stop(); timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.sources.stop(); ctx.shelf.flush(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }

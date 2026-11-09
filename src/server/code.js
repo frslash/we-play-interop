@@ -72,7 +72,9 @@ export function githubCode ({ repo, branch = 'main', gh, ttlMs = 15_000, pullsPe
   }
   const pulls = new Map() // pull request number -> { head, at, top, files } (the files are kept by head commit)
   let lookups = [] // when the room last asked GitHub about a pull request (the last minute's)
-  /** One pull request of this repo (the room's own, never another), as plain text: what it is and its head commit first. */
+  /** One pull request of this repo (the room's own, never another), as plain text: what it is and its head commit first.
+   *  This reader, the only one that uses the room's GitHub token, stays the room's own. Other projects' code is read
+   *  in one place only, the projects shelf (shelf.js): its registry, one full commit each, and never with this token. */
   const pullDiff = async (number, { from, to } = {}) => {
     const n = Number(number)
     if (!Number.isInteger(n) || n < 1 || n > 1e7) throw new Error('pr is the pull request\'s number in the room\'s own repository, for example 40')

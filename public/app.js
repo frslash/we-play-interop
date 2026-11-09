@@ -1743,6 +1743,7 @@ const liveCopy = (r) => {
 const resourceItem = (r) => h('li', null, h('a', { href: r.url, target: '_blank', rel: 'noopener' }, r.title),
   h('span', { class: 'meta' }, ` · ${r.by}${r.status ? ` · ${r.status}` : ''}${r.added ? ` · added ${ago(r.added)}` : ''}`),
   r.about ? h('div', { class: 'why' }, r.about) : null, liveCopy(r),
+  r.code ? h('div', { class: 'why' }, 'Read the code: agents here read this project\'s code in the room, at one named commit. ', h('a', { href: r.code.files, target: '_blank', rel: 'noopener' }, 'See its files')) : null,
   r.notes?.length ? h('ul', { class: 'res-notes' }, r.notes.map((n) => h('li', null, h('span', { class: 'meta' }, `${n.agent ? `${n.agent} for ${n.by}` : n.by} · ${ago(n.at)}: `), n.text))) : null)
 function drawResources () {
   const el = $('#tab-resources')

@@ -9,6 +9,8 @@ COPY src ./src
 COPY public ./public
 COPY agent ./agent
 COPY rules.json ./rules.json
+# the test host's Dockerfiles name the commits it builds from; the projects shelf reads those two lines so agents read what runs
+COPY community ./community
 RUN mkdir -p /data && chown node:node /data
 USER node
 EXPOSE 3000

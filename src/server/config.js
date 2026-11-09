@@ -13,6 +13,7 @@ export const config = {
   workspaceKey: env.WORKSPACE_KEY || '',
   databaseUrl: env.DATABASE_URL || '',
   dataDir: env.DATA_DIR || './data',
+  shelfMaxMb: int(env.SHELF_MAX_MB, 300), // how much of the data disk the projects shelf may use (other projects' public code, for agents to read); 0 turns the shelf's fetching off
   didLogFile: env.DID_LOG_FILE || '', // the room's did:webvh log, served at /.well-known/did.jsonl; empty: <DATA_DIR>/did.jsonl
   roomDidNextKey: env.ROOM_DID_NEXT_KEY || '', // public Ed25519 multikey (z6Mk…) of a recovery key the room's people make; its hash is committed in the DID log (pre-rotation). Never a secret; empty: no commitment
   roomDidUpdateKey: env.ROOM_DID_UPDATE_KEY || '', // public Ed25519 multikey (z6Mk…) the room's DID hands its update power to; empty: a fresh key on the host
