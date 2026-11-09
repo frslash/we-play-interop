@@ -104,11 +104,11 @@ describe('who settles a choice that is not held', () => {
       await f.tick(r.at(19))
       s = r.stepFrom(p)
       assert.ok(s.waitingOn, 'reopened'); assert.equal(s.reopens, 1); assert.equal(r.said('reopened').length, 1)
-      // a person's own line is not provisional
+      // another person's line on Person A's step settles it only provisionally (step 18a6010b); Person A's own is not provisional
       await r.send(r.people.c, 'note', { text: 'DIDComm first, because Geb speaks it.', kind: 'message' }, { threadId: s.thread })
       await f.tick(r.at(20))
       s = r.stepFrom(p)
-      assert.equal(s.decision.by, r.people.c.did); assert.equal(s.decision.provisional, false)
+      assert.equal(s.decision.by, r.people.c.did); assert.equal(s.decision.provisional, true)
     } finally { await r.stop() }
   })
 })
