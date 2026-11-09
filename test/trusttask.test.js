@@ -132,6 +132,18 @@ test('postTask sends to <base>/trust-tasks with no token, and goes by the answer
   assert.equal(calls.at(-1).init.headers.authorization, 'Bearer tok')
 })
 
+test('postTask names the task in a Trust-Task header, as OpenVTC\'s client does (vta-sdk/src/auth_light.rs)', async () => {
+  const calls = []
+  const fetch = async (url, init) => { calls.push(init); return new Response(null, { status: 204 }) }
+  const req = signedTask(person, { type: JOIN, recipient: service.did })
+  await postTask('https://vtc.example/v1', req, { fetch })
+  assert.equal(new Headers(calls[0].headers).get('Trust-Task'), JOIN, 'the document\'s own type, exactly')
+  await postTask('https://vtc.example/v1', req, { fetch, trustTaskHeader: false })
+  assert.equal(new Headers(calls[1].headers).has('Trust-Task'), false, 'left out when asked')
+  await postTask('https://vtc.example/v1', { ...req, type: 'https://x.example/a\r\nb: c' }, { fetch })
+  assert.equal(new Headers(calls[2].headers).has('Trust-Task'), false, 'a type that is not one printable line is never put in a header')
+})
+
 test('a service is found in a DID document by its type, never by its #id', () => {
   const doc = { service: [{ id: '#whatever', type: 'LinkedDomains', serviceEndpoint: 'https://a.example/' }, { id: '#x', type: 'TrustTaskHTTPS', serviceEndpoint: 'https://vtc.example/v1' }, { id: '#d', type: 'DIDCommMessaging', serviceEndpoint: [{ uri: 'did:webvh:abc:mediator.example', accept: ['didcomm/v2'] }] }, { id: '#t', type: ['TSPTransport'], serviceEndpoint: { uri: 'did:webvh:abc:mediator.example' } }] }
   assert.equal(serviceEndpoint(doc, 'TrustTaskHTTPS'), 'https://vtc.example/v1')

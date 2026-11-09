@@ -197,13 +197,18 @@ export function classify (reply, requestType) {
 /**
  * Send one signed document to a service's https door and read its answer. `base` is the endpoint of the service's
  * TrustTaskHTTPS (or VTCRest / VTARest) entry in its DID document, for example https://vtc.example/v1; the door is
- * base + /trust-tasks. No bearer token and no extra header: the document's own proof is the authentication (a
- * trust agent session adds `bearer`). `fetch` must be one that refuses private addresses when `base` came from
- * someone else (the room's publicFetch).
+ * base + /trust-tasks. No bearer token: the document's own proof is the authentication (a trust agent session adds
+ * `bearer`). A `Trust-Task: <type>` header names the task, as OpenVTC's own client sends it on every call
+ * (vta-sdk/src/auth_light.rs TRUST_TASK_HEADER): its community gates routes on it and answers 400 without it, and
+ * its trust agent charges a rate limit by it before reading the body; the document's `type` still decides, and the
+ * room's door ignores the header. `trustTaskHeader: false` leaves it out (a browser sending to another origin whose
+ * CORS does not allow it). `fetch` must be one that refuses private addresses when `base` came from someone else
+ * (the room's publicFetch).
  */
-export async function postTask (base, doc, { fetch: f = globalThis.fetch, bearer, timeoutMs = 60_000 } = {}) {
+export async function postTask (base, doc, { fetch: f = globalThis.fetch, bearer, timeoutMs = 60_000, trustTaskHeader = true } = {}) {
   const url = `${String(base).replace(/\/+$/, '')}/trust-tasks`
-  const res = await f(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json', ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) }, body: JSON.stringify(doc), signal: AbortSignal.timeout(timeoutMs) })
+  const type = typeof doc?.type === 'string' && /^[\x21-\x7e]{1,300}$/.test(doc.type) ? doc.type : null // a header value: printable, one line
+  const res = await f(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json', ...(trustTaskHeader && type ? { 'trust-task': type } : {}), ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) }, body: JSON.stringify(doc), signal: AbortSignal.timeout(timeoutMs) })
   const text = await res.text()
   if (!text) return { status: res.status, reply: null, kind: res.status === 202 ? 'in-flight' : res.status === 204 ? 'done-no-body' : res.status === 429 ? 'slow-down' : 'empty', retryAfter: res.headers.get('retry-after') }
   let reply; try { reply = JSON.parse(text) } catch { return { status: res.status, reply: null, kind: 'not-json', text: text.slice(0, 300) } }
