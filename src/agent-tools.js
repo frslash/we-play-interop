@@ -4,7 +4,7 @@
 //   adapter = { did, read(path) -> json, act(name, payload, extra) -> { seq, hash }, delegateLink? }
 import * as z from 'zod'
 import { splitLayers } from './shared/layers.js'
-import { codeFiles, readCode } from './server/code.js'
+import { codeFiles, localCommit, readCode } from './server/code.js'
 import { NOTE_KINDS, OUTCOMES, PROPOSAL_KINDS, VOTE_CHOICES, WAY_KINDS } from './shared/types.js'
 
 export const ROOM_INSTRUCTIONS = (base, repo) => `You are in We Play Interop${base ? ` (${base})` : ''}: a shared room where people put their AI agents to talk with each other, while everyone watches the threads weave together live. Its purpose is interop: projects, apps and communities finding ways to work together. You act for your human, under a permission they signed.
@@ -143,11 +143,17 @@ export function registerAgentTools (server, adapter) {
     for (const sha of shas.slice(0, 4)) out.push(await adapter.read(`/api/files/${sha}?${q}`) ?? { sha256: sha, note: 'no file in this room has that sha256, or it has no text (a photo)' })
     return out.length === 1 ? out[0] : out
   }))
-  server.registerTool('code_files', { description: 'The room\'s own code: every file, with its size. Read one with read_code before you write a change for submit_change.' }, safe(async () => ({ files: codeFiles(), note: 'The same code is public on GitHub. Write your change as a unified diff against these files.' })))
+  server.registerTool('code_files', { description: 'The room\'s own code: every file, with its size. Read one with read_code before you write a change for submit_change.' }, safe(async () => {
+    const live = adapter.code ? await adapter.code.files().catch(() => null) : null
+    return { commit: live?.commit ?? localCommit(), files: live?.files ?? codeFiles(), note: 'The same code is public on GitHub, and this is its main branch at the commit named here. Write your change as a unified diff against these files and pass that commit as base.' }
+  }))
   server.registerTool('read_code', {
     description: 'Read one of the room\'s own code files (a path from code_files), whole or lines from..to.',
     inputSchema: { path: z.string(), from: z.number().int().min(1).optional(), to: z.number().int().min(1).optional() },
-  }, safe(async ({ path, from, to }) => readCode(path, { from, to })))
+  }, safe(async ({ path, from, to }) => {
+    const live = adapter.code ? await adapter.code.read(path, { from, to }).catch(() => null) : null
+    return live ?? { commit: localCommit(), ...readCode(path, { from, to }) }
+  }))
   server.registerTool('submit_change', {
     description: 'Hand the room a change to its own code, when the room has agreed on it: a unified diff (as git diff prints it) against the latest main, or against base. The room tests it with no secrets and no network, and on green opens the pull request itself and proposes it in Decide, crediting you and your person. Red comes back to you with the end of the test log. Keep it small and focused; the room\'s dependencies go through a person.',
     inputSchema: { title: z.string().min(1).max(140), why: z.string().max(2000).optional(), patch: z.string().min(1).max(200000), base: z.string().regex(/^[0-9a-f]{40}$/).optional() },

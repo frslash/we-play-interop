@@ -29,3 +29,57 @@ export function readCode (path, { from, to } = {}, base = process.cwd()) {
   const part = lines.slice(a - 1, b).join('\n')
   return { path: p, lines: lines.length, from: a, to: b, text: part.length > MAX ? part.slice(0, MAX) + '\n… (cut: ask for fewer lines)' : part }
 }
+
+/** The commit the local checkout is at, so an answer can name it. Null when it can't be told (an image with no .git). */
+export function localCommit (base = process.cwd()) {
+  const env = process.env.GIT_COMMIT || process.env.SOURCE_COMMIT || process.env.FLY_IMAGE_REF_COMMIT
+  if (env) return env.slice(0, 40)
+  try {
+    const head = readFileSync(join(base, '.git', 'HEAD'), 'utf8').trim()
+    if (!head.startsWith('ref: ')) return head
+    return readFileSync(join(base, '.git', head.slice(5)), 'utf8').trim()
+  } catch { return null }
+}
+
+/**
+ * The room's code as GitHub has it at the head of the branch changes merge into, not the copy baked into the running
+ * image (which falls behind every merge: agents wrote diffs against stale lines). Every answer names the commit, so an
+ * agent can pass it as `base`. Needs only the repo (public); a token raises the rate limit. `gh(method, path)` is the
+ * room's GitHub caller. The branch head is looked up at most every `ttlMs`; trees and files are cached by commit.
+ */
+export function githubCode ({ repo, branch = 'main', gh, ttlMs = 15_000 }) {
+  let head = null, headAt = 0
+  const trees = new Map(), blobs = new Map()
+  const commit = async () => {
+    if (head && Date.now() - headAt < ttlMs) return head
+    const c = await gh('GET', `/repos/${repo}/commits/${encodeURIComponent(branch)}`)
+    head = c.sha; headAt = Date.now(); return head
+  }
+  const tree = async (sha) => {
+    if (!trees.has(sha)) {
+      const t = await gh('GET', `/repos/${repo}/git/trees/${sha}?recursive=1`)
+      const keep = (p) => ROOTS.some((r) => p === r || p.startsWith(r + '/')) || FILES.includes(p)
+      const files = t.tree.filter((e) => e.type === 'blob' && keep(e.path) && !/(^|\/)node_modules\//.test(e.path)).map((e) => ({ path: e.path, bytes: e.size, sha: e.sha }))
+      if (trees.size > 4) trees.delete(trees.keys().next().value)
+      trees.set(sha, files)
+    }
+    return trees.get(sha)
+  }
+  return {
+    async files () { const c = await commit(); return { commit: c, files: (await tree(c)).map(({ path, bytes }) => ({ path, bytes })) } },
+    async read (path, { from, to } = {}) {
+      const c = await commit(), p = normalize(String(path)).replace(/^(\.\/)+/, '')
+      const f = (await tree(c)).find((x) => x.path === p)
+      if (!f) throw new Error('not one of the room\'s code files (code_files lists them)')
+      if (!blobs.has(f.sha)) {
+        const b = await gh('GET', `/repos/${repo}/git/blobs/${f.sha}`)
+        if (blobs.size > 200) blobs.delete(blobs.keys().next().value)
+        blobs.set(f.sha, Buffer.from(b.content, b.encoding === 'base64' ? 'base64' : 'utf8').toString('utf8'))
+      }
+      const lines = blobs.get(f.sha).split('\n')
+      const a = Math.max(1, Number(from) || 1), e = Math.min(lines.length, Number(to) || lines.length)
+      const part = lines.slice(a - 1, e).join('\n')
+      return { commit: c, path: p, lines: lines.length, from: a, to: e, text: part.length > MAX ? part.slice(0, MAX) + '\n… (cut: ask for fewer lines)' : part }
+    },
+  }
+}

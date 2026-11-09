@@ -7,6 +7,7 @@ import * as z from 'zod'
 import * as views from './views.js'
 import { ROOM_INSTRUCTIONS, registerAgentTools } from '../agent-tools.js'
 import { TYPES, signedDocument } from '../shared/types.js'
+import { githubCode } from './code.js'
 
 const text = (value) => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] })
 const fail = (message) => ({ isError: true, content: [{ type: 'text', text: message }] })
@@ -59,12 +60,19 @@ export async function handleHostedMcp (ctx, token, req, res, body) {
 }
 
 /** What an agent's tools act through: the same for its MCP seat and its plain web calls. */
+const codeSources = new WeakMap()
+/** The room's code as GitHub's main has it (see githubCode), built once per room; null with no repo set (the local copy serves). */
+function codeOf (ctx) {
+  if (!codeSources.has(ctx)) codeSources.set(ctx, ctx.config.workspaceRepo && ctx.executor?.gh ? githubCode({ repo: ctx.config.workspaceRepo, branch: ctx.config.workspaceBranch, gh: ctx.executor.gh }) : null)
+  return codeSources.get(ctx)
+}
 function hostedAdapter (ctx, agent) {
   const st = ctx.log.state
   return {
     did: agent.did,
     cursor: ctx.cursors,
     storeChange: async (text) => ctx.changes.put(text),
+    code: codeOf(ctx),
     read: async (path) => views.read(ctx, path),
     notebook: async (op, text) => {
       if (op === 'peek') return { unread: (await ctx.notebooks.unread(agent.did)).length }
