@@ -1,6 +1,7 @@
 // Read views shared by the HTTP API and the MCP server: everything is public.
 import { proofConfig, signingInputHex } from '../shared/proof.js'
-import { buildDocument, checkPayload, NAME_OF, TYPES } from '../shared/types.js'
+import { buildDocument, checkPayload, NAME_OF, TYPES, VOTE_KINDS } from '../shared/types.js'
+import { heard } from '../shared/presence.js'
 import { gist } from './weaver.js'
 
 export function info (ctx) {
@@ -14,6 +15,7 @@ export function info (ctx) {
     operator: config.operator || null,
     sandbox: config.sandbox || false,
     branch: config.workspaceBranch || 'main',
+    fediverse: ctx.activitypub?.summary() ?? null, // the room's account on Mastodon and the fediverse: its address and how sending goes
     tunnel: (() => { try { const h = new URL(config.publicUrl).hostname; return /trycloudflare\.com$/i.test(h) ? 'Cloudflare’s quick tunnel' : /ngrok/i.test(h) ? 'an ngrok tunnel' : null } catch { return null } })(),
     mode: st.mode,
     head: log.head(),
@@ -59,12 +61,19 @@ export function state (ctx) {
  *   tether      a person and their project   suggested the weaver thinks they should talk
  *   intention   someone wants to reach this  tension   they pull apart (votes both ways, a veto)
  */
+/** A person's agents: the ones the room has heard, and the ones still being set up (never heard yet). An agent
+ * joins the room's lists the first time it acts (room line 570: a half-added agent showed as if it had come in). */
+export const agentsOf = (st, person) => {
+  const mine = [...st.participants.values()].filter((a) => a.kind === 'agent' && a.principal === person && !a.removed)
+  return { agents: mine.filter(heard).map((a) => a.name), settingUp: mine.filter((a) => !heard(a)).map((a) => a.name) }
+}
+
 export function graph (ctx, m) {
   const st = ctx.log.state
   const asPerson = (did) => st.participants.get(did)?.principal ?? did // an agent's lines belong to its person
   const nodes = new Map(), edges = new Map()
   for (const p of m.projects) nodes.set(p.slug, { id: p.slug, kind: 'project', label: p.name, about: p.about, ways: p.ways, sources: p.sources, url: p.url, members: p.members })
-  for (const p of st.participants.values()) if (p.kind === 'human') nodes.set(p.did, { id: p.did, kind: 'person', label: p.name, projects: p.projects, card: p.card ?? null, agents: [...st.participants.values()].filter((a) => a.principal === p.did && !a.removed).map((a) => a.name) })
+  for (const p of st.participants.values()) if (p.kind === 'human') nodes.set(p.did, { id: p.did, kind: 'person', label: p.name, projects: p.projects, card: p.card ?? null, ...agentsOf(st, p.did) })
   const edge = (a, b, kind, label) => { if (!nodes.has(a) || !nodes.has(b) || a === b) return; const k = [a, b].sort().join('|') + '|' + kind; const cur = edges.get(k); if (cur) { cur.weight++; if (label && !cur.labels.includes(label)) cur.labels.push(label) } else edges.set(k, { a, b, kind, weight: 1, labels: label ? [label] : [] }) }
   for (const p of m.pairs) {
     const ways = p.ways
@@ -123,6 +132,8 @@ export function concerns (ctx, e, agent) {
   if (name === 'note' && !d.recipient && e.author === e.onBehalfOf && ctx.log.state.isHuman(e.author) && e.author !== me?.principal && asksTheRoom(d.payload.text)) return 'room'
   // its own person speaking to the room (not a line addressed to someone else)
   if (['note', 'propose'].includes(name) && me?.principal && e.onBehalfOf === me.principal && e.author === me.principal && !d.recipient) return 'person'
+  // a new proposal for the room to vote on: every agent is woken to read it and vote for its person
+  if (name === 'propose' && VOTE_KINDS.includes(d.payload.kind) && !d.payload.auto) return 'proposal'
   if (name === 'round' && (d.payload.connections ?? []).some((c) => c.between.includes(agent))) return 'connection'
   if (name === 'round' && (d.payload.next ?? []).some((n) => n.kind === 'ask')) return 'ask'
   if (name === 'round') return 'round'
