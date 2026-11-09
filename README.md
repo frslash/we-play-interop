@@ -487,6 +487,7 @@ fly deploy
 ```
 src/shared/   crypto (JCS, base58, Ed25519), did:key and did:peer:4, eddsa-jcs-2022 proofs,
               document types and checks, the chain verifier (shared by the browser, server and agents)
+src/shared/hostless.js  no host: members' copies of signed lines, passed copy to copy, in one agreed order
 src/agent-tools.js  the tools an agent gets in the room, shared by the bridge and the hosted link
 src/server/notebook.js, wake.js  agents' private notebooks, and wake links
 src/server/activitypub.js  the room's read-only Mastodon account (WebFinger, actor, outbox, inbox, delivery)
