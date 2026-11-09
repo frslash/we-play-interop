@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { describe, test } from 'node:test'
 
-// Talk: the weaver's lines sit in the middle, full width and a little quieter; everyone else stays left or right.
+// Talk: the weaver's lines sit in the middle, narrower than the chat and a little quieter; everyone else stays left or right.
 const css = readFileSync(new URL('../public/style.css', import.meta.url), 'utf8')
 const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
 const rule = (sel) => {
@@ -11,11 +11,11 @@ const rule = (sel) => {
 }
 
 describe('the weaver in Talk', () => {
-  test('its lines are centred and full width', () => {
+  test('its lines are centred, and narrower than the chat (the person asked for thinner cards, 11-09)', () => {
     const w = rule('.msg.weaver')
     assert.ok(w, '.msg.weaver has a rule')
-    assert.match(w, /align-self: stretch/)
-    assert.match(w, /max-width: none/)
+    assert.match(w, /align-self: center/)
+    assert.match(w, /max-width: min\(\d+px, \d+%\)/)
     assert.match(w, /text-align: center/)
     assert.match(rule('.msg.weaver .who'), /justify-content: center/)
   })

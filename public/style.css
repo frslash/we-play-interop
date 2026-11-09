@@ -202,7 +202,7 @@ body[data-view="tech"] .plain-only { display: none !important; }
 .msg.mine { align-self: flex-end; background: var(--soft); border-radius: 16px 16px 4px 16px; }
 .msg.agent { border-style: dashed; }
 .msg.private { opacity: 0.8; border-style: dotted; }
-.msg.weaver { align-self: stretch; max-width: none; border-color: color-mix(in srgb, var(--gold) 45%, var(--line)); background: color-mix(in srgb, var(--gold) 5%, var(--panel)); border-radius: 10px; text-align: center; color: var(--muted); cursor: default; }
+.msg.weaver { align-self: center; max-width: min(680px, 88%); border-color: color-mix(in srgb, var(--gold) 45%, var(--line)); background: color-mix(in srgb, var(--gold) 5%, var(--panel)); border-radius: 10px; text-align: center; color: var(--muted); cursor: default; }
 /* the weaver's lines read like a notice: centred, full width, quieter than what people say */
 .msg.weaver .who { justify-content: center; }
 .msg.weaver .who .time { margin-left: 0; }
@@ -321,12 +321,13 @@ body[data-view="tech"] .plain-only { display: none !important; }
 .decision.closed { opacity: 0.8; }
 .step-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--line); }
 .step-row:first-of-type { border-top: 0; }
-.step-row .mark { width: 11px; height: 11px; flex: none; margin: 5px 4px 0; border-radius: 50%; border: 2px solid var(--muted); box-sizing: border-box; }
-.step-row .mark.st-claimed, .step-row .mark.st-in-progress { border-color: var(--accent); background: linear-gradient(90deg, var(--accent) 50%, transparent 50%); }
-.step-row .mark.st-result-posted { border-color: var(--accent); background: var(--accent); }
-.step-row .mark.st-checked { border-color: var(--good); background: var(--good); }
-.step-row .mark.st-waiting { border-color: var(--warn); background: var(--warn); border-radius: 2px; }
-.step-row .mark.st-parked { border-style: dashed; background: transparent; }
+.step-row .mark, .step-key .mark { width: 12px; height: 12px; flex: none; margin: 5px 4px 0; border-radius: 50%; box-sizing: border-box; background: #fff; border: 2px solid #111; box-shadow: 0 0 0 1px rgba(255, 255, 255, .35); display: inline-block; }
+/* a step's status as one colour: white in a black ring not started, blue in progress, red stuck, green done */
+.step-row .mark.st-doing, .step-key .mark.st-doing { background: #2f6fde; border-color: #2f6fde; }
+.step-row .mark.st-stuck, .step-key .mark.st-stuck { background: #d93b3b; border-color: #d93b3b; }
+.step-row .mark.st-done, .step-key .mark.st-done { background: #2e9d57; border-color: #2e9d57; }
+.step-key { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin: 0 0 8px; }
+.step-key .mark { margin: 0 2px 0 0; vertical-align: -1px; }
 .step-row.waiting { background: var(--warn-soft); margin: 0 -8px; padding: 8px; border-radius: 6px; }
 .step-row.done { opacity: 0.75; }
 .step-row .step-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
@@ -384,3 +385,21 @@ label.check { display: flex; gap: 8px; align-items: center; }
 .waiting-strip[hidden] { display: none; }
 .waiting-strip .waiting-head { margin-bottom: 6px; }
 @media (max-width: 420px) { .tabs .ok-count { margin-left: 2px; padding: 0 4px; font-size: 10px; } }
+
+/* Talk side by side (wide screens): people's own lines on the left, agents' on the right, one shared timeline. The
+   weaver's notices sit in the middle across both, and room events (joins, proposals, results) span the full width. */
+.chat > .lane-head { display: none; }
+@media (min-width: 900px) {
+  .chat.lanes { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 28px; row-gap: 8px; align-items: start; }
+  .chat.lanes > .lane-head { display: block; position: sticky; top: 0; z-index: 2; background: var(--bg); color: var(--muted); font-size: 12px; letter-spacing: .02em; padding: 2px 4px 6px; border-bottom: 1px solid var(--line); }
+  .chat.lanes > .lane-people { grid-column: 1; justify-self: start; max-width: 100%; }
+  .chat.lanes > .lane-people.mine { justify-self: end; }
+  .chat.lanes > .lane-agents { grid-column: 2; justify-self: start; max-width: 100%; }
+  .chat.lanes > .msg.weaver { grid-column: 1 / -1; justify-self: center; max-width: min(620px, 60%); }
+  .chat.lanes > .sys, .chat.lanes > .empty { grid-column: 1 / -1; justify-self: center; }
+}
+.lanes-toggle { margin: 0 0 6px; }
+@media (max-width: 899px) { .lanes-toggle { display: none; } }
+/* a photo or file dragged over Talk: show where it will land */
+#tab-talk.dropping .composer { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: var(--radius); }
+#tab-talk.dropping .composer::before { content: 'Drop to add it to your message'; display: block; text-align: center; color: var(--accent); font-size: 13px; margin-bottom: 4px; }
