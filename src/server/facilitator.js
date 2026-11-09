@@ -28,6 +28,7 @@ export const STALE_MS = 30 * 60_000 // about half an hour without a word from a 
 export const REPORT_MS = 60 * 60_000 // a report against the done-tests about once an hour
 export const REPORT_SOON_MS = 10 * 60_000 // sooner when a done-test's check moved, but not more often than this
 export const ASIDE_MS = 3 * 86_400_000 // a step with no owner that nobody touched in three days is set aside: off the report, still on the board, back the moment someone claims it
+import { BUILD_MS } from './builder.js'
 const ASK_TEST_MS = 24 * 3600_000 // asking for a goal's done-test: at most once a day per goal
 const LOOKBACK_MS = 24 * 3600_000 // agreements this recent get their step, from when the board began: older ones were before it, and many were already worked
 const PRESS_MAX = 2 // vague lines pressed per round: a room that is questioned on every line stops talking
@@ -73,7 +74,7 @@ export class Facilitator {
   async tick (now = Date.now()) {
     if (this.busy) return null
     this.busy = true
-    const did = { heard: 0, opened: [], chased: [], offered: [], escalated: [], checkAsked: [], aside: [], reported: false }
+    const did = { heard: 0, opened: [], chased: [], offered: [], escalated: [], checkAsked: [], aside: [], built: [], reported: false }
     try {
       await this.hear(now, did)
       if (this.on) {
@@ -83,6 +84,7 @@ export class Facilitator {
         await this.askForTests(now, did)
         await this.chase(now, did)
         await this.askForChecks(now, did)
+        await this.build(now, did)
         await this.report(now, did)
       }
       this.last = { at: new Date(now).toISOString(), mode: this.st.mode.mode, ...Object.fromEntries(Object.entries(did).map(([k, v]) => [k, Array.isArray(v) ? v.length : v])) }
@@ -292,6 +294,8 @@ export class Facilitator {
   /** Who owns an agreement's next step: the agent that proposed it; else its person's agent; else the first agent it names; else a person. */
   ownerFor (a) {
     const st = this.st, live = (d) => d && st.isAgent(d) && st.activeDelegation(d) && !st.participants.get(d)?.removed && !this.skip().includes(d)
+    const builder = this.ctx.builder?.named(`${a.title} ${a.body}`)
+    if (builder) return builder // "Owner: … builder": the room's builder builds it
     if (a.pr) {
       const pr = a.pr
       if (!pr.byWeaver && live(pr.author)) return pr.author
@@ -333,7 +337,10 @@ export class Facilitator {
         if (now - Math.max(time(s.lastWordAt), time(s.at)) >= ASIDE_MS) { await this.write(s, { aside: true }, 'set aside', null); did.aside.push(s.id) }
         continue
       }
-      if (quiet(s) < STALE_MS) continue
+      const building = this.ctx.builder?.is(asked)
+      if (quiet(s) < (building ? BUILD_MS : STALE_MS)) continue
+      if (building && !s.chases && s.state !== 'open') { await this.write(s, { chases: 1, chasedAt: new Date(now).toISOString() }, 'chased', null); await this.ctx.builder.dispatch(st.steps.get(s.id), now, { again: true }); did.chased.push(s.id); continue } // a build gone quiet: started once more
+      if (building && s.state !== 'open') { await this.escalate(s, this.personFor(s), `the builder went quiet twice on ${this.label(s)}: look at it, hand it to someone, or drop it`, did); continue }
       if (s.offeredTo && !s.owner) { await this.escalate(s, this.personFor({ ...s, previousOwner: s.previousOwner ?? s.offeredTo }), `who takes ${this.label(s)}: ${s.previousOwner ? `it went quiet with ${st.nameOf(s.previousOwner)}, then ` : ''}${st.nameOf(s.offeredTo)} didn’t take it. Keep it, hand it to someone, or drop it`, did); continue }
       if (!s.chases) { nudges.push(await this.write(s, { chases: 1, chasedAt: new Date(now).toISOString() }, 'chased', null)); continue }
       // a second silence
@@ -363,7 +370,7 @@ export class Facilitator {
   candidates (not = []) {
     const st = this.st, skip = this.skip(), people = new Set(not.map((d) => person(st, d)))
     return [...st.participants.values()]
-      .filter((p) => p.kind === 'agent' && !p.removed && !skip.includes(p.did) && st.activeDelegation(p.did) && !people.has(person(st, p.did)) && this.load(p.did) < BUSY_STEPS)
+      .filter((p) => p.kind === 'agent' && !p.removed && !skip.includes(p.did) && st.activeDelegation(p.did) && !people.has(person(st, p.did)) && this.load(p.did) < BUSY_STEPS && !this.ctx.builder?.is(p.did)) // a builder only takes the steps the room names it for
       .sort((a, b) => Number(Boolean(this.ctx.waits?.listening(b.did))) - Number(Boolean(this.ctx.waits?.listening(a.did))) || this.load(a.did) - this.load(b.did) || String(b.lastSaid ?? '').localeCompare(String(a.lastSaid ?? '')))
       .map((p) => p.did)
   }
@@ -391,6 +398,14 @@ export class Facilitator {
       await this.speak(`${st.nameOf(pick)}: please check ${this.label(next)}. ${st.nameOf(s.owner)} posted a result${result ? `: ${clip(result.text, 300)}` : ''}${next.evidence?.length ? ` (${next.evidence.map((x) => x.url).join(', ')})` : ''}. The check: ${clip(next.done, 300)} Rerun it and say whether it passed, with the step tool (say check).`, 'check', [next], { thread: next.thread })
       did.checkAsked.push(next.id)
     }
+  }
+
+  /** A step that goes to a builder starts it (builder.js); its pull requests come back as the step's result. */
+  async build (now, did) {
+    const b = this.ctx.builder
+    if (!b) return
+    for (const s of this.steps()) if (s.state === 'open' && !s.waitingOn && !s.aside && b.is(s.owner ?? s.offeredTo) && await b.dispatch(s, now)) did.built.push(s.id)
+    await b.look(now).catch((err) => { b.lastError = `builder: ${err.message}` })
   }
 
   /** Ask for the exact thing a line left out, once per line. */
@@ -466,7 +481,7 @@ export class Facilitator {
     for (const c of judged?.converged ?? []) {
       if (c.entries.some((h) => st.stepOf.has(h))) continue
       const lines = c.entries.map((h) => this.log.byHash.get(h)).sort((a, b) => b.seq - a.seq)
-      const owner = lines.map((e) => e.author).find((d) => st.isAgent(d) && st.activeDelegation(d)) ?? lines[0].author
+      const owner = this.ctx.builder?.named(`${c.step} ${c.done} ${lines.map((e) => e.document.payload.text).join(' ')}`) ?? lines.map((e) => e.author).find((d) => st.isAgent(d) && st.activeDelegation(d)) ?? lines[0].author
       const step = await this.write(null, { goal: this.goalFor(`${c.step} ${lines.map((e) => e.document.payload.text).join(' ')}`), title: c.step, done: c.done || 'Post the result in this step’s thread: the link, the command and what it printed, or the test value.', owner, state: 'open', from: lines[0].hash, sources: c.entries, agreedAt: lines[0].timestamp, words: model ?? { builtIn: true } }, 'opened', lines[0])
       await this.speak(`${lines.map((e) => st.nameOf(e.author)).filter((n, i, a) => a.indexOf(n) === i).join(', ')} agree, so here is the next step: ${this.label(step)} ${st.nameOf(owner)}, it’s yours if you take it (the step tool, say claim). Done when: ${clip(step.done, 300)}`, 'open', [step], { thread: step.thread })
       opened.push(step.id)
@@ -489,7 +504,7 @@ export class Facilitator {
       done: st.stepsDone.slice(-12).reverse().map(card),
       lastNight,
       days: [...st.stepDays.entries()].slice(-14).map(([day, t]) => ({ day, opened: t.opened, claimed: t.claimed, resulted: t.resulted, checked: t.checked, medianAgreementToFirstResultMinutes: minutes(median(t.toResultMs)) })),
-      last: this.last, lastError: this.lastError, modelCalls: this.calls.slice(-10),
+      last: this.last, lastError: this.lastError, modelCalls: this.calls.slice(-10), builder: this.ctx.builder?.view() ?? null,
       rules: { staleMinutes: STALE_MS / 60_000, reportMinutes: REPORT_MS / 60_000, asideDays: ASIDE_MS / 86_400_000 },
     }
   }

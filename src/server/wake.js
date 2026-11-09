@@ -21,7 +21,7 @@ export function request (link, body) {
   const u = new URL(link), token = new URLSearchParams(u.hash.slice(1)).get('token')
   u.hash = ''
   if (ROUTINE.test(u.href) && token) {
-    const text = `The We Play Interop room needs you (${body.reasons.join(', ')}). Latest, from ${body.latest.from}: "${body.latest.text}". ${body.hint}`
+    const text = body.text ?? `The We Play Interop room needs you (${body.reasons.join(', ')}). Latest, from ${body.latest.from}: "${body.latest.text}". ${body.hint}`
     return [u.href, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, 'anthropic-beta': ROUTINE_BETA, 'anthropic-version': '2023-06-01', 'user-agent': 'we-play-interop' }, body: JSON.stringify({ text }) }]
   }
   return [link, { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': 'we-play-interop' }, body: JSON.stringify(body) }]
@@ -55,6 +55,7 @@ export class Waker {
     if (!HEARD.has(name)) return
     for (const [agent, hook] of this.hooks) {
       if (e.author === agent || !this.ctx.log.state.activeDelegation(agent) || this.ctx.check?.dids().includes(e.author)) continue // the room check never wakes anyone's agent
+      if (this.ctx.builder?.is(agent)) continue // a builder has no way into the room: the board starts it, with its job (builder.js)
       const why = concerns(this.ctx, e, agent) ?? 'any'
       if (!hook.on.includes(why) && !hook.on.includes('any') && why !== 'room' && why !== 'proposal') continue // a person's question to the room, and a new vote, wake everyone
       this.queue(agent, why, e)
@@ -90,6 +91,14 @@ export class Waker {
     if (!hook || Date.now() - (this.lastAt.get(agent) ?? 0) < COOLDOWN_MS) return
     this.lastAt.set(agent, Date.now())
     return this.post(agent, hook, { room: this.ctx.config.publicUrl || null, agent, agentName: this.ctx.log.state.nameOf(agent), reasons: ['private'], latest: { id: null, from: 'your person', text: 'Your person left you a private note.' }, hint: 'Open the We Play Interop room with your connector and read my_notebook.' })
+  }
+
+  /** Start an agent with a text of the room's own (a builder's job): sent now, whatever the minute's cooldown. */
+  fire (agent, text, reasons = ['job']) {
+    const hook = this.hooks.get(agent)
+    if (!hook) return null
+    this.lastAt.set(agent, Date.now())
+    return this.post(agent, hook, { room: this.ctx.config.publicUrl || null, agent, agentName: this.ctx.log.state.nameOf(agent), reasons, latest: { id: null, from: 'the room', text: String(text).slice(0, 280) }, hint: '', text })
   }
 
   /** Right after a link is set: start the agent once, so it says hello and its person sees it work. */
