@@ -32,7 +32,7 @@ export function boardWaysOf (p) {
 }
 
 export function boardSources (data) {
-  const projects = (data?.projects ?? []).map((p) => ({ slug: p.slug, name: p.shortName || p.name, url: p.website || p.repositories?.[0] || null, about: p.purpose || '', ways: boardWaysOf(p), source: 'dtg' }))
+  const projects = (data?.projects ?? []).map((p) => ({ slug: p.slug, name: p.shortName || p.name, url: p.website || p.repositories?.[0] || null, urls: [p.website, ...(p.repositories ?? [])].filter(Boolean), about: p.purpose || '', ways: boardWaysOf(p), source: 'dtg' }))
   const runs = (data?.runs ?? []).filter((r) => r.sides?.length === 2).map((r, i) => ({
     sides: r.sides.map((s) => s.project), versions: r.sides.map((s) => s.version), date: r.date, reported: !!r.reportedBy, source: 'dtg', ref: r.index ?? i, note: r.note ?? '',
     results: (r.subjects ?? []).map((s) => ({ way: `${s.kind}:${s.id}`, outcome: s.outcome ?? r.outcome })),
@@ -40,20 +40,32 @@ export function boardSources (data) {
   return { projects, runs }
 }
 
+/** One address, however it's written: "https://www.github.com/x/y.git/" and "github.com/x/y" are the same. */
+export const sameAddress = (u) => (u ? String(u).trim().toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/^www\./, '').replace(/[/#?]+$/, '').replace(/\.git$/, '').replace(/\/+$/, '') || null : null)
+
 export function computeMap ({ board, state, today = new Date(), freshDays = 30 }) {
   const ageDays = (date) => Math.floor((today - Date.parse(date + 'T00:00:00Z')) / DAY)
   const fresh = (date) => ageDays(date) <= freshDays
   const src = boardSources(board)
 
-  // projects: the board's rows, then the workspace's own entries; members are people who joined for it
-  const projects = new Map()
-  for (const p of src.projects) projects.set(p.slug, { ...p, ways: new Set(p.ways), sources: ['dtg'], members: [] })
+  // projects: the board's rows, then the workspace's own entries; members are people who joined for it.
+  // A workspace entry with the same slug, or the same address (website or repository), as one already on
+  // the map is that project, added twice from two sources: it merges into the first, and its slug becomes
+  // another name for it, so runs and members entered under either slug count for one project.
+  const projects = new Map(), byAddress = new Map(), alias = new Map()
+  const addresses = (p) => [...new Set([p.url, ...(p.urls ?? [])].map(sameAddress).filter(Boolean))]
+  const listed = (p) => { projects.set(p.slug, p); for (const a of addresses(p)) if (!byAddress.has(a)) byAddress.set(a, p.slug) }
+  for (const p of src.projects) listed({ ...p, ways: new Set(p.ways), sources: ['dtg'], members: [], aliases: [] })
   for (const p of state.mapProjects.values()) {
-    const cur = projects.get(p.slug)
-    if (cur) { p.ways.forEach((w) => cur.ways.add(w)); cur.sources.push('workspace'); cur.url ??= p.url; cur.about ||= p.about }
-    else projects.set(p.slug, { slug: p.slug, name: p.name, url: p.url, about: p.about, ways: new Set(p.ways), sources: ['workspace'], members: [], addedBy: p.addedBy })
+    const same = projects.has(p.slug) ? p.slug : addresses(p).map((a) => byAddress.get(a)).find(Boolean)
+    const cur = same && projects.get(same)
+    if (cur) {
+      p.ways.forEach((w) => cur.ways.add(w)); if (!cur.sources.includes('workspace')) cur.sources.push('workspace'); cur.url ??= p.url; cur.about ||= p.about; cur.addedBy ??= p.addedBy
+      if (p.slug !== cur.slug) { alias.set(p.slug, cur.slug); cur.aliases.push(p.slug) }
+    } else listed({ slug: p.slug, name: p.name, url: p.url, about: p.about, ways: new Set(p.ways), sources: ['workspace'], members: [], aliases: [], addedBy: p.addedBy })
   }
-  for (const person of state.participants.values()) if (person.kind === 'human') for (const slug of person.projects ?? []) projects.get(slug)?.members.push(person.name)
+  const slugOf = (slug) => alias.get(slug) ?? slug
+  for (const person of state.participants.values()) if (person.kind === 'human') for (const slug of person.projects ?? []) { const m = projects.get(slugOf(slug))?.members; if (m && !m.includes(person.name)) m.push(person.name) }
 
   // ways: defined in the workspace, or named by a project or a run
   const ways = new Map()
@@ -68,7 +80,7 @@ export function computeMap ({ board, state, today = new Date(), freshDays = 30 }
   for (const p of projects.values()) for (const w of p.ways) way(w).projects.add(p.slug)
 
   // runs: the board's and the workspace's, per pair and way: the latest run and the latest pass
-  const runs = [...src.runs, ...state.mapRuns.map((r) => ({ ...r, source: 'workspace' }))]
+  const runs = [...src.runs, ...state.mapRuns.map((r) => ({ ...r, source: 'workspace' }))].map((r) => (r.sides.some((x) => alias.has(x)) ? { ...r, sides: r.sides.map(slugOf) } : r))
   const pairs = new Map()
   for (const r of runs) {
     const k = key(...r.sides)
@@ -116,7 +128,8 @@ export function computeMap ({ board, state, today = new Date(), freshDays = 30 }
   }
   return {
     score,
-    projects: [...projects.values()].map((p) => ({ ...p, ways: [...p.ways] })).sort((a, b) => a.name.localeCompare(b.name)),
+    projects: [...projects.values()].map(({ urls, ...p }) => ({ ...p, ways: [...p.ways] })).sort((a, b) => a.name.localeCompare(b.name)),
+    aliases: Object.fromEntries(alias), // another slug -> the project it is on the map
     ways: [...ways.values()].map((w) => ({ ...w, projects: [...w.projects] })).sort((a, b) => b.projects.length - a.projects.length || a.id.localeCompare(b.id)),
     pairs: [...pairs.values()].map((p) => ({ pair: p.pair, ways: [...p.ways.values()].map((w) => ({ ...w, name: way(w.way).name, fresh: w.latestPass ? fresh(w.latestPass) : false })) })),
     sharedWays: sharedWays.slice(0, 30),

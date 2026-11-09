@@ -67,7 +67,7 @@ const joined = () => me && person(me.did)?.kind === 'human'
 // the room check (a test person and agent walking the newcomer's path) stays out of the room's own view; the Log keeps it
 const isCheck = (did) => Boolean(did && S?.check?.dids?.includes(did))
 const checkEntry = (e) => isCheck(e.author) || isCheck(e.onBehalfOf)
-const projectName = (slug) => B?.projects?.find((p) => p.slug === slug)?.name ?? slug
+const projectName = (slug) => B?.projects?.find((p) => p.slug === (B?.aliases?.[slug] ?? slug))?.name ?? slug // a project added twice keeps one name
 
 let serverOffset = 0 // the room's clock minus this one's, from each answer's Date header, so a line's age is the room's
 const ageOf = (e) => Math.max(0, Date.now() + serverOffset - Date.parse(e.timestamp))
