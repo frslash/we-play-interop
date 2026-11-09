@@ -14,6 +14,19 @@
 // The carrier is not here: anything that moves JSON between two agents will do (a project's own
 // messaging, a file, a relay). `missing` and `wanted` say what to send. Who may write is a list of
 // member DIDs the copy is given; how members agree on that list is outside this file.
+//
+// The order can be gamed by any member. It is agreed, not fair. A member chooses what their line
+// names: by naming fewer or older lines than they have seen, they lower its depth and can put it
+// before lines they already saw. Among lines of the same depth the lowest id goes first, and a
+// member can re-sign a line (another `created`, a space in the text) until its id is low, to go
+// ahead of others' lines written at the same moment. Nothing here can tell a line written in
+// good faith from one placed on purpose. So nothing that matters (who was first, who wins a
+// tie, a vote's outcome) should rest on this order alone.
+//
+// A copy holds at most `maxWaiting` lines that wait for earlier lines it does not have, so a
+// member cannot fill another's memory with lines that name lines never sent. Past the cap,
+// such lines are refused; send the earlier ones first. Lines whose earlier lines are all here
+// are always taken.
 import { canonicalize, sha256, toHex } from './crypto.js'
 import { multikeyToEd25519 } from './did.js'
 import { sign, verifySignature } from './proof.js'
@@ -21,6 +34,7 @@ import { sign, verifySignature } from './proof.js'
 export const LINE_TYPE = 'wpi/hostless-line/v1'
 export const MAX_LINE_CHARS = 4000
 export const MAX_AFTER = 64
+export const MAX_WAITING = 1000
 
 export const lineId = (line) => toHex(sha256(canonicalize(line)))
 
@@ -48,8 +62,9 @@ export function lineProblem (line) {
 
 /** One member's copy of a room's lines. */
 export class Copy {
-  constructor ({ room, members, me = null, now = () => new Date().toISOString() }) {
+  constructor ({ room, members, me = null, now = () => new Date().toISOString(), maxWaiting = MAX_WAITING }) {
     this.room = room
+    this.maxWaiting = maxWaiting
     this.members = new Set(members)
     this.me = me // { seed, did, verificationMethod } when this copy can write
     this.now = now
@@ -65,10 +80,15 @@ export class Copy {
     return [...this.lines.keys()].filter((id) => !named.has(id)).sort()
   }
 
+  /** What a new line names: every head, or, past MAX_AFTER, the MAX_AFTER lowest ids. The rest stay heads and the next line names them. */
+  nextAfter () {
+    return this.heads().slice(0, MAX_AFTER)
+  }
+
   /** Add a line of my own. Returns the signed line, to hand to the others. */
   add (text) {
     if (!this.me) throw new Error('this copy has no key to write with')
-    const unsigned = { type: LINE_TYPE, room: this.room, issuer: this.me.did, text: String(text), after: this.heads(), created: this.now() }
+    const unsigned = { type: LINE_TYPE, room: this.room, issuer: this.me.did, text: String(text), after: this.nextAfter(), created: this.now() }
     const line = sign(unsigned, { seed: this.me.seed, verificationMethod: this.me.verificationMethod, created: unsigned.created })
     const r = this.receive(line)
     if (!r.ok) throw new Error(r.reason)
@@ -83,6 +103,11 @@ export class Copy {
     if (!this.members.has(line.issuer)) return { ok: false, reason: 'the issuer is not a member' }
     const id = lineId(line)
     if (this.lines.has(id)) return { ok: true, id, already: true }
+    if (this.waiting.has(id)) return { ok: true, id, already: true, waiting: true }
+    const ready = line.after.every((h) => this.lines.has(h))
+    if (!ready && this.waiting.size >= this.maxWaiting) {
+      return { ok: false, reason: `too many lines waiting for earlier lines (${this.maxWaiting}); send the earlier lines first` }
+    }
     this.waiting.set(id, line)
     this.#settle()
     return { ok: true, id, waiting: this.waiting.has(id) }
