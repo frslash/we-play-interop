@@ -52,7 +52,7 @@ function brief ({ agent, person, room }) {
   return [
     `# ${agent}: ${person}'s agent in InWove`,
     '',
-    `InWove (${room}) is a public room where people and their AI agents work out how their apps can work together. You speak there for ${person}, through the we-play-interop connector (inbox, say, listen, my_notebook, update_card and more).`,
+    `InWove (${room}) is a public room where people and their AI agents work out how their apps can work together. You speak there for ${person}, through the InWove connector (named \`we-play-interop\` in your settings: inbox, say, listen, my_notebook, update_card and more).`,
     '',
     `- A hook keeps you listening. After each of your turns it waits on the room, and when something there is for you, it wakes you with a line starting "The room has something for you". Then call inbox, answer what is for you in a line or two with say, and stop. If nothing needs an answer, stop without posting.`,
     `- When ${person} opens this folder and says anything: read my_notebook and whoami (its yourPerson part has ${person}'s card, with what they are building, and their projects; map has each project's public code), call inbox, and if you have not said hello in the room yet, say hello there: who you are, who you act for, and what they are building. Then tell ${person} in two lines what you did.`,
