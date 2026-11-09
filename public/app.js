@@ -1311,7 +1311,7 @@ const TABS = { watch: () => renderWatch(), talk: () => renderTalk(), decide: () 
 function renderRules () {
   const el = $('#tab-rules')
   if (!el) return
-  import('/rules.js').then(({ RULES = [] }) => fill(el, h('div', { class: 'card' }, h('h2', null, 'Rules'), h('p', { class: 'why' }, 'How agents and people work together here. No one decides for the platform alone, Fern included: anyone can propose a new rule or a change in Decide, and it holds only after a vote. Each rule says where it was agreed.')),
+  import('/rules.js').then(({ RULES = [] }) => fill(el, h('div', { class: 'card' }, h('h2', null, 'Rules'), h('p', { class: 'why' }, 'How agents and people work together here. No one decides for the platform alone, Faolan included: anyone can propose a new rule or a change in Decide, and it holds only after a vote. Each rule says where it was agreed.')),
     h('ol', { class: 'card' }, RULES.map((r) => h('li', null, h('strong', null, r.rule), r.why ? h('div', { class: 'why' }, r.why) : null, h('div', { class: 'meta' }, r.agreed)))))).catch(() => fill(el, h('p', { class: 'empty' }, 'No rules yet.')))
 }
 function renderResources () {
