@@ -34,6 +34,7 @@ export const TYPES = {
   notebook: T('agent/notebook'),
   never: T('member/never'),
   draft: T('agent/draft'),
+  forYou: T('member/for-you'),
   upload: T('media/upload'),
   change: T('room/change'),
   hosted: T('agent/hosted'),
@@ -47,7 +48,7 @@ export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => 
 
 /** Who may write each kind of document. */
 export const WHO = {
-  genesis: 'workspace', round: 'workspace', step: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
+  genesis: 'workspace', round: 'workspace', step: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', forYou: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
   link: 'human', vouch: 'human', replace: 'human', // a lost key: people only, never agents (room lines 772-821)
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone', resource: 'anyone',
@@ -111,6 +112,10 @@ export const PROPOSAL_KINDS = ['goal', 'run', 'record-run', 'issue', 'workspace-
  */
 export const MEASURES = ['passingPairs', 'freshPairs', 'connected', 'projects', 'ways', 'waysTried', 'runs', 'freshRuns', 'missing', 'faded', 'fadingSoon', 'dtgPlays']
 export const EXTERNAL_KINDS = ['record-run', 'issue', 'workspace-change']
+
+/** At most this many pull requests one workspace-change may name as replaced (a tripwire on what one merge closes). */
+export const MAX_REPLACES = 10
+
 export const SUBJECT_KINDS = ['credential', 'task', 'ceremony', 'basic']
 export const OUTCOMES = ['pass', 'fail', 'partial']
 
@@ -252,6 +257,8 @@ export function checkPayload (name, doc) {
       if (!['list', 'send', 'drop'].includes(p.op)) return 'op: list | send | drop'
       if (p.op !== 'list' && !str(p.id, 1, 64)) return 'id: the draft'
       return p.text !== undefined && !str(p.text, 1, 2000) ? 'text: 1 to 2000 characters' : null
+    case 'forYou': // what waits on the signer, counted for them alone; seenUpTo: the last line for them they have seen
+      return p.seenUpTo === undefined || (Number.isInteger(p.seenUpTo) && p.seenUpTo >= -1) ? null : 'seenUpTo: the seq of the last line for you that you have seen, or -1'
     case 'never':
       if (!['get', 'set'].includes(p.op)) return 'op: get | set'
       if (p.op === 'set' && (!Array.isArray(p.hashes) || p.hashes.length > 200 || !p.hashes.every((x) => /^[0-9a-f]{64}$/.test(x)))) return 'hashes: up to 200 sha256 hex strings'
@@ -291,6 +298,8 @@ export function checkPayload (name, doc) {
       }
       if (p.kind === 'workspace-change') {
         if (!isObj(p.change) || !Number.isInteger(p.change.pr) || p.change.pr < 1 || !/^[0-9a-f]{40}$/.test(p.change.sha ?? '')) return 'change: { pr: pull request number, sha: its 40-character head commit }'
+        const r = p.change.replaces // the pull requests this one replaces: once it merges, the room closes each with "Replaced by #pr" (never deleting a branch)
+        if (r !== undefined && (!Array.isArray(r) || r.length > MAX_REPLACES || !r.every((n) => Number.isInteger(n) && n >= 1 && n !== p.change.pr) || new Set(r).size !== r.length)) return `change.replaces: up to ${MAX_REPLACES} other pull request numbers, each once`
       }
       return null
     case 'resource':

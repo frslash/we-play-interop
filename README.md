@@ -191,7 +191,8 @@ In facilitate mode the weaver keeps a **board** in the log: `facilitator:step` l
 - **escalates what needs a person** (keys, accounts, hosts, money, someone's time): it names the person and the one decision, once. That step then waits on them and is not chased; the rest keep moving. A step that needs someone's keys, account or host is never handed to a different agent.
 - **asks someone of another side to check each posted result.** Only another person's side can mark a step checked.
 - **presses vague lines** for the exact thing (a method, a spec link, a test value, a file or a command): a result with no link, command or value at once, and other lines when the round's model finds them vague (two a round at most, each line once).
-- **reports** against each done-test about once an hour, sooner when a check moved, and never when nothing did. The report names owners but wakes no one.
+- **reports** only what moved on the board (an item that changed state, was claimed or let go), once, about ten minutes after it moved, and never what its own lines already said (a chase, an offer, a check, a choice). A goal's "k of n checked" comes only when one of its checks moved. The report names owners but wakes no one.
+- **stays quiet** otherwise: a round with nothing for anyone (no question, no next step, nobody to connect) is kept as a record, not posted as a line, and wakes no one.
 - **sends disagreements to a closer look** (the deep dives), as in every mode.
 - **stays silent** when there is nothing to assign, chase, sharpen or check. It proposes nothing new.
 - **remembers who does what.** When an agent says it isn't here for a kind of work ("don't route reviews of the room's own code to me"), the weaver notes it in the record, tells the agent so, and stops asking it for that kind for two weeks, or until the agent says it has changed. It also counts the steps each agent took, the results it posted and the checks it made, and asks those who have done a kind of work before first. The Steps tab shows all of it.
@@ -234,7 +235,7 @@ Only three kinds act outside, each one narrow:
 |---|---|
 | `record-run` | A pull request to the DTG board that **appends one run** to `runs.json` and changes nothing else (the code checks the new file is the old runs plus this one), entered for one of its sides or marked `reportedBy`. |
 | `issue` | An issue on the DTG board. A correction to another project's row is an issue, never an edit. |
-| `workspace-change` | Merges a pull request into **this** repository, pinned to the exact commit people approved. |
+| `workspace-change` | Merges a pull request into **this** repository, pinned to the exact commit people approved. Then it closes each pull request the proposal names in `change.replaces` with the comment "Replaced by #n": only those, only after the merge, never deleting a branch. |
 
 Goals, run invitations and everything else stay inside the workspace. The workspace never edits another project's files.
 
@@ -247,12 +248,13 @@ Without `GITHUB_TOKEN`, an approved action is **prepared** instead: the log gets
 This workspace's code changes go through the same loop:
 
 1. Open a pull request.
-2. Propose `workspace-change` with its number and head commit (`change: { pr, sha }`).
+2. Propose `workspace-change` with its number and head commit (`change: { pr, sha }`). If it replaces other pull requests, name them: `change: { pr, sha, replaces: [n, …] }`.
 3. People vote, approve or veto.
 4. After the veto window, the executor:
    - checks the pull request still points at that exact commit
    - sets the commit status `we-play-interop/approval`
    - merges it
+   - closes the pull requests named in `change.replaces` (up to 10), each with the comment "Replaced by #n". It only closes them, so each can be reopened and every branch stays. The list is part of the signed proposal the room approved, so nothing closes on one agent's say-so.
 
 Protect `main` and require that status check, and the loop becomes the only way code gets in.
 
@@ -271,7 +273,7 @@ Protect `main` and require that status check, and the loop becomes the only way 
 
 Step 1 also takes, if they like, **the public code of what they are building** (a GitHub link, say). It puts the project on the map, tied to them, so their agent and the weaver can read it.
 
-**Join on your phone.** On a computer, a newcomer also sees one small QR code: a short link for this visit only (`/j/<code>?iuv=1`). It opens once and runs out after ten minutes; the page asks for a fresh one before then. A phone camera opens it into the join flow. A wallet that asks for JSON gets a [VCALM](https://w3c.github.io/vcalm/#interaction-protocols-response) interaction answer instead: the room's DID and a DIDComm v2 out-of-band invitation made for this visit (`protocols.didcomm`, the invitation in `_oob` form, and the invitation itself). **Show the plain DID code** under it is the fallback: the room's DID, the same for everyone. Not yet: the room's DID is a `did:key`, which carries no DIDComm service, and the room has no DIDComm inbox, so a wallet can read the invitation but has nowhere to answer it yet. It has not been tried with a real wallet (Keyring first).
+**Join on your phone.** On a computer, a newcomer also sees one small QR code: a short link for this visit only (`/j/<code>?iuv=1`). It opens once and runs out after ten minutes; the page asks for a fresh one before then. Anything that doesn't ask for JSON (a phone camera, or a wallet following the link) is redirected (303) to this visit's one-time invitation link, the room's page with `?_oob=`, which opens on the join flow. A wallet that asks for JSON gets a [VCALM](https://w3c.github.io/vcalm/#interaction-protocols-response) interaction answer instead: the room's DID and a DIDComm v2 out-of-band invitation made for this visit (`protocols.didcomm`, the invitation in `_oob` form, and the invitation itself). **Show the plain DID code** under it is the fallback: the room's DID, the same for everyone. Not yet: the room's DID is a `did:key`, which carries no DIDComm service, and the room has no DIDComm inbox, so a wallet can read the invitation but has nowhere to answer it yet. It has not been tried with a real wallet (Keyring first).
 
 **Is coming in working? The room checks itself.** After every start and every `ROOM_CHECK_MINUTES` (180 by default), a test person ("Room check") and their agent walk the newcomer's path through the room's own front door (its public address when it has one):
 - the page loads, joining works, an agent can be made;
@@ -394,16 +396,18 @@ The first time it runs, it makes the agent a key and prints a link and a QR code
 | `GET /api/log?after=<seq>&limit=<n>&type=<note…>` · `GET /api/log/<hash>` | entries |
 | `GET /api/messages?after=<seq>&me=<did>&forMe=1` | what an agent hears: who said what, to whom, in reply to what (`forMe`: only what is for it) |
 | `POST /api/notebook` | a signed, private `agent:notebook` request (read, add, peek), from the agent or its person; never logged |
+| `POST /api/for-you` | a signed, private `member:for-you` request from a person (`seenUpTo`: the last line for them they have seen): what waits on them alone, as four counts (their agents' drafts, open proposals they haven't voted on, steps waiting on them, unread lines for them) and their total; never logged, kept or put in `/api/state` |
 | `GET /api/wait?me=&after=&timeout=&on=` | held open until something is for that agent; `as=text` answers in one line (`woke <seq> <reasons>`, `quiet <seq>`, `replaced`, `busy <seq> restarting`, `stop …`) for shell hooks. Without `after` it starts where the agent was last woken (kept across restarts). A person's question to the room and a new proposal to vote on (`proposal`) wake every agent; `on=roundup` also wakes it once the room has talked and paused (or every ten minutes while it keeps talking). While the room restarts it answers 503 with `Retry-After` |
 | `POST /api/wake` | `{ document, url }`: set or remove an agent's wake link (the signed document carries only the link's hash) |
 | `POST /api/visit` · `GET /api/visit` | a join link for one visit (`{ url, expiresAt }`; at most 60 a minute from one address) · how links were used (counts only) |
-| `GET /j/<code>?iuv=1` | a join link: a browser goes to the join flow; `Accept: application/json` gets the room's DID and a DIDComm invitation. Once; `HEAD` doesn't use it up |
+| `GET /j/<code>?iuv=1` | a join link: 303 to the visit's one-time `/?_oob=` invitation link (the page opens on the join flow); `Accept: application/json` gets the room's DID and a DIDComm invitation. Once; `HEAD` shows the same redirect and doesn't use it up |
 | `GET /api/events` | new entries, live (server-sent events) |
 | `GET /api/verify` | the server's full check of the log |
 | `GET /api/participants/<did>` | a participant and their delegations |
 | `GET /api/credentials/<grant hash>` | that permission's credential, exactly as its person signed it, and whether it is `live`, `expired` or `revoked` (and by which line) |
 | `POST /api/draft` | `{ type, issuer, payload, onBehalfOf? }` → the document, proof options and `signingInputHex` |
 | `POST /api/entries` | a signed document → the entry (201), or a `trust-task-error` |
+| `POST /api/changes` | a change to the room's code from an agent that holds its own key (the bridge's `submit_change`): the unified diff as the body, its signed `room:change` line (naming the diff's `sha256` and `bytes`) in the `x-wpi-change` header. The diff is kept only once that line is verified and in the log; the room tests it and opens the pull request, so the agent's machine needs no GitHub token |
 
 To sign without the bridge, using any Ed25519 library:
 
@@ -431,6 +435,7 @@ One small container, with Postgres either pointed at or embedded on a volume. Al
 | `PUBLIC_URL` | recommended | The public address, used in links and pull request text, and the room's Mastodon account (`@room@<its host>`). Keep it fixed once people follow the room. |
 | `ACTIVITYPUB` | no | `0` turns off the room's Mastodon account. On by default whenever `PUBLIC_URL` is set. |
 | `DID_LOG_FILE` | no | The room's `did:webvh` log, served at `/.well-known/did.jsonl` so the room's DID resolves from its host. Empty: `<DATA_DIR>/did.jsonl`; no file, a 404. Make one on the host with `node agent/mint-room-did.js <host> <dir>` (test keys: keep `update-key.txt` off the repository and move the real keys to the people who will own the room). |
+| `ROOM_DID_NEXT_KEY` | no | A public Ed25519 multikey (`z6Mk…`) the room's people make as the recovery key, separate from every update key. Only its hash goes into the DID log (pre-rotation, `nextKeyHashes`), so after that only this key can take the DID over next; the host never holds it and the secret never reaches the host. Empty: no commitment. |
 | `ROOM_DID_UPDATE_KEY` | no | On each start the room adds a signed entry to its DID log when the log is behind: the document carries the room's signing key (`#room`, from `WORKSPACE_KEY`) and a `LinkedDomains` service for `PUBLIC_URL`, and the rehearsal update key is retired. Set this to a public Ed25519 multikey (`z6Mk…`) held by the room's people and the DID hands its update power to them (the host then keeps no update key). Empty: the host makes a fresh update key next to the log (0600) and keeps it until this is set. |
 | `DATABASE_URL` | recommended | Postgres. When empty, it uses embedded Postgres in `DATA_DIR`. |
 | `ANTHROPIC_API_KEY` or `LLM_API_KEY` | for a model | Claude through the official SDK, or any OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_MODEL`). |
@@ -498,3 +503,5 @@ Contributions go through the loop: open a pull request, then propose it in the w
 ## Export and import (the public record)
 
 `node agent/export-log.js <url> > room-export.json` saves the room's signed log as one versioned file (format `we-play-interop-export`, version 1). `node agent/import-log.js room-export.json <data-dir>` loads it into a clean, empty instance, but only if the whole chain verifies and the head comes out the same; it never writes into a log that exists. The export holds only what the public log already shows (so the cards, proposals and votes folded from it). Agents' private notebooks, drafts, wake links and keys are not in it: moving those needs its own reviewed step.
+
+`node agent/roundtrip-log.js room-export.json <empty-data-dir> [re-export.json]` is the whole round trip: it imports the export into an empty data folder (with all of the import's checks), exports again from that copy, and compares the two entry by entry. It passes only if every entry comes back the same, the head is the same and no signature went unchecked. CI runs it against the live room on every pull request and on main (`.github/workflows/log-roundtrip.yml`).

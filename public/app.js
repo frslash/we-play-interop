@@ -10,9 +10,11 @@ import { createGraph } from '/graph.js'
 import { neverKey, phrases, secretIn, textsOf } from '/shared/guard.js'
 import { splitLayers } from '/shared/layers.js'
 import { whyNot } from '/shared/steps.js'
+import { willClose } from '/shared/replaces.js'
 import { mentionOptions } from '/shared/mentions.js'
+import { silentRound } from '/shared/round.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
-import { heard, lineIsFor } from '/shared/presence.js'
+import { WAITING_FOR_PERSON, allDrafts, heard, lineIsFor, waitingForOk, waitingLabel, waitsForPerson } from '/shared/presence.js'
 
 // ---------- tiny DOM helpers (user text only ever goes in as text) ----------
 const $ = (s) => document.querySelector(s)
@@ -75,12 +77,16 @@ function forMe (e) {
   return lineIsFor(e, { did: me.did, name: person(me.did)?.name }, parent)
 }
 const seenForMe = () => Number(store.get('wpi.forMeSeen') ?? -1)
-function markForMeSeen () { const top = feed.find(forMe)?.seq; if (top != null && top > seenForMe()) { store.set('wpi.forMeSeen', String(top)); drawForMeCount() } }
+function markForMeSeen () { const top = feed.find(forMe)?.seq; if (top != null && top > seenForMe()) { store.set('wpi.forMeSeen', String(top)); drawForMeCount(); loadForYouSoon() } }
 function drawForMeCount () {
   const b = document.querySelector('.tabs button[data-tab="talk"]'); if (!b) return
   const n = feed.filter((e) => e.seq > seenForMe() && forMe(e)).length
   b.querySelector('.for-me-count')?.remove()
   if (n) b.append(h('span', { class: 'for-me-count', 'aria-label': `${n} for you` }, String(n)))
+  // lines your agents hold for your OK, from all of them, in plain words on the tab
+  const w = joined() ? waitingForOk(S?.people, me.did) : 0
+  b.querySelector('.ok-count')?.remove()
+  if (w) b.append(h('span', { class: 'ok-count', title: 'Lines your agents wrote and hold until you say send' }, waitingLabel(w)))
 }
 // a notification from this browser when a line is for you and you're not looking (only while the page is open)
 const notifyOn = () => store.get('wpi.notify') === '1' && 'Notification' in window && Notification.permission === 'granted'
@@ -94,6 +100,36 @@ async function toggleNotify () {
   if (!('Notification' in window)) return toast('This browser can\'t show notifications.')
   const ok = (await Notification.requestPermission()) === 'granted'
   store.set('wpi.notify', ok ? '1' : null); toast(ok ? 'You\'ll get a notification here when a line is for you.' : 'Notifications are blocked for this site in your browser settings.'); render()
+}
+
+// ---------- For you: what waits on you, counted by the room for you alone (room line 2629) ----------
+// Asked with a request signed here and answered only to its signer; none of it is in /api/state or the log.
+const BASE_TITLE = document.title
+let forYouData = null, forYouLast = 0, forYouTimer = null
+function loadForYouSoon () { // at most every 3 seconds, whatever the live stream does
+  clearTimeout(forYouTimer)
+  forYouTimer = setTimeout(() => { forYouLast = Date.now(); loadForYou().catch(() => {}) }, Math.max(0, 3000 - (Date.now() - forYouLast)))
+}
+async function loadForYou () {
+  if (!joined()) { forYouData = null; return drawForYou() }
+  const r = await privateCall('/api/for-you', 'forYou', { seenUpTo: seenForMe() })
+  forYouData = r.ok && r.body.for === me.did ? r.body : null
+  drawForYou()
+}
+function drawForYou () {
+  const box = $('#for-you'), d = joined() ? forYouData : null
+  document.title = d?.total ? `(${d.total}) ${BASE_TITLE}` : BASE_TITLE
+  if (!box) return
+  if (!d) { box.hidden = true; return fill(box) }
+  const toAgent = () => { const a = d.ok[0]?.agent; if (a && myLiveAgents()[0]?.did === a) talk.to = 'agent'; go('talk'); renderTalk(true) }
+  const toRoom = () => { talk.to = 'room'; go('talk'); renderTalk(true) }
+  const item = (n, label, onclick) => h('button', { type: 'button', class: 'fy' + (n ? ' some' : ''), onclick, 'aria-label': `${n} ${label}` }, h('b', null, String(n)), label)
+  box.hidden = false
+  fill(box, h('h2', null, 'For you'),
+    item(d.counts.ok, 'waiting for your OK', toAgent),
+    item(d.counts.vote, 'need your vote', () => go('decide')),
+    item(d.counts.waiting, 'waiting on you', () => go('steps')),
+    item(d.counts.replies, d.counts.replies === 1 ? 'unread reply' : 'unread replies', toRoom))
 }
 
 // an agent is in the room once it has been heard; before that it is being set up, on its person's card only
@@ -160,6 +196,14 @@ async function refresh () {
   render()
   if (document.body.dataset.tab === 'talk') refreshNotes().catch(() => {}) // at most every 10 seconds
 }
+const FEED_KEEP = 150 // the live window Talk keeps; older lines load as someone scrolls up (loadOlder)
+/** Keep the live window bounded. Lines it lets go join the history someone is reading, so their scroll-back has no gap. */
+function trimFeed () {
+  if (feed.length <= FEED_KEEP) return
+  const out = feed.slice(FEED_KEEP)
+  feed = feed.slice(0, FEED_KEEP)
+  if (talk.older?.length) for (const e of out) if (!talk.older.some((x) => x.hash === e.hash)) talk.older.push(e)
+}
 async function loadFeed () {
   const head = S?.head?.seq ?? 0
   const r = await api(`/api/log?after=${Math.max(-1, head - 80)}&limit=100`)
@@ -171,7 +215,7 @@ async function catchUp () {
   const r = await api(`/api/log?after=${last}&limit=100`)
   if (!r.ok || !r.body.entries.length) return
   for (const e of r.body.entries) if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); toWeave.push(e) }
-  feed = feed.slice(0, 150)
+  trimFeed()
   await refresh(); weaveQueued()
 }
 // If the live stream stays silent (some tunnels and proxies hold it back), ask every few seconds instead.
@@ -191,7 +235,7 @@ function live () {
     streamHeard = true
     const e = JSON.parse(ev.data)
     if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); toWeave.push(e); notifyIfForMe(e) }
-    feed = feed.slice(0, 150)
+    trimFeed()
     clearTimeout(pending); pending = setTimeout(async () => { await refresh(); weaveQueued() }, 250)
   })
 }
@@ -319,9 +363,11 @@ const LISTEN = { waiting: 'listening now', 'wake link': 'listening: the room wak
 const saysIt = (did) => { const m = person(did)?.runsOnSaid; return m && (m.model || m.runsOn) ? `says it runs on ${[m.model, m.runsOn && `(${m.runsOn})`].filter(Boolean).join(' ')}` : null }
 const listeningOf = (did) => person(did)?.listening ?? null
 function listenDot (did) {
-  const how = listeningOf(did)
-  return h('span', { class: 'listen' + (how ? ' on' : ''), title: how ? LISTEN[how] : 'not listening right now: it may not answer until its person is back' })
+  const how = listeningOf(did), held = waitsForPerson(person(did))
+  return h('span', { class: 'listen' + (how ? ' on' : '') + (held ? ' held' : ''), title: held ? `${WAITING_FOR_PERSON}: it has a line waiting for its person’s OK` : how ? LISTEN[how] : 'not listening right now: it may not answer until its person is back' })
 }
+// a seat whose agent holds a line for its person's OK: awake, not absent
+const waitingBadge = (did) => (waitsForPerson(person(did)) ? h('span', { class: 'badge held', title: 'It wrote a line and is waiting for its person’s OK (Ask me first)' }, WAITING_FOR_PERSON) : null)
 // your own private notes to your agent, shown where you wrote them in the conversation, with whether it has read them
 let notesAsked = 0
 async function refreshNotes (force) {
@@ -329,20 +375,24 @@ async function refreshNotes (force) {
   if (!agent) { talk.notes = []; return }
   if (!force && Date.now() - notesAsked < 10_000) return
   notesAsked = Date.now()
-  const [r, dr] = await Promise.all([privateCall('/api/notebook', 'notebook', { agent: agent.did, op: 'read' }), agent.hosted ? privateCall('/api/drafts', 'draft', { agent: agent.did, op: 'list' }) : null])
-  if (!r.ok) return
-  talk.drafts = dr?.ok ? dr.body.drafts : []
+  // drafts from every agent of yours whose key the room holds (only those can hold a line for your OK)
+  const holders = myLiveAgents().filter((a) => a.hosted)
+  const [r, ...dr] = await Promise.all([privateCall('/api/notebook', 'notebook', { agent: agent.did, op: 'read' }), ...holders.map((a) => privateCall('/api/drafts', 'draft', { agent: a.did, op: 'list' }))])
+  talk.drafts = allDrafts(holders.map((a, i) => ({ agent: a, drafts: dr[i]?.ok ? dr[i].body.drafts : [] })))
+  talk.draftsLoaded = true
+  if (!r.ok) return renderTalk()
   talk.notes = (r.body.notes ?? []).slice(-40)
   talk.readUpTo = r.body.readUpTo ?? null
   talk.notesFor = agent
   renderTalk()
 }
 function draftBubble (d) {
-  const agent = talk.notesFor, words = d.payload.text ?? d.payload.title ?? (d.kind === 'vote' ? `vote ${d.payload.choice}` : d.kind)
+  const agent = d.agent ?? talk.notesFor, words = d.payload.text ?? d.payload.title ?? (d.kind === 'vote' ? `vote ${d.payload.choice}` : d.kind)
   const act = async (op, text) => {
     const r = await privateCall('/api/drafts', 'draft', { agent: agent.did, op, id: d.id, ...(text ? { text } : {}) })
     if (!r.ok) return toast(r.body?.payload?.message ?? 'refused')
-    talk.drafts = r.body.drafts; toast(op === 'drop' ? 'Dropped. It was never posted.' : 'Sent, as your agent.'); await refresh(); renderTalk(true)
+    talk.drafts = allDrafts([...new Map((talk.drafts ?? []).map((x) => [x.agent.did, x.agent])).values()].map((a) => ({ agent: a, drafts: a.did === agent.did ? r.body.drafts : talk.drafts.filter((x) => x.agent.did === a.did) })))
+    toast(op === 'drop' ? 'Dropped. It was never posted.' : 'Sent, as your agent.'); await refresh(); renderTalk(true)
   }
   return h('div', { class: 'msg mine private draft' }, h('div', { class: 'who' }, `🔒 ${agent?.name ?? 'Your agent'} wants to ${d.kind === 'note' ? 'say' : d.kind} · waiting for you · `, h('span', { class: 'time' }, ago(d.at))),
     layered('draft-' + d.id, words, d.payload.tech),
@@ -486,8 +536,9 @@ function chatItem (e) {
       h('button', { class: 'btn tiny', title: 'Reply to this', onclick: () => setReply(e) }, 'Reply'),
       h('button', { class: 'btn tiny', title: 'Copy this message', onclick: () => navigator.clipboard?.writeText(p.text ?? '').then(() => toast('Copied.'), () => toast('Select the text and copy it by hand.')) }, 'Copy'))
     const mineToAnswer = forMe(e)
-    return h('div', { class: 'msg' + (e.author === me?.did ? ' mine' : '') + (agent ? ' agent' : '') + (mineToAnswer ? ' for-me' : '') },
-      h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${colorFor(e.author)}` }), nameOf(e.author), agent ? listenDot(e.author) : null, agent && saysIt(e.author) ? h('span', { class: 'for', title: 'The agent’s own word: the room cannot check it' }, ` · ${saysIt(e.author)}`) : null, agent && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
+    const weaver = e.author === S.workspace // every line the weaver signs reads as a notice, like its rounds: centred and quieter
+    return h('div', { class: 'msg' + (weaver ? ' weaver' : '') + (e.author === me?.did ? ' mine' : '') + (agent && !weaver ? ' agent' : '') + (mineToAnswer ? ' for-me' : '') },
+      h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${weaver ? 'var(--gold)' : colorFor(e.author)}` }), weaver ? 'The weaver' : nameOf(e.author), agent && !weaver ? listenDot(e.author) : null, agent && !weaver ? waitingBadge(e.author) : null, agent && !weaver && saysIt(e.author) ? h('span', { class: 'for', title: 'The agent’s own word: the room cannot check it' }, ` · ${saysIt(e.author)}`) : null, agent && !weaver && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
         d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, mineToAnswer ? h('span', { class: 'badge for-me' }, 'for you') : null, ' ', time, actions),
       parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${splitLayers(parent.document.payload.text ?? parent.document.payload.title ?? '').short.slice(0, 100)}`) : null,
       p.media?.length ? h('div', { class: 'photos' }, p.media.map((m) => h('a', { href: `/media/${m.sha256}`, target: '_blank', rel: 'noopener' }, h('img', { src: `/media/${m.sha256}`, loading: 'lazy', width: m.w, height: m.h, alt: 'a photo' })))) : null,
@@ -546,11 +597,38 @@ function holdingChat () {
   return Boolean(s && !s.isCollapsed && s.rangeCount && talk.list.contains(s.getRangeAt(0).commonAncestorContainer))
 }
 function catchUpChat () { if (talk.deferred && !holdingChat()) renderTalk() }
-function renderTalk (scrollDown) {
+const OLDER_PAGE = 200 // lines of the record per request when scrolling back (most are board bookkeeping, not chat)
+/**
+ * Scrolling back through Talk: the next older stretch of the record, until there are new lines to read or the room's
+ * first line is reached. The reader's place stays put while lines load above it.
+ */
+async function loadOlder () {
+  if (talk.loadingOlder || talk.olderDone) return
+  talk.loadingOlder = true
+  try {
+    const visible = () => talk.older.filter((e) => !checkEntry(e) && chatItem(e)).length
+    const had = visible()
+    for (let page = 0; page < 5 && visible() - had < 20 && !talk.olderDone; page++) { // a few requests at most per scroll
+      const oldest = Math.min(...[...feed, ...talk.older].map((e) => e.seq))
+      if (!Number.isFinite(oldest) || oldest <= 0) { talk.olderDone = true; break }
+      const r = await api(`/api/log?after=${Math.max(-1, oldest - OLDER_PAGE - 1)}&limit=${OLDER_PAGE}`)
+      if (!r.ok) break
+      const got = r.body.entries.filter((e) => e.seq < oldest && !talk.older.some((x) => x.hash === e.hash)).reverse()
+      talk.older.push(...got)
+      if (!got.length || got.at(-1).seq <= 0) talk.olderDone = true
+    }
+    const fromBottom = talk.list.scrollHeight - talk.list.scrollTop
+    renderTalk(false, { holdAt: fromBottom })
+  } finally { talk.loadingOlder = false }
+}
+function renderTalk (scrollDown, { holdAt = null } = {}) {
   const root = $('#tab-talk')
   if (!talk.list) {
     talk.goals = h('div', { class: 'goals-strip' })
+    talk.waiting = h('div', { class: 'waiting-strip', hidden: true })
     talk.list = h('div', { class: 'chat', 'aria-live': 'polite' })
+    talk.older = []; talk.olderDone = false
+    talk.list.addEventListener('scroll', () => { if (talk.list.scrollTop < 300 && talk.scrolled) loadOlder().catch(() => {}) }, { passive: true })
     talk.list.addEventListener('pointerdown', (ev) => { if (!ev.target.closest('button,a')) talk.dragging = true })
     document.addEventListener('pointerup', () => { if (talk.dragging) { talk.dragging = false; setTimeout(catchUpChat, 0) } })
     document.addEventListener('selectionchange', catchUpChat)
@@ -601,10 +679,15 @@ function renderTalk (scrollDown) {
     }
     talk.composer = h('div', { class: 'composer' }, talk.reply, talk.tray, talk.mentions, h('div', { class: 'composer-row' }, h('button', { class: 'btn attach', 'aria-label': 'Add a photo or file', title: 'Add a photo or a file (a photo’s location and camera data are removed)', onclick: () => talk.picker.click() }, '📎'), talk.picker, talk.micBtn, talk.input, h('button', { class: 'btn primary send', onclick: sendChat, 'aria-label': 'Send' }, '↑')), talk.toggle)
     talk.input.addEventListener('paste', (ev) => { const files = [...(ev.clipboardData?.files ?? [])].filter((f) => f.type.startsWith('image/')); if (files.length) { ev.preventDefault(); addPhotos(files) } })
-    fill(root, talk.goals, talk.list, talk.composer)
+    fill(root, talk.goals, talk.waiting, talk.list, talk.composer)
   }
   const held = S.proposals.filter((p) => p.kind === 'goal' && p.status !== 'vetoed' && p.tally.for > p.tally.against)
   fill(talk.goals, held.length ? [h('strong', null, 'The room is going for: '), held.slice(0, 3).map((g) => g.title).join(' · ')] : h('span', { class: 'meta' }, 'Just talk. The weaver picks up what people want and suggests goals and next steps here.'))
+  // every line your agents hold for your OK, from all of them, together above the chat so none scrolls away
+  const waiting = talk.drafts ?? [], count = talk.draftsLoaded ? waiting.length : joined() ? waitingForOk(S.people, me.did) : 0
+  talk.waiting.hidden = !count
+  fill(talk.waiting, count ? [h('div', { class: 'waiting-head' }, h('strong', null, waitingLabel(count)), h('span', { class: 'meta' }, ' · only you see these; nothing goes out until you say send')),
+    waiting.length ? waiting.map(draftBubble) : h('p', { class: 'meta' }, 'Loading them…')] : null)
   const agents = myLiveAgents()
   talk.toggle.hidden = !agents.length
   if (!agents.length) talk.to = 'room'
@@ -614,13 +697,16 @@ function renderTalk (scrollDown) {
   if (talk.deferredScroll) { scrollDown = true; talk.deferredScroll = false }
   talk.deferred = false
   const nearBottom = talk.list.scrollHeight - talk.list.scrollTop - talk.list.clientHeight < 80
-  const shown = feed.slice(0, 150).reverse(), oldest = shown[0]?.timestamp ?? ''
+  if (nearBottom && holdAt == null && talk.older.length > 2 * OLDER_PAGE && !talk.loadingOlder) { talk.older.sort((a, b) => b.seq - a.seq); talk.older = talk.older.slice(0, 2 * OLDER_PAGE); talk.olderDone = false } // back at the newest: what was read further back is let go, and reloads if they scroll up again
+  const seen = new Set(), shown = [...[...talk.older].reverse(), ...feed.slice(0, FEED_KEEP).reverse()].filter((e) => !seen.has(e.hash) && seen.add(e.hash)).sort((a, b) => a.seq - b.seq), oldest = shown[0]?.timestamp ?? ''
   const rows = shown.filter((e) => !checkEntry(e)).map((e) => ({ at: e.timestamp, el: chatItem(e) })).filter((x) => x.el)
   for (const n of talk.notes) if (n.at >= oldest) rows.push({ at: n.at, el: noteBubble(n) })
-  for (const d of talk.drafts ?? []) rows.push({ at: d.at, el: draftBubble(d) })
   rows.sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : 0))
-  fill(talk.list, rows.length ? rows.map((x) => x.el) : h('p', { class: 'empty' }, 'Quiet so far. Say hello.'))
-  if (scrollDown || nearBottom || !talk.scrolled) { talk.list.scrollTop = talk.list.scrollHeight; talk.scrolled = true }
+  const top = talk.older.length || talk.loadingOlder ? h('p', { class: 'sys' }, talk.olderDone ? 'The start of the room.' : 'Scroll up for earlier lines.') : null
+  fill(talk.list, rows.length ? [top, ...rows.map((x) => x.el)].filter(Boolean) : h('p', { class: 'empty' }, 'Quiet so far. Say hello.'))
+  if (holdAt != null) talk.list.scrollTop = talk.list.scrollHeight - holdAt // lines loaded above: the reader's place stays put
+  else if (scrollDown || nearBottom || !talk.scrolled) { talk.list.scrollTop = talk.list.scrollHeight; talk.scrolled = true }
+  if (!talk.olderDone && !talk.loadingOlder && talk.list.clientHeight > 0 && talk.list.scrollHeight <= talk.list.clientHeight + 300) setTimeout(() => loadOlder().catch(() => {}), 0) // too few lines to scroll: bring in earlier ones
 }
 
 // ---------- Decide: what the room is deciding, next door to the chat ----------
@@ -642,7 +728,7 @@ function decisionCard (p) {
     h('div', { class: 'meta' }, p.byWeaver ? 'The weaver suggests' : `${p.authorName} proposes`, ` · ${p.kind}`, open && p.kind !== 'goal' && left > 0 ? ` · closes in ${Math.ceil(left / 60_000)} min` : '', !open ? ` · ${p.status}` : ''),
     h('h3', { class: 'decision-title' }, p.title),
     cleanBody(p.body) ? h('p', { class: 'why' }, cleanBody(p.body)) : null,
-    p.change ? h('p', { class: 'meta' }, h('a', { href: `https://github.com/${S.workspaceRepo}/pull/${p.change.pr}`, target: '_blank', rel: 'noopener' }, `pull request #${p.change.pr}`), ` at ${p.change.sha.slice(0, 10)}`) : null,
+    p.change ? h('p', { class: 'meta' }, h('a', { href: `https://github.com/${S.workspaceRepo}/pull/${p.change.pr}`, target: '_blank', rel: 'noopener' }, `pull request #${p.change.pr}`), ` at ${p.change.sha.slice(0, 10)}`, willClose(p)) : null,
     h('p', { class: 'meta' }, `${p.tally.for} yes · ${p.tally.against} no`, p.approvals?.length ? ` · approved by ${p.approvals.map((a) => `${a.name}${a.sha ? ` (${a.sha.slice(0, 7)}${a.void ? ', void: a newer commit came after it' : ''})` : ''}`).join(', ')}` : '', p.vetoes.length ? ` · stopped by ${p.vetoes.map((v) => v.name).join(', ')}` : ''),
     open ? h('p', { class: 'meta need' }, needOf(p)) : result ? h('p', { class: 'meta' }, result.url ? h('a', { href: result.url, target: '_blank', rel: 'noopener' }, result.status) : h('strong', null, result.status), result.detail ? ` · ${result.detail}` : '') : null,
     open ? voteButtons(p) : null)
@@ -683,7 +769,7 @@ function stepRow (s) {
     h('div', { class: 'grow' },
       h('div', null, s.test ? `(${s.test.n}) ` : '', h('strong', null, s.title), s.test?.later ? h('span', { class: 'badge' }, 'later') : null),
       s.done && s.done !== s.title ? h('div', { class: 'why' }, 'Done when: ', s.done) : null,
-      s.decision?.holds ? h('div', { class: 'why' }, s.decision.parked ? 'Parked' : 'Decided', ' by ', s.decision.byName ?? 'an agent', s.decision.forName ? ` for ${s.decision.forName}` : '', s.decision.asked ? ` (${s.decision.asked})` : '', s.decision.parked ? '' : `: ${s.decision.choice}`, s.decision.why ? ` · Why: ${s.decision.why}` : '', ' · a person’s line in its thread, or anyone disagreeing there, reopens it') : null,
+      s.decision?.holds ? h('div', { class: 'why' }, s.decision.parked ? 'Parked' : 'Decided', s.decision.provisional ? ' provisionally' : '', ' by ', s.decision.byName ?? 'an agent', s.decision.forName ? ` for ${s.decision.forName}` : '', s.decision.asked ? ` (${s.decision.asked})` : '', s.decision.parked ? '' : `: ${s.decision.choice}`, s.decision.why ? ` · Why: ${s.decision.why}` : '', ' · a person’s line in its thread, or anyone disagreeing there, reopens it') : null,
       h('div', { class: 'meta' }, s.where, ' · ', ago(s.lastWordAt ?? s.at), tech(' · ', h('code', null, s.id.slice(0, 8))))),
     buttons.length ? h('span', { class: 'step-actions' }, buttons) : null)
 }
@@ -994,7 +1080,7 @@ function renderYou () {
       h('p', { class: 'why' }, 'Your agent acts only with the permission you signed: what it may do, until when. Approving, vetoing and bringing agents stay with you.'),
       myAgents.length ? myAgents.map((a) => h('div', { class: 'agent-row' },
         a.delegation ? modeChoice(a) : null,
-        h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), h('br'), saysIt(a.did) ? h('span', { class: 'meta', title: 'The agent’s own word: the room cannot check it' }, saysIt(a.did), h('br')) : null, h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'holds its own key', a.credential ? [' · ', h('a', { href: `/api/credentials/${a.delegation}`, target: '_blank', rel: 'noopener', title: 'A W3C verifiable credential you signed: anyone can check it, and the room checks each of its lines against it' }, 'permission signed as a credential')] : null), tech(' ', h('code', null, short(a.did))), a.delegation ? h('br') : null, a.delegation ? h('span', { class: 'meta' }, listenDot(a.did), ' ', a.listening ? LISTEN[a.listening] : 'not listening right now: see “Keep it around” to have it answer') : null),
+        h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), waitsForPerson(a) ? [' ', waitingBadge(a.did)] : null, h('br'), saysIt(a.did) ? h('span', { class: 'meta', title: 'The agent’s own word: the room cannot check it' }, saysIt(a.did), h('br')) : null, h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'holds its own key', a.credential ? [' · ', h('a', { href: `/api/credentials/${a.delegation}`, target: '_blank', rel: 'noopener', title: 'A W3C verifiable credential you signed: anyone can check it, and the room checks each of its lines against it' }, 'permission signed as a credential')] : null), tech(' ', h('code', null, short(a.did))), a.delegation ? h('br') : null, a.delegation ? h('span', { class: 'meta' }, listenDot(a.did), ' ', a.listening ? LISTEN[a.listening] : 'not listening right now: see “Keep it around” to have it answer') : null),
           a.hosted && savedLinks()[a.did] ? h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(savedLinks()[a.did]).then(() => toast('Link copied.')) }, 'Copy link') : null,
           a.delegation ? h('button', { class: 'btn small danger', onclick: () => post('revoke', { delegation: a.delegation }) }, 'Stop') : h('span', { class: 'badge warn' }, 'stopped'),
           h('button', { class: 'btn small danger', title: 'Deletes its key, notebook and wake link; the record of what it said stays', onclick: () => { if (confirm(`Remove ${a.name}? Its key, notebook and wake link are deleted and its link stops working for good. What it already said stays in the record.`)) post('remove', { agent: a.did }) } }, 'Remove')),
@@ -1038,9 +1124,9 @@ function weaveEntry (e, { fast = false, age = 0, speak = !fast } = {}) {
   } else if (name === 'round') {
     loom.weaverPulse()
     for (const c of p.connections ?? []) loom.thread(c.between[0], c.between[1], { gold: true, fast, age })
-    if (speak) {
+    if (speak && !silentRound(p)) { // a round with nothing for anyone says nothing
       const c = p.connections?.[0]
-      loom.say(S.workspace, 'the weaver', c ? `${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}` : p.next?.[0]?.action ?? 'Listening.', { gold: true })
+      loom.say(S.workspace, 'the weaver', c ? `${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}` : p.next[0].action, { gold: true })
     }
   }
 }
@@ -1061,6 +1147,7 @@ function caption (e, age = 0) {
   const fade = `animation-delay:-${Math.round(age)}ms` // each line fades on the loom's clock, from when it was said
   const dot = h('span', { class: 'dot', style: `background:${e.author === S.workspace ? 'var(--gold)' : colorFor(e.author)}` })
   if (name === 'round') {
+    if (silentRound(d.payload)) return null // a silent round is a record, not a line
     const c = d.payload.connections?.[0]
     return h('li', { class: 'cap fading weaver', style: fade }, dot, h('span', null, h('strong', null, 'The weaver '), c ? `thinks ${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}` : `suggests: ${d.payload.next?.[0]?.action ?? 'keep talking'}`))
   }
@@ -1077,7 +1164,7 @@ function renderWatch () {
     watch.caps = h('ul', { class: 'captions' })
     watch.about = h('p', { class: 'watch-about' }, 'People bring their AI agents here. The agents talk, and the weaver in the middle connects who should talk to whom. Every line is a signed message anyone can check.')
     fill(root, watch.welcome, watch.head, h('div', { class: 'watch-grid' }, watch.wrap, h('div', { class: 'card caps-card' }, h('h2', null, 'Happening now'), h('p', { class: 'meta caps-note' }, 'The last two minutes. Every line stays in Talk.'), watch.caps)), watch.about)
-    loom = createLoom(watch.wrap, { onSelect: (p) => toast(p.kind === 'agent' ? `${p.name}, an agent of ${nameOf(p.principal)}${p.hosted ? ' (key held by the room)' : ''}` : `${p.name}${p.projects?.length ? ' · ' + p.projects.map(projectName).join(', ') : ''}`) })
+    loom = createLoom(watch.wrap, { onSelect: (p) => toast(p.kind === 'agent' ? `${p.name}, an agent of ${nameOf(p.principal)}${p.hosted ? ' (key held by the room)' : ''}${waitsForPerson(person(p.did) ?? p) ? `: ${WAITING_FOR_PERSON}` : ''}` : `${p.name}${p.projects?.length ? ' · ' + p.projects.map(projectName).join(', ') : ''}`) })
   }
   const humans = S.people.filter((p) => p.kind === 'human' && !isCheck(p.did)).length, agents = S.people.filter((p) => p.kind === 'agent' && inRoom(p)).length
   fill(watch.head, h('span', { class: 'here' }, `${humans} ${humans === 1 ? 'person' : 'people'} · ${agents} ${agents === 1 ? 'agent' : 'agents'} in the room`), comingIn().step === 'done' ? h('button', { class: 'btn small', onclick: () => { bring.again = true; openBring() } }, 'Bring another agent') : null)
@@ -1563,6 +1650,7 @@ function render () {
   if (!S) return
   renderTop()
   if (document.body.dataset.tab === 'talk' && !document.hidden) markForMeSeen(); else drawForMeCount()
+  loadForYouSoon()
   for (const [name, draw] of Object.entries(TABS)) {
     const el = $('#tab-' + name)
     if (!['talk', 'watch'].includes(name) && typing(el)) stale.add(name); else { stale.delete(name); draw() } // the chat and the loom redraw around the typing, not over it

@@ -2,7 +2,7 @@
 // Trust Task document, verified and appended to the hash-chained log.
 import { handleRoomDid, ensureRoomDid, growRoomDid } from './roomdid.js'
 import { createHash } from 'node:crypto'
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { dirname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -18,6 +18,7 @@ import { Log, TaskError } from './log.js'
 import { codeOf, handleHostedMcp, handleHostedPlain, handleMcp } from './mcp.js'
 import { HostedAgents } from './hosted.js'
 import { Waker } from './wake.js'
+import { NotNamed } from './named.js'
 import { Notebooks } from './notebook.js'
 import { Away } from './away.js'
 import { Waits } from './waits.js'
@@ -25,15 +26,16 @@ import { RoomCheck } from './check.js'
 import { closeVotes } from './votes.js'
 import { NeverLists } from './never.js'
 import { Drafts } from './drafts.js'
+import { forYou } from './foryou.js'
 import { Host } from './host.js'
 import { Media } from './media.js'
-import { Changes } from './changes.js'
+import { Changes, MAX_PATCH } from './changes.js'
 import { Workshop } from './workshop.js'
 import { Sources } from './sources.js'
 import { Cursors } from './cursors.js'
 import { AGREED } from './rules.js'
 import { ActivityPub } from './activitypub.js'
-import { CODE_RE, Visits, interaction } from './visits.js'
+import { CODE_RE, Visits, interaction, visitLocation } from './visits.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { createResolver } from './resolver.js'
@@ -63,6 +65,40 @@ const STATIC = [
   ['/shared/', join(root, 'src/shared/')],
   ['/', join(root, 'public/')],
 ]
+
+/**
+ * A fingerprint of everything the browser loads (the page's files, the shared core, the vendored libraries): it changes
+ * exactly when one of those files changes. Each release's files are served under /r/<fingerprint>/ and may be cached
+ * for good, because a new release has a new address; the page itself is always re-checked. Before this, Cloudflare kept
+ * the page's code in browsers for 4 hours whatever the room said, so a deploy looked missing until a hard refresh.
+ */
+export function releaseOf (dirs, base = root) {
+  const h = createHash('sha256')
+  const walk = (d) => {
+    for (const n of readdirSync(d).sort()) {
+      const f = join(d, n), s = statSync(f)
+      if (s.isDirectory()) walk(f)
+      else if (TYPES_OF[n.slice(n.lastIndexOf('.'))]) h.update(f.slice(base.length)).update('\0').update(readFileSync(f)).update('\0')
+    }
+  }
+  for (const d of dirs) if (existsSync(d)) walk(d)
+  return h.digest('hex').slice(0, 12)
+}
+
+/** The page, pointed at one release: its code, its style and every module it imports load from /r/<release>/. */
+export function versioned (html, release, modules) {
+  const r = `/r/${release}`
+  return html
+    .replace(/<script type="importmap">([\s\S]*?)<\/script>/, (_, json) => {
+      const map = JSON.parse(json)
+      const imports = Object.fromEntries(Object.entries(map.imports ?? {}).map(([k, v]) => [k, v.startsWith('/') ? r + v : v]))
+      imports['/shared/'] = `${r}/shared/`
+      for (const n of modules) imports[`/${n}`] = `${r}/${n}` // the page's own modules, imported by absolute path
+      return `<script type="importmap">${JSON.stringify({ ...map, imports })}</script>`
+    })
+    .replace('<script type="module" src="/app.js">', `<script type="module" src="${r}/app.js">`)
+    .replace('<link rel="stylesheet" href="/style.css">', `<link rel="stylesheet" href="${r}/style.css">`)
+}
 
 function workspaceIdentity (config) {
   if (config.workspaceKey) return identityFromSeedHex(config.workspaceKey)
@@ -121,9 +157,12 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   weaver.skip = () => ctx.check.dids() // the check walks the path; it is not part of the conversation
   ctx.facilitator = new Facilitator({ ctx }) // the board of steps toward the held goals (facilitate mode)
   weaver.facilitator = ctx.facilitator
+  ctx.notNamed = new NotNamed({ ctx }) // one gentle note from the weaver to an agent that answers a line naming others
+  log.on('entry', (e) => ctx.notNamed.onEntry(e).catch(() => {}))
   ctx.builder = new Builder({ ctx }) // builds what the board hands it, from a routine with only this repository
 
-  const page = readFileSync(join(root, 'public/index.html'), 'utf8')
+  const release = releaseOf(STATIC.map(([, dir]) => dir))
+  const page = versioned(readFileSync(join(root, 'public/index.html'), 'utf8'), release, readdirSync(join(root, 'public')).filter((n) => n.endsWith('.js')).sort())
   const importMap = /<script type="importmap">([\s\S]*?)<\/script>/.exec(page)?.[1] ?? ''
   const csp = `default-src 'self'; script-src 'self' 'sha256-${createHash('sha256').update(importMap).digest('base64')}'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`
 
@@ -150,11 +189,17 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     const accept = String(req.headers.accept ?? '').toLowerCase(), json = accept.search(/application\/([\w.-]+\+)?json/), html = accept.indexOf('text/html')
     const wallet = json >= 0 && (html < 0 || json < html) // asked for JSON before a web page: software, not a person's browser
     const headers = { 'cache-control': 'no-store', vary: 'accept', 'referrer-policy': 'no-referrer' }
-    if (req.method === 'HEAD') { const st = CODE_RE.test(code) ? ctx.visits.peek(code) : 'gone'; res.writeHead(st === 'live' ? 200 : st === 'used' ? 410 : 404, headers); return res.end() }
+    const about = (visit) => ({ base: baseOf(req), did: identity.did, name: config.workspaceName, visit })
+    if (req.method === 'HEAD') { // a link check or a preview: says where the link goes, without using it up
+      const v = CODE_RE.test(code) ? ctx.visits.look(code, ctx.visits.now()) : null
+      if (v && !v.usedAt && !wallet) res.writeHead(303, { ...headers, location: visitLocation(about(v)) })
+      else res.writeHead(!v ? 404 : v.usedAt ? 410 : 200, headers)
+      return res.end()
+    }
     const got = CODE_RE.test(code) ? ctx.visits.open(code, wallet ? 'wallet' : 'page') : { why: 'gone' }
     if (got.visit) {
-      if (wallet) return send(res, 200, interaction({ base: baseOf(req), did: identity.did, name: config.workspaceName, visit: got.visit }), headers)
-      return send(res, 303, '', { ...headers, location: '/#tab=you' }) // the page starts a newcomer on You, where joining is
+      if (wallet) return send(res, 200, interaction(about(got.visit)), headers)
+      return send(res, 303, '', { ...headers, location: visitLocation(about(got.visit)) }) // the one-time ?_oob= invitation link; the page opens on You
     }
     const status = got.why === 'used' ? 410 : 404, why = got.why === 'used' ? 'This code was for one visit, and it has been used.' : 'This code has run out, or there is no such code.'
     if (wallet) return send(res, status, { error: why }, headers)
@@ -246,6 +291,22 @@ export async function createApp (config = defaultConfig, { resolver = createReso
         return send(res, 200, { agent, notes, readUpTo: await ctx.notebooks.readAt(agent), card: log.state.participants.get(who.principal)?.card ?? null })
       } catch (err) { return refuse(res, err, doc) }
     }
+    if (path === '/api/changes' && req.method === 'POST') { // a change from an agent that holds its own key: the diff as the body, its signed room:change line in x-wpi-change
+      let doc
+      try {
+        try { doc = JSON.parse(String(req.headers['x-wpi-change'] ?? '')) } catch { throw new TaskError('malformedRequest', 'send the signed room:change document in the x-wpi-change header, and the diff as the body') }
+        if (NAME_OF[doc?.type] !== 'change') throw new TaskError('unsupportedType', 'expected a room:change document in x-wpi-change')
+        const chunks = []; let size = 0
+        for await (const c of req) { size += c.length; if (size > MAX_PATCH) throw new TaskError('malformedRequest', `a change is a unified diff of at most ${MAX_PATCH / 1000} KB`, { status: 413 }); chunks.push(c) }
+        const bytes = Buffer.concat(chunks), text = bytes.toString('utf8')
+        if (createHash('sha256').update(text).digest('hex') !== doc.payload?.sha256 || Buffer.byteLength(text) !== doc.payload?.bytes) throw new TaskError('malformedRequest', 'the diff does not match the sha256 and bytes you signed')
+        const no = ctx.changes.check(text)
+        if (no) throw new TaskError('malformedRequest', no)
+        const { entry, duplicate } = await log.accept(doc, { ip: ipOf(req) }) // the signature and the agent's permission for changes are checked here, before anything is kept
+        if (!duplicate) { ctx.changes.put(text); ctx.changes.onEntry(entry) } // kept only once its line is signed and in the log; then queued for the keeper
+        return send(res, 201, { ...entry, sha256: doc.payload.sha256, bytes: doc.payload.bytes })
+      } catch (err) { return refuse(res, err, doc) }
+    }
     if (path === '/api/media' && req.method === 'POST') { // a photo: its bytes, with a signed upload naming its hash (x-wpi-upload)
       let doc
       try {
@@ -263,6 +324,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       } catch (err) { return refuse(res, err, doc) }
     }
     if (path.startsWith('/api/files/')) { const r = await views.fileText(ctx, path.slice(11), q); return r ? send(res, 200, r) : send(res, 404, { error: 'no file in this room has that sha256, or it has no text (a photo). The path is /api/files/<the sha256 a message lists under files>' }) }
+    if (path.startsWith('/api/photos/')) { const r = views.photo(ctx, path.slice(12)); return r ? send(res, 200, r) : send(res, 404, { error: 'no photo in this room has that sha256' }) }
     if (path === '/api/sources') return send(res, 200, ctx.sources.view())
     if (path.startsWith('/api/sources/')) { // the cached copy, exactly as the source sent it
       const body = ctx.sources.body(decodeURIComponent(path.slice(13)))
@@ -304,6 +366,14 @@ export async function createApp (config = defaultConfig, { resolver = createReso
         }
         if (op === 'drop') await ctx.drafts.drop(agent, id)
         return send(res, 200, { drafts: ctx.drafts.list(agent) })
+      } catch (err) { return refuse(res, err, doc) }
+    }
+    if (path === '/api/for-you' && req.method === 'POST') { // what waits on you, for you alone: signed by you, answered only to you, never logged or kept
+      let doc
+      try {
+        doc = await log.verifyPrivate(JSON.parse(await readBody(req)), 'forYou')
+        if (!log.state.isHuman(doc.issuer)) throw new TaskError('permissionDenied', 'join first: this counts what waits on a person', { status: 403 })
+        return send(res, 200, forYou(ctx, doc.issuer, doc.payload), { 'cache-control': 'no-store' })
       } catch (err) { return refuse(res, err, doc) }
     }
     if (path === '/api/never' && req.method === 'POST') { // your never-say list: you send only salted hashes; the room never holds the words
@@ -377,9 +447,12 @@ export async function createApp (config = defaultConfig, { resolver = createReso
 
   function serveStatic (path, res) {
     if (path === '/' || path === '/index.html') {
-      res.writeHead(200, { 'content-type': TYPES_OF['.html'], 'content-security-policy': csp, 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' })
+      res.writeHead(200, { 'content-type': TYPES_OF['.html'], 'content-security-policy': csp, 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'cache-control': 'no-cache' }) // always re-checked: it names the release to load
       return res.end(page)
     }
+    const r = /^\/r\/([0-9a-f]{12})(\/.*)$/.exec(path)
+    const forGood = Boolean(r && r[1] === release) // this release's address: its files never change under it
+    if (r) path = r[2] // an older release's address still answers, with today's files, re-checked
     for (const [prefix, dir] of STATIC) {
       if (!path.startsWith(prefix)) continue
       const rel = normalize(decodeURIComponent(path.slice(prefix.length))).replace(/^(\.\.[/\\])+/, '')
@@ -387,7 +460,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       const ext = rel.slice(rel.lastIndexOf('.'))
       if (!file.startsWith(dir) || !TYPES_OF[ext] || !existsSync(file)) continue
       if (prefix.startsWith('/vendor/') && ext !== '.js') continue
-      res.writeHead(200, { 'content-type': TYPES_OF[ext], 'x-content-type-options': 'nosniff', 'cache-control': prefix.startsWith('/vendor/') ? 'public, max-age=3600' : 'no-cache' })
+      res.writeHead(200, { 'content-type': TYPES_OF[ext], 'x-content-type-options': 'nosniff', 'cache-control': forGood ? 'public, max-age=31536000, immutable' : prefix.startsWith('/vendor/') ? 'public, max-age=3600' : 'no-cache' })
       return res.end(readFileSync(file))
     }
     send(res, 404, 'not found')
@@ -418,7 +491,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const ctx = await createApp()
   await ensureRoomDid({ dataDir: defaultConfig.dataDir, file: defaultConfig.didLogFile, publicUrl: defaultConfig.publicUrl })
-  await growRoomDid({ dataDir: defaultConfig.dataDir, file: defaultConfig.didLogFile, publicUrl: defaultConfig.publicUrl, roomPublicKey: ctx.identity.publicKey, updateKey: defaultConfig.roomDidUpdateKey })
+  await growRoomDid({ dataDir: defaultConfig.dataDir, file: defaultConfig.didLogFile, publicUrl: defaultConfig.publicUrl, roomPublicKey: ctx.identity.publicKey, updateKey: defaultConfig.roomDidUpdateKey, nextKey: defaultConfig.roomDidNextKey })
   ctx.server.listen(defaultConfig.port, () => {
     console.log(`${defaultConfig.workspaceName} on :${defaultConfig.port} · workspace ${ctx.identity.did} · ${ctx.db.kind} · ${ctx.log.entries.length} entries`)
     console.log(ctx.llm.configured ? `weaver model: ${ctx.llm.model ?? 'picked at the first round'} via ${ctx.llm.endpoint ?? defaultConfig.llm.baseUrl}` : 'No model key (ANTHROPIC_API_KEY or LLM_API_KEY) is set: the weaver runs its built-in tally instead of a model, and every round says so.')

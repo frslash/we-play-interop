@@ -8,7 +8,8 @@ import { describe, test } from 'node:test'
 import { newIdentity } from '../src/shared/did.js'
 import { NAME_OF, TYPES, signedDocument } from '../src/shared/types.js'
 import { config as baseConfig } from '../src/server/config.js'
-import { REPORT_MS, STALE_MS } from '../src/server/facilitator.js'
+import { OFFER_EVERY_MS, STALE_MS, doneList } from '../src/server/facilitator.js'
+const REPORT_MS = 60 * 60_000
 import { createApp } from '../src/server/index.js'
 import { createResolver } from '../src/server/resolver.js'
 import { State } from '../src/server/state.js'
@@ -71,11 +72,11 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       assert.ok(test6.every((s) => s.state === 'open' && s.goal === goal2))
       assert.match(test6.find((s) => s.test.n === 3).title, /Geb member and a Keyring member/)
       // (5) needs a person (a domain costs money): it waits on the goal's proposer from the start, by name
-      assert.equal(test6.find((s) => s.test.n === 5).waitingOn.who, null) // money, but no owner yet and never held for the goal's proposer: the agents
-      assert.equal(test6.find((s) => s.test.n === 5).waitingOn.held, undefined)
+      assert.equal(test6.find((s) => s.test.n === 5).waitingOn.who, r.people.a.did) // money, no owner yet: held for the goal's proposer
+      assert.equal(test6.find((s) => s.test.n === 5).waitingOn.held, 'money')
       const seed = r.said('seed')
       assert.equal(seed.length, 1)
-      assert.match(seed[0].payload.text, /Check \(5\) waits on a choice first, for the agents here: which permanent domain/)
+      assert.match(seed[0].payload.text, /Check \(5\) waits on a choice first, held for Person A \(it touches their money\): which permanent domain/)
       // the other held goal has no done-test: the room is asked for one, naming whose goal it is
       const ask = r.said('ask test')
       assert.equal(ask.length, 1); assert.match(ask[0].payload.text, /Goal 1.*\(Person B\)/)
@@ -275,6 +276,9 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       assert.equal(r.said('decide').length, 1, 'five re-posts in a minute: one question')
       s = r.stepFrom(pr)
       await r.as('c', 'note', { text: 'Use the Railway host for now.', kind: 'message' }, { threadId: s.thread })
+      await r.ctx.facilitator.tick(r.at(13))
+      assert.ok(r.stepFrom(pr).waitingOn, 'an agent of another person alone only suggests')
+      await r.as('b', 'note', { text: 'Use the Railway host for now.', kind: 'message' }, { threadId: s.thread }) // the step's own agent: provisionally
       await r.ctx.facilitator.tick(r.at(13)); s = r.stepFrom(pr)
       assert.equal(s.waitingOn, undefined, 'the answer clears the wait')
       assert.match(s.decided.text, /Railway/, 'and stays as the step’s decision')
@@ -318,29 +322,33 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
     } finally { await r.stop() }
   })
 
-  test('it reports about once an hour, sooner when a check moved, never when nothing did, and the report wakes no one', async () => {
+  test('it reports only what moved, gathered for a little while, never when nothing did, and the report wakes no one', async () => {
     const r = await room()
     try {
       const goal = (await r.send(r.people.a, 'propose', { kind: 'goal', title: 'Goal 2: the room moves onto encrypted spaces its people hold' })).body.hash
       await r.send(r.people.a, 'vote', { proposal: goal, choice: 'for' })
       await r.ctx.facilitator.tick(r.at(0))
       assert.equal(r.said('report').length, 0, 'not on top of the seed')
+      // the seed's own line named every check it opened: the report does not say them again
+      await r.ctx.facilitator.tick(r.at(11))
+      assert.equal(r.said('report').length, 0)
+      // nothing moved: silent, even an hour later
+      await r.ctx.facilitator.tick(r.at(11) + REPORT_MS + MIN)
+      assert.equal(r.said('report').length, 0)
+      // a check is claimed: reported once, after the changes are gathered (ten minutes), not at once
+      const check3 = r.ctx.facilitator.testOf(goal).find((s) => s.test.n === 3)
+      await r.tell('b', check3, 'claim', 'I take the MLS check')
+      await r.ctx.facilitator.tick(r.at(5))
+      assert.equal(r.said('report').length, 0, 'not five minutes after the claim')
       await r.ctx.facilitator.tick(r.at(11))
       const first = r.said('report')
       assert.equal(first.length, 1)
       assert.match(first[0].payload.text, /0 of 6 checked/)
-      assert.match(first[0].payload.text, /Waiting on the agents: which permanent domain/)
-      // nothing moved: silent, even an hour later
-      await r.ctx.facilitator.tick(r.at(11) + REPORT_MS + MIN)
+      assert.match(first[0].payload.text, /\(3\) .*Claimed: South Agent/)
+      assert.doesNotMatch(first[0].payload.text, /\(1\) |\(2\) |\(4\) /, 'only the check that moved')
+      // once: the same claim is not reported again
+      await r.ctx.facilitator.tick(r.at(30))
       assert.equal(r.said('report').length, 1)
-      // a check is claimed: reported sooner (ten minutes after the last report), not at once
-      const check3 = r.ctx.facilitator.testOf(goal).find((s) => s.test.n === 3)
-      await r.tell('b', check3, 'claim', 'I take the MLS check')
-      await r.ctx.facilitator.tick(r.at(5)) // the last report was written just now
-      assert.equal(r.said('report').length, 1, 'not five minutes after the last one')
-      await r.ctx.facilitator.tick(r.at(11))
-      const second = r.said('report')
-      assert.equal(second.length, 2); assert.match(second[1].payload.text, /\(3\) .*Claimed: South Agent/)
       // the report names South Agent but does not wake it
       const line = r.ctx.log.entries.filter((e) => e.document.payload.facilitator?.report).at(-1)
       assert.equal(concerns(r.ctx, line, r.agents.b.did), null)
@@ -410,6 +418,73 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       const mine = await call('step', { say: 'check', step: s.id, text: 'fine', passed: true })
       assert.match(mine.text, /another person’s side/)
       assert.equal(r.said('press').length, 0, 'a link is the exact thing')
+    } finally { await r.stop() }
+  })
+})
+
+describe('goals first: a goal’s checks reach the agents', () => {
+  const goalWithList = async (r, title, items) => {
+    const body = `Why: it matters.\n\nDone when:\n${items.map((t, i) => `${i + 1}. ${t}`).join('\n')}\n\nOpen questions:\n- Which one first?`
+    const goal = (await r.send(r.people.a, 'propose', { kind: 'goal', title, body })).body.hash
+    await r.send(r.people.a, 'vote', { proposal: goal, choice: 'for' })
+    return goal
+  }
+  const offeredOf = (r, goal) => r.ctx.facilitator.testOf(goal).filter((s) => s.offeredTo && !s.owner)
+
+  test('what counts as a goal’s own done-test', () => {
+    assert.deepEqual(doneList('Done when:\n1. One thing.\n2) Another.\n\nOpen questions:\n- Which?'), ['One thing.', 'Another.'], 'the list ends where the next section begins')
+    assert.deepEqual(doneList('**Done when:**\n- A\n- B\n- C'), ['A', 'B', 'C'])
+    assert.deepEqual(doneList('Done when: 1. only one'), [], 'two items at least, on their own lines')
+    assert.deepEqual(doneList('No list here.'), [])
+  })
+
+  test('a held goal whose own text lists what done looks like gets those as its checks, in its words', async () => {
+    const r = await room()
+    try {
+      const goal = await goalWithList(r, 'The room runs with no host', ['Two agents exchange a signed line through a relay.', 'The relay operator shows it read nothing.', 'The record rebuilds with the server off.'])
+      await r.ctx.facilitator.tick(r.at(1))
+      assert.deepEqual(r.ctx.facilitator.testOf(goal).map((s) => s.title), ['Two agents exchange a signed line through a relay.', 'The relay operator shows it read nothing.', 'The record rebuilds with the server off.'])
+      assert.match(r.said('seed').at(-1).payload.text, /has its done-test, from its own words: 3 checks/)
+    } finally { await r.stop() }
+  })
+
+  test('its open checks are offered to agents: one new offer every five minutes, never two open offers to one agent', async () => {
+    const r = await room()
+    try {
+      const goal = await goalWithList(r, 'Rooms move between hosts', ['A room is made on host A.', 'It moves to host B.', 'Host A shows it holds nothing.'])
+      await r.ctx.facilitator.tick(r.at(1))
+      let offered = offeredOf(r, goal)
+      assert.equal(offered.length, 1); assert.equal(offered[0].test.n, 1, 'the first check first')
+      assert.match(r.said('offer').at(-1).payload.text, /will you take \(1\) A room is made on host A/)
+      await r.ctx.facilitator.tick(r.at(1) + OFFER_EVERY_MS / 2)
+      assert.equal(offeredOf(r, goal).length, 1, 'not twice within five minutes')
+      await r.ctx.facilitator.tick(r.at(1) + OFFER_EVERY_MS + MIN)
+      offered = offeredOf(r, goal)
+      assert.equal(offered.length, 2)
+      assert.notEqual(offered[0].offeredTo, offered[1].offeredTo, 'a second agent, not the one already holding an offer')
+    } finally { await r.stop() }
+  })
+
+  test('a check nobody takes goes back quietly and is offered to someone else; later checks wait for the earlier ones', async () => {
+    const r = await room()
+    try {
+      const goal = (await r.send(r.people.a, 'propose', { kind: 'goal', title: 'Goal 2: the room moves onto encrypted spaces its people hold' })).body.hash
+      await r.send(r.people.a, 'vote', { proposal: goal, choice: 'for' })
+      await r.ctx.facilitator.tick(r.at(1)) // the seeded six checks; the first ready one is offered
+      const first = offeredOf(r, goal)[0]
+      assert.ok(first && !first.test.later)
+      const decides = r.said('decide').length
+      await r.ctx.facilitator.tick(r.at(1) + STALE_MS + MIN) // the agent offered it stays quiet
+      const back = r.ctx.facilitator.testOf(goal).find((s) => s.id === first.id)
+      assert.equal(back.previousOwner, first.offeredTo, 'it went back')
+      assert.equal(r.said('decide').length, decides, 'quietly: no choice put to the room')
+      await r.ctx.facilitator.tick(r.at(1) + STALE_MS + OFFER_EVERY_MS + 2 * MIN)
+      const again = r.ctx.facilitator.testOf(goal).find((s) => s.id === first.id)
+      if (again.offeredTo) assert.notEqual(again.offeredTo, first.offeredTo, 'to someone else')
+      for (const s of r.ctx.facilitator.testOf(goal).filter((x) => x.offeredTo)) {
+        const early = r.ctx.facilitator.testOf(goal).filter((x) => !x.test.later)
+        if (s.test.later) assert.ok(early.every((x) => x.owner || x.state !== 'open'), 'a later check is offered only once the earlier ones are taken')
+      }
     } finally { await r.stop() }
   })
 })

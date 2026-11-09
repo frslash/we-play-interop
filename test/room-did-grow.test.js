@@ -79,3 +79,33 @@ test('planted fake: no seed (rehearsal, fresh or handed-over) appears in the log
   }
   assert.equal(entries(dir).length, 3)
 })
+
+test('pre-rotation: ROOM_DID_NEXT_KEY commits only a hash, and then only that key can take over', async () => {
+  const { dir } = await rehearsal()
+  const room = newIdentity(); const recovery = newIdentity(); const rk = ed25519Multikey(recovery.publicKey); const lines = []
+  const r = await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, nextKey: rk, log: (l) => lines.push(l) })
+  assert.equal(r.grown, true)
+  const out = await resolveDIDFromLog(entries(dir))
+  assert.equal(out.didDocumentMetadata.nextKeyHashes.length, 1)
+  assert.ok(!out.didDocumentMetadata.nextKeyHashes.includes(rk)) // a hash, not the key
+  // idempotent
+  assert.deepEqual(await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, nextKey: rk, log: quiet }), { grown: false, reason: 'up to date' })
+  // the host can no longer rotate to a key that wasn't committed
+  const before = readFileSync(join(dir, 'did.jsonl'), 'utf8')
+  const stranger = ed25519Multikey(newIdentity().publicKey)
+  const blocked = await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: newIdentity().publicKey, updateKey: stranger, log: quiet })
+  assert.equal(blocked.grown, false)
+  assert.equal(readFileSync(join(dir, 'did.jsonl'), 'utf8'), before)
+  // planted fake: no seed, and not even the recovery key's public form, shows in output
+  const logText = readFileSync(join(dir, 'did.jsonl'), 'utf8')
+  for (const secret of [recovery.seedHex, room.seedHex, readFileSync(join(dir, 'update-key.txt'), 'utf8').trim()]) assert.ok(!logText.includes(secret) && !lines.some((l) => l.includes(secret)))
+  assert.ok(!lines.some((l) => l.includes(rk)))
+})
+
+test('the recovery key must be a real multikey and differ from the update key', async () => {
+  const { dir } = await rehearsal(); const room = newIdentity()
+  assert.deepEqual(await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, nextKey: 'nope', log: quiet }), { grown: false, reason: 'error' })
+  const same = ed25519Multikey(newIdentity().publicKey)
+  assert.deepEqual(await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, updateKey: same, nextKey: same, log: quiet }), { grown: false, reason: 'next key must differ from the update key' })
+  assert.equal(entries(dir).length, 1)
+})

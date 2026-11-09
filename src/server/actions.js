@@ -5,10 +5,14 @@
 //   record-run        a pull request that appends one run to dtg-interop runs.json, nothing else
 //   issue             an issue on dtg-interop
 //   workspace-change  merge one pull request of this workspace's repo, pinned to the approved commit
-//                     (an approval names the commit it read; a later push voids it until someone approves the new one)
+//                     (an approval names the commit it read; a later push voids it until someone approves the new one);
+//                     once merged, it closes the pull requests the proposal names in change.replaces, each with
+//                     the comment "Replaced by #n". It only closes them: it never deletes a branch. A change merged
+//                     without votes (the small lane) closes only pull requests whose proposal in the room's record is
+//                     the same person's as its own (not the same GitHub login); anyone else's needs a change the room voted on.
 // It never edits another project's files. Without GITHUB_TOKEN it prepares the
 // step (a link a person can open) and says so in the log.
-import { EXTERNAL_KINDS, checkBoardRun } from '../shared/types.js'
+import { EXTERNAL_KINDS, MAX_REPLACES, checkBoardRun } from '../shared/types.js'
 import { inEffect, laneOf, needAPerson, onlyOwnYes, waitingFor } from '../shared/rules.js'
 import { AGREED } from './rules.js'
 
@@ -31,6 +35,9 @@ export function github (token) {
   }
 }
 
+/** The files that set how the room decides: the plain-words rules, the rules data and the weaver's decision code. A change to one waits for a review at its head commit. */
+export const REVIEW_FIRST = [/^public\/rules/, /^rules\.json$/, /^src\/server\/(weaver|facilitator)\.js$/]
+
 export class Executor {
   constructor ({ config, log, board, gh = github(config.githubToken) }) { this.config = config; this.log = log; this.board = board; this.gh = gh; this.busy = false }
 
@@ -42,11 +49,17 @@ export class Executor {
     const st = this.log.state
     const held = st.holding(pr)
     const people = [...new Set([...held.dids, ...this.yesVoters(pr)])].filter((d) => st.isHuman(d)) // a person's yes in the open vote is their approval
-    const owner = pr.byWeaver && pr.sources?.length ? this.log.byHash.get(pr.sources[0])?.onBehalfOf ?? pr.principal : pr.principal // a change an agent handed the room is its person's
+    const owner = this.ownerOf(pr)
     const backers = new Set(held.dids.map((d) => st.participants.get(d)?.principal ?? d).filter((p) => p !== owner)) // different people, never the proposer's own
     const yesTimes = [held.at, ...[...pr.votes].filter(([d, v]) => v.choice === 'for' && this.yesVoters(pr).includes(d)).map(([, v]) => v.at)].filter(Boolean).map((t) => Date.parse(t)).filter(Number.isFinite)
     return { kind: pr.kind, external: EXTERNAL_KINDS.includes(pr.kind), vetoed: pr.vetoes.length > 0, acted: Boolean(pr.outcome), lane: pr.lane ?? null, proposedAt: Date.parse(pr.at), yesTimes, people, owner, otherPeoplesAgents: backers.size, democracy: st.mode.mode === 'democracy' ? st.tally(pr) : null, now }
   }
+
+  /** Whose proposal this is: a change an agent handed the room is its person's. */
+  ownerOf (pr) { return pr.byWeaver && pr.sources?.length ? this.log.byHash?.get(pr.sources[0])?.onBehalfOf ?? pr.principal : pr.principal }
+
+  /** The person behind a proposal in the room's record: its owner, or the person whose agent the owner is. */
+  personOf (pr) { const o = this.ownerOf(pr); return this.log.state.participants?.get(o)?.principal ?? o }
 
   /** Who said yes in the vote, counted as approval. A vote names no commit, so for a code change it holds only while the pull request is still at the commit the proposal names. */
   yesVoters (pr) {
@@ -164,6 +177,8 @@ export class Executor {
     pr.lane = laneOf(rules, names) // the small lane, by rules.json: the page and the docs only (public/setup.js is never small)
     const touched = needAPerson(rules, names)
     if (touched.length && ![...st.holding(pr).dids, ...this.yesVoters(pr)].some((d) => st.isHuman(d))) return `it changes the room's safety (${touched.slice(0, 3).join(', ')}), so a person approves it too`
+    const decides = names.filter((n) => REVIEW_FIRST.some((re) => re.test(n))) // how the room decides: reviewed before it merges, not after (a rule change replaced by the next one was the room's spin)
+    if (decides.length && this.facts(pr).otherPeoplesAgents < 1) return `it changes how the room decides (${decides.slice(0, 3).join(', ')}), so one reviewer other than its own side reads this commit and approves it before it merges`
     const runs = (await this.gh('GET', `/repos/${repo}/actions/runs?head_sha=${sha}&per_page=20`)).workflow_runs ?? []
     const tests = runs.filter((r) => (r.name ?? '').toLowerCase().includes(rules.codeChanges.testsMustPass.toLowerCase()))
     if (!tests.length) return 'its tests have not run yet'
@@ -183,6 +198,39 @@ export class Executor {
     // the commit status branch protection can require, so code merges only through this loop
     try { await this.gh('POST', `/repos/${repo}/statuses/${sha}`, { state: 'success', context: 'we-play-interop/approval', description: 'Approved in the workspace log', target_url: this.config.publicUrl ? `${this.config.publicUrl}/api/log/${pr.hash}` : undefined }) } catch (err) { console.warn('approval mark not set:', err.message) } // a token without commit-status rights still merges, unless the branch rules require the mark
     const merged = await this.gh('PUT', `/repos/${repo}/pulls/${number}/merge`, { sha, merge_method: 'squash', commit_title: `${pull.title} (#${number})`, commit_message: this.provenance(pr) })
-    return { status: 'merged', url, detail: `merged as ${merged.sha}`, sha: merged.sha }
+    const replaced = await this.closeReplaced(pr)
+    const said = [replaced.closed.length ? `closed as replaced: ${replaced.closed.map((n) => `#${n}`).join(', ')}` : null, ...replaced.skipped.map((s) => `left #${s.pr} open: ${s.why}`)].filter(Boolean)
+    return { status: 'merged', url, detail: `merged as ${merged.sha}${said.length ? `; ${said.join('; ')}` : ''}`.slice(0, 500), sha: merged.sha, ...(replaced.closed.length || replaced.skipped.length ? { replaced } : {}) }
+  }
+
+  /**
+   * The merge hook: after the room merged a workspace-change, close each pull request the proposal names in
+   * change.replaces with the comment "Replaced by #n". The list is part of the signed proposal the room approved,
+   * so nothing closes on one agent's say-so: only what a merged, approved proposal names. It only sets the pull
+   * request's state to closed (anyone can reopen it); it never deletes a branch. A pull request already closed or
+   * merged is left as it is. One close that fails never undoes the merge; it is reported.
+   * A change merged without votes (the small lane: nobody else agreed to it) closes only pull requests from its
+   * own side: every proposal of that pull request in the room's record is the same person's as the merged one's.
+   * Who opened it on GitHub doesn't count (many agents open through one account). Another person's, or one the room
+   * has no proposal for, stays open: closing it takes a change the room voted on.
+   */
+  async closeReplaced (pr) {
+    const me = pr.lane === 'small' ? this.personOf(pr) : null
+    const sameSide = (n) => { const of = [...(this.log.state.proposals?.values() ?? [])].filter((p) => p.kind === 'workspace-change' && p.change?.pr === n); return Boolean(me) && of.length > 0 && of.every((p) => this.personOf(p) === me) }
+    const repo = this.config.workspaceRepo, number = pr.change?.pr, out = { closed: [], skipped: [] }
+    const named = Array.isArray(pr.change?.replaces) ? [...new Set(pr.change.replaces)].filter((n) => Number.isInteger(n) && n >= 1 && n !== number) : []
+    for (const n of named.slice(MAX_REPLACES)) out.skipped.push({ pr: n, why: `one merge closes at most ${MAX_REPLACES}` })
+    for (const n of named.slice(0, MAX_REPLACES)) {
+      try {
+        const pull = await this.gh('GET', `/repos/${repo}/pulls/${n}`)
+        if (pull.merged_at || pull.merged) { out.skipped.push({ pr: n, why: 'it was already merged' }); continue }
+        if (pull.state !== 'open') { out.skipped.push({ pr: n, why: `it is already ${pull.state}` }); continue }
+        if (pr.lane === 'small' && !sameSide(n)) { out.skipped.push({ pr: n, why: 'this change merged without votes, and that pull request was proposed for someone else (or never proposed): closing it takes a change the room votes on' }); continue }
+        await this.gh('POST', `/repos/${repo}/issues/${n}/comments`, { body: `Replaced by #${number}` })
+        await this.gh('PATCH', `/repos/${repo}/pulls/${n}`, { state: 'closed' }) // closes only; the branch stays
+        out.closed.push(n)
+      } catch (err) { out.skipped.push({ pr: n, why: `could not close it (${String(err.message).slice(0, 120)})` }) }
+    }
+    return out
   }
 }
