@@ -421,6 +421,48 @@ To sign without the bridge, using any Ed25519 library:
 2. Set `proof.proofValue` to `"z" + base58btc(signature)`.
 3. POST the document within 10 minutes.
 
+## Credentials the room reads
+
+The projects around this room all issue one family of credential: **DTG credentials**, W3C Verifiable Credentials (VC 2.0) with a Data Integrity proof (`eddsa-jcs-2022`), typed `DTGCredential` plus what they are. The room reads that family (`src/shared/dtg.js`, which also runs in the page and in agents). It issues none of them, and nothing here puts anyone's key on the room's server.
+
+| Kind | `type` | Who issues it here | What the room does with it |
+|---|---|---|---|
+| membership (VMC) | `MembershipCredential` | a community (OpenVTC's trust community, a data room, TrustStackers) | verifies it; takes one community's as a pass (below) |
+| authority (VAC) | `AuthorityCredential` | a room or community, then narrowed by its holder | verifies it, and a whole chain of them as OpenVTC's room host does (`verifyAuthorityChain`) |
+| invitation (VIC) | `InvitationCredential` | a community, RLTP | verifies it |
+| relationship (VRC) | `RelationshipCredential` | two people to each other (RLTP, Geb, TrustStackers) | verifies it |
+| any other | `StatementCredential`, `PersonaCredential`, … | | verifies it as "other": genuine or not, without reading into it |
+
+What "verifies" means, and where the projects differ:
+
+- **The proof** may be one object or a set. Every `eddsa-jcs-2022` proof must hold, be made for `assertionMethod`, and use a key under the issuer's own DID. A proof of another kind in the set (an OpenVTC community with a post-quantum key signs once per key) is named in the answer as *not checked*, never passed off as checked.
+- **The `@context` is signed.** The proof is checked exactly as written: with the copy of `@context` the issuer put in it (the room, RLTP, Geb, TrustStackers and OpenVTC's trust agent all do), or without one. A credential cannot be moved to another context after signing.
+- **Three DTG context addresses are in use**, second in `@context`: `https://registry.trustoverip.org/dtg/context/v1` (current: OpenVTC, Geb, RLTP's encounter credentials), `https://firstperson.network/credentials/dtg/v1` (the first draft's: RLTP's invitations and vouches), `https://trustoverip.org/dtg/credentials/v1` (TrustStackers). The room reads all three and reports which; OpenVTC accepts only the first.
+- **Dates**: in force from `validFrom` until `validUntil`, compared as written (a day that does not exist is refused, not rounded).
+- **Keys** come from the issuer's DID: `did:key`, `did:peer:2` (Geb, relationship DIDs), `did:peer:4` and `did:webvh`. `did:scid:vh` (TrustStackers) is not resolved yet, so such a credential is reported as *not checked*.
+
+**Known answers.** The tests check the reader against credentials other projects' code made: RLTP's published vectors (`test/fixtures/rltp`, Apache-2.0, see `test/fixtures/NOTICE`), including the encounter credentials Geb's verifier read at the interopathon of 9 November 2026. Geb's own credentials from that day are not copied (their repository states no licence): `INTEROPATHON_DIR=<a checkout of Project-Weave-Tech/interopathon> node --test test/dtg.test.js` reads them in place and checks the room signs over the same bytes Geb did.
+
+### A community's membership pass
+
+Set `COMMUNITY_DID` to a community's `did:webvh` and the room takes that community's membership pass. It was built against OpenVTC's trust community: the room reads the community's services from its DID document by type (`TrustTaskHTTPS`, `SignInPortal`, `VTCRest`, `VTCStatusList`), and its membership credential and revocation list as that service publishes them.
+
+- `GET /api/community`: the community's DID, its name (from its public profile, when that answers and names the same DID), its join page, the address of its DID QR code, and whether each part answers right now. The You tab shows the same. With no community set it says so.
+- `POST /api/community/pass`: is this a current member's pass? The holder signs one Trust Task document, `urn:we-play-interop:tasks:spec:community:pass:check:0.1`, addressed to the room's DID (`recipient`), with `payload: { membership }` (the credential, its JSON, or base64url of it), and posts it. The room answers with a signed `#response`: `{ member: true, … }`, or `{ member: false, problem, reason }`. It is a current member's pass when the named community issued it, the one presenting it is the one it is about, it is in date, and its bit on the community's revocation list is clear. **The check changes nothing**: no line in the log, nobody joined, nothing kept.
+- **The revocation list** (a W3C Bitstring Status List the community signs) is fetched from the address inside the pass, checked to be the community's own, and reused for half a minute. If it cannot be fetched or does not verify, the answer is *not confirmed* (`problem: "status-unknown"`), never "fine": otherwise taking the community's list offline, or standing between it and the room, would make a revoked pass look current.
+- `/api/info` → `community`: set or not, which parts answered at the last look, and counts of passes checked and refused by reason. No DIDs and no addresses.
+
+The task address is the room's own rather than the registry's `credential-exchange/present`: that one answers a verifier's `credential-exchange/query` and is bound to a nonce the verifier must remember, and this check keeps nothing. In code (page, agent or wallet, wherever the holder's key is):
+
+```js
+import { passCheck } from './src/shared/dtg.js'
+const { pass } = await (await fetch(`${room}/api/community`)).json()
+const reply = await (await fetch(`${room}${pass.check}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(passCheck(me, { room: pass.recipient, membership })) })).json()
+reply.payload.member // true, or false with reply.payload.reason
+```
+
+Not tried against a live community yet: `LIVE_COMMUNITY_DID=<did:webvh> node --test test/live/community-live.test.js` does that (and with `LIVE_MEMBERSHIP_CREDENTIAL=<file>`, checks a real pass and its place on the real list).
+
 ## Run it
 
 You need Node 22 or later. No database is needed locally: without `DATABASE_URL`, it runs Postgres embedded (PGlite) in `./data`.
@@ -443,6 +485,7 @@ One small container, with Postgres either pointed at or embedded on a volume. Al
 | `DID_LOG_FILE` | no | The room's `did:webvh` log, served at `/.well-known/did.jsonl` so the room's DID resolves from its host. Empty: `<DATA_DIR>/did.jsonl`; no file, a 404. Make one on the host with `node agent/mint-room-did.js <host> <dir>` (test keys: keep `update-key.txt` off the repository and move the real keys to the people who will own the room). |
 | `ROOM_DID_NEXT_KEY` | no | A public Ed25519 multikey (`z6Mk…`) the room's people make as the recovery key, separate from every update key. Only its hash goes into the DID log (pre-rotation, `nextKeyHashes`), so after that only this key can take the DID over next; the host never holds it and the secret never reaches the host. Empty: no commitment. |
 | `ROOM_DID_UPDATE_KEY` | no | On each start the room adds a signed entry to its DID log when the log is behind: the document carries the room's signing key (`#room`, from `WORKSPACE_KEY`) and a `LinkedDomains` service for `PUBLIC_URL`, and the rehearsal update key is retired. Set this to a public Ed25519 multikey (`z6Mk…`) held by the room's people and the DID hands its update power to them (the host then keeps no update key). Empty: the host makes a fresh update key next to the log (0600) and keeps it until this is set. |
+| `COMMUNITY_DID` | no | The community (a `did:webvh`) whose membership pass the room takes: see [Credentials the room reads](#credentials-the-room-reads). Empty: none, and the page and `/api/info` say so. A value that is not a `did:webvh` is not used, and `/api/info` says why. |
 | `DATABASE_URL` | recommended | Postgres. When empty, it uses embedded Postgres in `DATA_DIR`. |
 | `ANTHROPIC_API_KEY` or `LLM_API_KEY` | for a model | Claude through the official SDK, or any OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_MODEL`). |
 | `GITHUB_TOKEN` | to act | A bot account's token (scopes are in `.env.example`). When empty, actions are prepared as links instead. |

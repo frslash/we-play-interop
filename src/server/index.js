@@ -2,6 +2,7 @@
 // Trust Task document, verified and appended to the hash-chained log.
 import { handleRoomDid, ensureRoomDid, growRoomDid } from './roomdid.js'
 import { JoinRoute } from './join-route.js'
+import { Community } from './community.js'
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -113,7 +114,7 @@ function workspaceIdentity (config) {
   return id
 }
 
-export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, apFetch, awayGatherMs, hostWelcomeMs = 3000, sources } = {}) {
+export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, apFetch, communityFetch, awayGatherMs, hostWelcomeMs = 3000, sources } = {}) {
   const identity = workspaceIdentity(config)
   const db = await openDb(config)
   const log = new Log({ db, identity, resolver, config })
@@ -144,6 +145,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.visits = new Visits() // join links for one visit each, in memory
   ctx.join = new JoinRoute({ identity, config, resolver }) // the join desk at /didcomm, for the test community only
   await ctx.join.refresh(true)
+  // the community whose membership pass the room takes (COMMUNITY_DID); it answers as the DID the join desk speaks as
+  ctx.community = new Community({ config, resolver, identity, room: () => ctx.join.desk.room, ...(communityFetch ? { fetch: communityFetch } : {}) })
   ctx.types = TYPES
   ctx.changes = new Changes({ ctx, dataDir: config.dataDir })
   log.on('entry', (e) => ctx.changes.onEntry(e))
@@ -237,6 +240,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     }
     if (handleRoomDid(req, res, path, { dataDir: config.dataDir, file: config.didLogFile })) return
     if (await ctx.join.handle(req, res, path, readBody, send)) return
+    if (await ctx.community.handle(req, res, path, readBody, send)) return
     if (path === '/.well-known/webfinger' || path.startsWith('/ap/')) return ctx.activitypub.handle(req, res, url)
     if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
     if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), keyring: ctx.join.readiness({ oob: true }) }) }
