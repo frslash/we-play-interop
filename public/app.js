@@ -759,9 +759,17 @@ function renderTalk (scrollDown, { holdAt = null } = {}) {
     talk.taskBox = h('label', { class: 'task-toggle', hidden: true })
     talk.input.addEventListener('input', drawTaskBox)
     talk.composer = h('div', { class: 'composer' }, talk.reply, talk.tray, talk.mentions, talk.taskBox, h('div', { class: 'composer-row' }, h('button', { class: 'btn attach', 'aria-label': 'Add a photo or file', title: 'Add a photo or a file (a photo’s location and camera data are removed)', onclick: () => talk.picker.click() }, '📎'), talk.picker, talk.micBtn, talk.input, h('button', { class: 'btn primary send', onclick: sendChat, 'aria-label': 'Send' }, '↑')), talk.toggle)
-    talk.input.addEventListener('paste', (ev) => { const files = [...(ev.clipboardData?.files ?? [])].filter((f) => f.type.startsWith('image/')); if (files.length) { ev.preventDefault(); addPhotos(files) } })
+    talk.input.addEventListener('paste', (ev) => { const files = [...(ev.clipboardData?.files ?? [])]; if (files.length) { ev.preventDefault(); addPhotos(files) } }) // a pasted photo or file joins the tray
+    // drag photos and files from the computer straight onto Talk: they join the tray, as with the 📎 button
+    const hasFiles = (ev) => [...(ev.dataTransfer?.types ?? [])].includes('Files')
+    root.addEventListener('dragover', (ev) => { if (!hasFiles(ev)) return; ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; root.classList.add('dropping') })
+    root.addEventListener('dragleave', (ev) => { if (!root.contains(ev.relatedTarget)) root.classList.remove('dropping') })
+    root.addEventListener('drop', (ev) => { if (!hasFiles(ev)) return; ev.preventDefault(); root.classList.remove('dropping'); if (!joined()) return toast('Join the room first to share a photo or file.'); addPhotos([...ev.dataTransfer.files]); talk.input.focus() })
+    // side by side (wide screens): people's lines on the left, agents' on the right, one timeline; the weaver in the middle
+    talk.lanes = store.get('wpi.talkLanes') !== 'one'
+    talk.lanesToggle = h('div', { class: 'seg small lanes-toggle' })
     talk.side = h('aside', { class: 'tasks-side card', 'aria-label': 'Your tasks' })
-    fill(root, talk.side, h('div', { class: 'talk-main' }, talk.goals, talk.waiting, talk.list, talk.composer))
+    fill(root, talk.side, h('div', { class: 'talk-main' }, talk.goals, talk.lanesToggle, talk.waiting, talk.list, talk.composer))
   }
   drawTasks()
   const held = S.proposals.filter((p) => p.kind === 'goal' && p.status !== 'vetoed' && p.tally.for > p.tally.against)
@@ -775,6 +783,8 @@ function renderTalk (scrollDown, { holdAt = null } = {}) {
   talk.toggle.hidden = !agents.length
   if (!agents.length) talk.to = 'room'
   fill(talk.toggle, [['room', 'To the room'], ['agent', `To ${agents[0]?.name ?? 'my agent'}, privately`]].map(([k, l]) => h('button', { class: talk.to === k ? 'on' : '', onclick: () => { talk.to = k; talk.input.placeholder = k === 'agent' ? 'Only your agent will read this…' : 'Say something…'; renderTalk() } }, l)))
+  fill(talk.lanesToggle, [[true, 'People and agents side by side'], [false, 'One column']].map(([on, l]) => h('button', { class: talk.lanes === on ? 'on' : '', onclick: () => { talk.lanes = on; store.set('wpi.talkLanes', on ? 'split' : 'one'); renderTalk() } }, l)))
+  talk.list.classList.toggle('lanes', talk.lanes)
   // someone selecting text in the chat keeps their selection: the list redraws once they're done
   if (holdingChat()) { talk.deferred = true; talk.deferredScroll ||= Boolean(scrollDown); return }
   if (talk.deferredScroll) { scrollDown = true; talk.deferredScroll = false }
@@ -782,11 +792,15 @@ function renderTalk (scrollDown, { holdAt = null } = {}) {
   const nearBottom = talk.list.scrollHeight - talk.list.scrollTop - talk.list.clientHeight < 80
   if (nearBottom && holdAt == null && talk.older.length > 2 * OLDER_PAGE && !talk.loadingOlder) { talk.older.sort((a, b) => b.seq - a.seq); talk.older = talk.older.slice(0, 2 * OLDER_PAGE); talk.olderDone = false } // back at the newest: what was read further back is let go, and reloads if they scroll up again
   const seen = new Set(), shown = [...[...talk.older].reverse(), ...feed.slice(0, FEED_KEEP).reverse()].filter((e) => !seen.has(e.hash) && seen.add(e.hash)).sort((a, b) => a.seq - b.seq), oldest = shown[0]?.timestamp ?? ''
-  const rows = shown.filter((e) => !checkEntry(e)).map((e) => ({ at: e.timestamp, el: chatItem(e) })).filter((x) => x.el)
-  for (const n of talk.notes) if (n.at >= oldest) rows.push({ at: n.at, el: noteBubble(n) })
+  // which lane a line sits in when Talk is side by side: a person's own words on the left, agents on the right
+  const lane = (el, side) => { if (el && side && !el.classList.contains('sys') && !el.classList.contains('weaver')) el.classList.add(`lane-${side}`); return el }
+  const sideOf = (e) => (NAME_OF[e.type] === 'note' && e.author !== S.workspace ? (e.author === e.onBehalfOf || !e.onBehalfOf ? 'people' : 'agents') : null)
+  const rows = shown.filter((e) => !checkEntry(e)).map((e) => ({ at: e.timestamp, el: lane(chatItem(e), sideOf(e)) })).filter((x) => x.el)
+  for (const n of talk.notes) if (n.at >= oldest) rows.push({ at: n.at, el: lane(noteBubble(n), n.from === 'agent' ? 'agents' : 'people') })
   rows.sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : 0))
   const top = talk.older.length || talk.loadingOlder ? h('p', { class: 'sys' }, talk.olderDone ? 'The start of the room.' : 'Scroll up for earlier lines.') : null
-  fill(talk.list, rows.length ? [top, ...rows.map((x) => x.el)].filter(Boolean) : h('p', { class: 'empty' }, 'Quiet so far. Say hello.'))
+  const heads = talk.lanes && rows.length ? [h('div', { class: 'lane-head lane-people' }, 'People'), h('div', { class: 'lane-head lane-agents' }, 'Agents')] : []
+  fill(talk.list, rows.length ? [...heads, top, ...rows.map((x) => x.el)].filter(Boolean) : h('p', { class: 'empty' }, 'Quiet so far. Say hello.'))
   if (holdAt != null) talk.list.scrollTop = talk.list.scrollHeight - holdAt // lines loaded above: the reader's place stays put
   else if (scrollDown || nearBottom || !talk.scrolled) { talk.list.scrollTop = talk.list.scrollHeight; talk.scrolled = true }
   if (!talk.olderDone && !talk.loadingOlder && talk.list.clientHeight > 0 && talk.list.scrollHeight <= talk.list.clientHeight + 300) setTimeout(() => loadOlder().catch(() => {}), 0) // too few lines to scroll: bring in earlier ones
@@ -834,6 +848,10 @@ setInterval(() => { if (document.body.dataset.tab === 'decide' && S) renderDecid
 // ---------- Steps: the weaver's board in facilitate mode (each step: its goal, what done looks like, its owner, where it stands) ----------
 const sideOf = (did) => person(did)?.principal ?? did
 const minutesText = (m) => (m < 90 ? `${m} min` : `${Math.round(m / 6) / 10} h`)
+// a step's status as one colour: white in a black ring not started, blue in progress, red stuck, green done
+const STEP_STATUS = { todo: 'not started', doing: 'in progress', stuck: 'stuck', done: 'done' }
+const statusOf = (s) => (s.state === 'checked' ? 'done' : s.waitingOn || s.parked || s.decision?.parked ? 'stuck' : ['claimed', 'in progress', 'result posted'].includes(s.state) ? 'doing' : 'todo')
+const stepMark = (status, why = STEP_STATUS[status]) => h('span', { class: `mark st-${status}`, title: why, 'aria-label': why })
 function stepRow (s) {
   const can = (say) => me && !whyNot(s, { say }, me.did, sideOf, s.ownerName ?? 'its owner')
   const act = (say, text, extra = {}) => post('note', { text, kind: 'message', step: { of: s.id, say, ...extra } }, { threadId: s.thread })
@@ -848,7 +866,7 @@ function stepRow (s) {
     can('release') && !can('decline') ? h('button', { class: 'btn small', onclick: () => act('release', `I’m giving back ${label}.`) }, 'Give it back') : null,
   ].filter(Boolean)
   return h('div', { class: 'step-row' + (s.waitingOn ? ' waiting' : '') + (s.state === 'checked' ? ' done' : '') },
-    h('span', { class: 'mark st-' + (s.waitingOn ? 'waiting' : s.parked ? 'parked' : s.state.replace(' ', '-')), title: s.waitingOn ? 'waiting on a choice' : s.parked ? 'parked' : s.state, 'aria-label': s.waitingOn ? 'waiting on a choice' : s.parked ? 'parked' : s.state }),
+    stepMark(statusOf(s), s.waitingOn ? 'stuck: waiting on a choice' : s.parked || s.decision?.parked ? 'stuck: parked' : `${STEP_STATUS[statusOf(s)]} (${s.state})`),
     h('div', { class: 'grow' },
       h('div', null, s.test ? `(${s.test.n}) ` : '', h('strong', null, s.title), s.test?.later ? h('span', { class: 'badge' }, 'later') : null),
       s.done && s.done !== s.title ? h('div', { class: 'why' }, 'Done when: ', s.done) : null,
@@ -864,6 +882,7 @@ function renderSteps () {
   const count = $('#steps-count'); count.hidden = !live.length; count.textContent = String(live.length)
   const n = b.lastNight, quietGoals = b.goals.filter((g) => !g.test.length)
   fill(root,
+    h('p', { class: 'step-key meta' }, Object.entries(STEP_STATUS).map(([k, l]) => h('span', null, stepMark(k), ' ', l))),
     h('p', { class: 'why' }, b.on
       ? `The weaver keeps this board (facilitate mode). Every agreement gets a next step, an owner and a check. A step with no word for ${b.rules.staleMinutes} minutes: it asks the owner, then offers it to another agent, then hands it to a person. What needs a person (keys, accounts, hosts, money, time) goes to them by name. Someone of another side checks every result.`
       : `The weaver is in ${S.mode.mode} mode, so nobody is driving this board right now; it still records what owners say.`),
