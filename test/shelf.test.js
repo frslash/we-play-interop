@@ -9,7 +9,7 @@ import { after, before, describe, test } from 'node:test'
 import { gzipSync } from 'node:zlib'
 import { config as baseConfig } from '../src/server/config.js'
 import { createApp } from '../src/server/index.js'
-import { FETCHES_PER_MINUTE, MAX_FILE_BYTES, SHELF, SIGNER_FETCHES_PER_HOUR, Shelf, namedRepos, pinOf, pinsFromCommunity, repoOf, secretPath, tarReader } from '../src/server/shelf.js'
+import { FETCHES_PER_MINUTE, MAX_FILE_BYTES, SHELF, SIGNER_FETCHES_PER_HOUR, Shelf, namedRepos, pinOf, pinsFromCommunity, insideFolder, repoOf, secretPath, tarReader } from '../src/server/shelf.js'
 import { registerAgentTools } from '../src/agent-tools.js'
 import * as views from '../src/server/views.js'
 
@@ -226,6 +226,12 @@ describe('the projects shelf', () => {
     await assert.rejects(s.files('o/nolicence'), (e) => e.status === 409 && /states no licence at its top level/.test(e.message))
     await assert.rejects(s.files('o/nolicence'), /states no licence/) // and it is not asked for again at that commit
     assert.equal(hits.filter((u) => u.includes('/nolicence/')).length, 1); assert.equal(existsSync(join(s.dir, 'o__nolicence', A)), false)
+  })
+
+  test('a file is written only inside its own project\'s folder', () => {
+    const root = join(dir, 'copy', 'files')
+    for (const ok of [join(root, 'a.txt'), join(root, 'src/deep/b.rs'), join(root, 'a/../b.txt')]) assert.equal(insideFolder(root, ok), true, ok)
+    for (const no of [join(root, '../escape.txt'), join(root, 'a/../../x'), '/etc/passwd', root, join(root, '..', 'files-other', 'x'), join(dir, 'copy', 'index.json')]) assert.equal(insideFolder(root, no), false, no)
   })
 
   test('a cap that is passed stops the unpack and discards it: no partial copy, and no second try at that commit', async () => {

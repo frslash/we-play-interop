@@ -31,7 +31,7 @@
 // Every call to GitHub is logged without content (project, commit, status, sizes, time, and what GitHub said about
 // its own limits). Reads and searches are counted per project and day, never by their words.
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { createGunzip } from 'node:zlib'
 
 const SHA_RE = /^[0-9a-f]{40}$/
@@ -142,6 +142,12 @@ export function pinsFromCommunity (root) {
   const arg = (file, name) => { try { return new RegExp(`^ARG ${name}=([0-9a-f]{40})\\s*$`, 'm').exec(readFileSync(join(root, file), 'utf8'))?.[1] } catch { return undefined } }
   const vti = arg('community/vta/Dockerfile', 'VTI_SHA'), mediator = arg('community/mediator/Dockerfile', 'MEDIATOR_SHA')
   return { ...(vti ? { vti } : {}), ...(mediator ? { mediator } : {}) }
+}
+
+/** True when `to`, once resolved, is inside `root` (not the folder itself, not above it, not on another drive). The last check before any file is written. */
+export function insideFolder (root, to) {
+  const r = relative(resolve(root), resolve(to))
+  return r !== '' && !r.startsWith('..') && !isAbsolute(r)
 }
 
 const idOf = (repo) => repo.toLowerCase()
@@ -403,6 +409,7 @@ export class Shelf {
         if (kept + body.length > lim.bytes) throw over(`more than ${mb(lim.bytes)} of text`)
         if (files.length >= lim.files) throw over(`more than ${lim.files} files`)
         const to = join(tmp, 'files', rel)
+        if (!insideFolder(join(tmp, 'files'), to)) { refused.paths++; return } // the last check before a write: the resolved place is in this project's own copy
         mkdirSync(dirname(to), { recursive: true }); writeFileSync(to, body)
         files.push([rel, body.length]); kept += body.length
         if (!licence && !rel.includes('/') && LICENCE_NAME.test(rel)) licence = rel
