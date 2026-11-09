@@ -1140,6 +1140,21 @@ function askCommunity () {
   if (community.asking || Date.now() - community.at < 60_000) return
   community.asking = api('/api/community').then((r) => { if (r.ok) community.seen = r.body }).catch(() => {}).finally(() => { community.asking = null; community.at = Date.now(); if (document.body.dataset.tab === 'you') render() })
 }
+// "Join <community> with your wallet": a link to where the community takes joins (the wallet and the community talk
+// directly; the room is not in between) and what the community says it asks for, as the room read it (c.join).
+function joinBlock (c, name) {
+  const j = c.join
+  if (!j || !/^https:\/\//.test(j.url ?? '')) return null
+  const how = { automatic: 'admits automatically once you meet it', review: 'is reviewed by the community’s people' }
+  const crit = (k) => h('li', null, h('strong', null, k.description ?? k.id), ' ', h('span', { class: 'meta' }, [how[k.admission], k.invitationRequired ? 'needs an invitation' : null, k.vetting?.minStatements ? `needs ${k.vetting.minStatements} vouching statement${k.vetting.minStatements === 1 ? '' : 's'}` : null, k.asksForCredentials ? 'asks for credentials from your wallet' : null].filter(Boolean).join(' · ')))
+  const attrs = (j.attributes ?? []).map((a) => `${a.type}${a.required ? '' : ' (optional)'}${a.purpose ? `: ${a.purpose}` : ''}`)
+  return h('div', null,
+    h('p', null, h('a', { class: 'btn', href: j.url, target: '_blank', rel: 'noopener noreferrer' }, `Join ${name} with your wallet`)),
+    j.criteria?.length ? h('div', null, h('p', { class: 'why' }, 'What the community asks for:'), h('ul', null, ...j.criteria.map(crit))) : null,
+    attrs.length ? h('p', { class: 'meta' }, `It also asks you for: ${attrs.join('; ')}.`) : null,
+    j.problem ? h('p', { class: 'meta' }, j.problem) : null,
+    h('p', { class: 'meta' }, 'Your wallet talks to the community directly; this room never sees your key.'))
+}
 function communityCard () {
   const card = (...kids) => h('div', { class: 'card' }, h('h2', null, 'Membership passes'), ...kids)
   if (!S.community?.set) return card(h('p', { class: 'why' }, S.community?.problem ?? 'No community is set for this room, so it takes no membership pass.'))
@@ -1151,7 +1166,7 @@ function communityCard () {
   return card(
     h('p', { class: 'why' }, `This room takes membership passes from ${name}. The community decides who its members are and can take a pass back; the room only checks a pass someone shows it, and keeps nothing.`),
     !c.resolves ? h('p', { class: 'meta' }, 'Its DID is not resolving right now, so no pass can be checked.') : null,
-    /^https:\/\//.test(c.joinPage?.url ?? '') ? h('p', null, h('a', { href: c.joinPage.url, target: '_blank', rel: 'noopener noreferrer' }, `Join ${name}`), c.joinPage.answers ? '' : ' (its join page is not answering right now)') : h('p', { class: 'meta' }, 'It names no join page.'),
+    joinBlock(c, name) ?? (/^https:\/\//.test(c.joinPage?.url ?? '') ? h('p', null, h('a', { href: c.joinPage.url, target: '_blank', rel: 'noopener noreferrer' }, `Join ${name}`), c.joinPage.answers ? '' : ' (its join page is not answering right now)') : h('p', { class: 'meta' }, 'It names no join page.')),
     fold('community-did', null, h('summary', null, 'Show the community’s DID code'),
       h('p', { class: 'why' }, 'For a wallet that adds a community by scanning its DID.'),
       h('img', { class: 'qr small', src: `/api/qr.svg?text=${encodeURIComponent(c.did)}`, alt: 'QR code of the community’s DID' }), h('p', null, h('code', null, c.did))),
