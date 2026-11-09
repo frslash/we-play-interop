@@ -340,8 +340,9 @@ export function resourcesView (ctx, { kind, q } = {}) {
   const st = ctx.log.state, name = (did) => (did ? st.nameOf(did) : null)
   const notes = (r) => (r?.notes ?? []).map((n) => ({ text: n.text, by: name(n.by), ...(n.agent ? { agent: name(n.agent) } : {}), at: n.at, id: n.hash }))
   const seen = new Set(), list = []
-  // a github.com repository is on the projects shelf: agents read its code in the room, at one named commit
-  const code = (url) => { const repo = ctx.shelf && repoOf(url); return repo ? { code: { project: repo, read: `code_files, read_code and search_code with project "${repo}"`, files: `/api/shelf/files?project=${encodeURIComponent(repo)}` } } : {} }
+  // a github.com repository on the shelf's registry: agents read its code in the room, at one named commit
+  const onShelf = new Set(ctx.shelf?.all().map((p) => p.id) ?? [])
+  const code = (url) => { const repo = ctx.shelf && repoOf(url); return repo && onShelf.has(repo.toLowerCase()) ? { code: { project: repo, read: `code_files, read_code and search_code with project "${repo}"`, files: `/api/shelf/files?project=${encodeURIComponent(repo)}` } } : {} }
   for (const c of CURATED) {
     const key = resourceKey(c.url), r = st.resources.get(key)
     seen.add(key)
