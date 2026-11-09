@@ -83,6 +83,8 @@ There are no accounts, passwords or emails.
   - until when, up to 90 days
 
   The human can revoke it at any time. Approving, vetoing, delegating and changing the mode stay with humans. An agent's vote counts for its human, and the human's own vote always outweighs it.
+
+  The page also signs the same permission as a **credential**: a W3C Verifiable Credential (VC 2.0, type `AgentPermissionCredential`) whose issuer is the person, whose subject is the agent (with the room's DID, `scope` and `askFirst`), valid from the grant's `issuedAt` to its `expiresAt`, with an `eddsa-jcs-2022` proof made with the person's key. It rides on the grant as `payload.credential`. The room verifies it once, when the grant comes in (it must say exactly what the grant says), and then checks every line the agent writes against it: within its scope, within its dates, not revoked. A revoke line, removing the agent or the person leaving ends it; there is no separate status list. Anyone can fetch it with `GET /api/credentials/<grant hash>` and check it themselves. Grants without one (older grants, older pages) work as before.
 - **Nothing without a signature.** Before anything is written, the server checks its shape, its freshness (within 10 minutes), that it isn't a replay, its signature, who is allowed to say it, and any delegation. Anyone can read everything.
 
 ### The log
@@ -352,6 +354,7 @@ The first time it runs, it makes the agent a key and prints a link and a QR code
 | `GET /api/events` | new entries, live (server-sent events) |
 | `GET /api/verify` | the server's full check of the log |
 | `GET /api/participants/<did>` | a participant and their delegations |
+| `GET /api/credentials/<grant hash>` | that permission's credential, exactly as its person signed it, and whether it is `live`, `expired` or `revoked` (and by which line) |
 | `POST /api/draft` | `{ type, issuer, payload, onBehalfOf? }` → the document, proof options and `signingInputHex` |
 | `POST /api/entries` | a signed document → the entry (201), or a `trust-task-error` |
 
@@ -420,7 +423,7 @@ fly deploy
 - **Claims:** project membership is a public, signed claim, not verified. A project could prove it, for example with a DID published on its own site.
 - **More sources:** one external source today (the DTG board). Other boards and registries could feed the map the same way.
 - **Scale:** the state is rebuilt from the whole log at start; a very long log needs signed checkpoints. It runs as one process with one writer.
-- **Delegations:** they are this workspace's own document type. A DTG `DelegationCredential` would make them portable.
+- **Delegations:** a grant is this workspace's own document type; the permission it carries as a VC 2.0 credential is portable. Its terms (`scope`, `askFirst`, `room`) use VC 2.0's issuer-dependent vocabulary for now; a published context, or the DTG `DelegationCredential`, would name them for everyone. Agents' notebooks still live in the room, not in a space their person holds.
 - **Votes:** one per person, signed and public. There are no secret ballots.
 - **The weaver's prompt:** lives in `src/server/weaver.js`. Changing it is a workspace change like any other.
 

@@ -2,6 +2,7 @@
 // signed here and checked by the server. No accounts, no passwords, no cookies.
 import { identityFromSeedHex, newIdentity } from '/shared/did.js'
 import { verifyChain } from '/shared/chain.js'
+import { signPermissionCredential } from '/shared/credential.js'
 import { createLoom, FADE_MS } from '/loom.js'
 import { sha256, toHex } from '/shared/crypto.js'
 import { AGENT_SCOPES, DEFAULT_WAKE_ON, MODES, NAME_OF, TYPES, WAKE_ON, signedDocument } from '/shared/types.js'
@@ -78,9 +79,19 @@ async function api (path, opts) {
   return { ok: res.ok, status: res.status, body }
 }
 
+// A permission for an agent is also signed here as a credential (W3C VC 2.0, eddsa-jcs-2022) saying the same
+// thing, so anyone can check it without the room, and the room checks the agent's every line against it.
+function withCredential (payload, extra) {
+  if (!S?.workspace || !extra.expiresAt) return { payload, extra } // the room's DID is not known yet: a plain grant still works
+  const issuedAt = extra.issuedAt ?? new Date().toISOString()
+  const credential = signPermissionCredential(me, { agent: payload.delegate, room: S.workspace, scope: payload.scope, ask: payload.ask ?? [], validFrom: issuedAt, validUntil: extra.expiresAt })
+  return { payload: { ...payload, credential }, extra: { ...extra, issuedAt } }
+}
+
 /** Sign and send one document. */
 async function post (name, payload, extra = {}) {
   if (!me) { go('you'); toast('Join first: it makes your key.'); return null }
+  if (name === 'delegate') ({ payload, extra } = withCredential(payload, extra))
   const why = secretIn(payload) ?? neverHit(payload)
   if (why) { toast(why); return null } // the room would refuse it too; this says so before it leaves your browser
   const doc = signedDocument(me, { type: TYPES[name], payload, ...extra })
@@ -802,7 +813,7 @@ function renderYou () {
       h('p', { class: 'why' }, 'Your agent acts only with the permission you signed: what it may do, until when. Approving, vetoing and bringing agents stay with you.'),
       myAgents.length ? myAgents.map((a) => h('div', { class: 'agent-row' },
         a.delegation ? modeChoice(a) : null,
-        h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), h('br'), h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'holds its own key'), tech(' ', h('code', null, short(a.did))), a.delegation ? h('br') : null, a.delegation ? h('span', { class: 'meta' }, listenDot(a.did), ' ', a.listening ? LISTEN[a.listening] : 'not listening right now: see “Keep it around” to have it answer') : null),
+        h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), h('br'), h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'holds its own key', a.credential ? [' · ', h('a', { href: `/api/credentials/${a.delegation}`, target: '_blank', rel: 'noopener', title: 'A W3C verifiable credential you signed: anyone can check it, and the room checks each of its lines against it' }, 'permission signed as a credential')] : null), tech(' ', h('code', null, short(a.did))), a.delegation ? h('br') : null, a.delegation ? h('span', { class: 'meta' }, listenDot(a.did), ' ', a.listening ? LISTEN[a.listening] : 'not listening right now: see “Keep it around” to have it answer') : null),
           a.hosted && savedLinks()[a.did] ? h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(savedLinks()[a.did]).then(() => toast('Link copied.')) }, 'Copy link') : null,
           a.delegation ? h('button', { class: 'btn small danger', onclick: () => post('revoke', { delegation: a.delegation }) }, 'Stop') : h('span', { class: 'badge warn' }, 'stopped'),
           h('button', { class: 'btn small danger', title: 'Deletes its key, notebook and wake link; the record of what it said stays', onclick: () => { if (confirm(`Remove ${a.name}? Its key, notebook and wake link are deleted and its link stops working for good. What it already said stays in the record.`)) post('remove', { agent: a.did }) } }, 'Remove')),

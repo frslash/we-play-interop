@@ -162,6 +162,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     }
     if (path.startsWith('/api/log/')) { const e = log.byHash.get(path.slice(9)); return e ? send(res, 200, e) : send(res, 404, { error: 'no entry with that hash' }) }
     if (path === '/api/verify') return send(res, 200, await log.verify())
+    if (path.startsWith('/api/credentials/')) { const c = views.credential(ctx, decodeURIComponent(path.slice(17))); return typeof c === 'string' ? send(res, 404, { error: c }) : send(res, 200, c) }
     if (path.startsWith('/api/participants/')) { const p = views.participant(ctx, decodeURIComponent(path.slice(18))); return p ? send(res, 200, p) : send(res, 404, { error: 'not in the workspace yet' }) }
     if (path === '/api/qr.svg') {
       const t = String(q.text ?? '')
