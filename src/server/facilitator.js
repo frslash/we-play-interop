@@ -219,6 +219,7 @@ export const ROUND_PROMPT = `Facilitate mode: you drive the held goals to done; 
 In both, when a resource holds what is missing or what the check depends on (a spec, test vectors, code), name it by its url.
 "moves": what new lines say about steps already on the board, in plain words (most agents have no step tool). Give {"entry":"<hash from newInputs>","step":"<step id from board.steps>","kind":"declined|answered|handTo","to":"<did from inRoom, for handTo>"}. declined: the agent a step is with, or was offered to, says it won't or can't take it (if it says who should, add "to"). answered: the person a step waits on gives the decision it waits for, wherever they say it. handTo: people say who should take a step instead, often the room's builder. Only clear cases.
 "revisedTest": only when a goal's own person (or their agent) asks for, or agrees to, new wording or a new order for that goal's done-test (board.doneTests). Give {"goal":"<goal hash>","checks":["<each check, in the agreed order: one thing anyone can rerun>"],"entries":["<hashes of the lines that say so, from newInputs or board.steps[].from>"]}. Keep a check's exact words when it did not change.
+"tasks": lines in newInputs that ask one specific person (a human in inRoom, never an agent) to do one concrete thing themselves: decide, sign, set something up, answer, run, review. Give {"entry":"<hash from newInputs>","for":"<did of that person from inRoom>","task":"<what they are asked to do, a short imperative in plain words>"}. Only clear asks aimed at a person, at most three; never a question to everyone, never an agent, never small talk.
 "prefs": what agents say, in general, about the kinds of work they will or won't do here (not a one-off no to one step). Give {"entry":"<hash from newInputs>","who":"<did of the agent it is about>","notFor":["code reviews|reviews|code work|steps"],"onlyFor":"<what it says it is here for, in a few words, or null>","clear":<true when it says it is open to that work again>}. Only what an agent (or its person) says about itself. "agentsNotFor" lists what is already noted.
 A step with "decided" is settled for now (an option, or parked): don't ask about it, and don't report it as stuck. A step with "askedAlready" was asked once already: don't ask it again. A step whose waitingOn says "held for" waits on that person alone (it touches their keys, money, time or name): no agent's line, not even their own agent's, is "answered" for it. One "held for the room’s people" (keys or money, on a step no person has) waits on a person: any person's own line can answer it, no agent's ever is "answered". For any other choice, a person's line or a line from an agent of the step's own person (its owner's) is "answered" (an agent's provisionally: any person can reopen it; another person's than the step's own, provisionally too: the step's own person can reopen it); a line from an agent of another person alone is only a suggestion, never "answered".
 Return "next" with asks only (no new proposals), and leave out connections, intentions and tensions.`
@@ -990,12 +991,21 @@ export class Facilitator {
       : null
     const prefs = (Array.isArray(out?.prefs) ? out.prefs : []).filter((x) => here.has(x?.entry) && st.isAgent(x.who) && (x.clear === true || (Array.isArray(x.notFor) && x.notFor.some((k) => NOT_FOR[k])))).slice(0, 6)
       .map((x) => ({ entry: x.entry, who: x.who, notFor: (x.notFor ?? []).filter((k) => NOT_FOR[k]), onlyFor: typeof x.onlyFor === 'string' ? clip(x.onlyFor, 120) : null, clear: x.clear === true }))
-    return { vague, converged, moves, revisedTest, prefs }
+    const tasks = (Array.isArray(out?.tasks) ? out.tasks : []).filter((t) => here.has(t?.entry) && st.isHuman(t.for) && !st.participants.get(t.for)?.left && !st.taskFrom.has(t.entry) && typeof t.task === 'string' && t.task.trim().length >= 3).slice(0, 3)
+      .map((t) => ({ entry: t.entry, for: t.for, task: clip(t.task, 200) }))
+    return { vague, converged, moves, revisedTest, prefs, tasks }
   }
 
   /** Act on the round's judgments: press the vague lines, open a step where people converged. */
   async fromRound (judged, model = null) {
-    const st = this.st, pressed = [], opened = [], moved = []
+    const st = this.st, pressed = [], opened = [], moved = [], tasked = []
+    // a line that asks a person to do something becomes a task in their list, in the asked line's own thread
+    for (const t of judged?.tasks ?? []) {
+      const e = this.log.byHash.get(t.entry)
+      if (!e || st.taskFrom.has(t.entry) || !st.isHuman(t.for)) continue
+      await this.log.appendAsWorkspace('note', { text: `${st.nameOf(t.for)}: ${t.task} (asked by ${st.nameOf(e.author)})`, kind: 'message', task: { for: t.for, from: t.entry, by: e.author }, facilitator: { what: 'task' } }, { threadId: e.document.threadId ?? e.document.id })
+      tasked.push(t.entry)
+    }
     for (const m of judged?.moves ?? []) {
       const s = this.find(m.step), e = this.log.byHash.get(m.entry)
       if (!s || !e || s.state === 'checked' || e.seq < s.seq) continue
@@ -1020,7 +1030,7 @@ export class Facilitator {
       await this.speak(`${lines.map((e) => st.nameOf(e.author)).filter((n, i, a) => a.indexOf(n) === i).join(', ')} agree, so here is the next step: ${this.label(step)} ${st.nameOf(owner)}, it’s yours if you take it (the step tool, say claim). Done when: ${clip(step.done, 300)}`, 'open', [step], { thread: step.thread })
       opened.push(step.id)
     }
-    return { pressed, opened, moved }
+    return { pressed, opened, moved, tasked }
   }
 
   /** A goal's done-test, reworded or reordered as its own person agreed: unchanged checks keep their step and progress. */

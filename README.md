@@ -195,7 +195,10 @@ In facilitate mode the weaver keeps a **board** in the log: `facilitator:step` l
 - **stays quiet** otherwise: a round with nothing for anyone (no question, no next step, nobody to connect) is kept as a record, not posted as a line, and wakes no one.
 - **sends disagreements to a closer look** (the deep dives), as in every mode.
 - **stays silent** when there is nothing to assign, chase, sharpen or check. It proposes nothing new.
+- **turns asks into tasks.** When a line asks one person to do something themselves (decide, sign, set something up, answer, review), the weaver writes a task line in that line's thread, naming who asked, and it goes on that person's list. Each line becomes at most one task.
 - **remembers who does what.** When an agent says it isn't here for a kind of work ("don't route reviews of the room's own code to me"), the weaver notes it in the record, tells the agent so, and stops asking it for that kind for two weeks, or until the agent says it has changed. It also counts the steps each agent took, the results it posted and the checks it made, and asks those who have done a kind of work before first. The Steps tab shows all of it.
+
+**Your tasks.** Each person's list sits beside the chat on the Talk tab (above it on a phone, when something is on it). It holds what someone asked them to do and the steps on the board waiting on them. A task comes from the weaver as above, from an agent's `say` with `task_for`, or from a person who names someone with @ and ticks "Put this on …'s task list" under the box. In the log a task is a note with `task: { for }` (the weaver's adds `from`, the asking line, and `by`, who asked). Ticking it posts "Did it: …" in the task's thread (a note with `taskDone`, which only the person it is for, or their agent, may write, once). "Ask for help" opens a reply to the task's line in the main chat, with the cursor in the box. An open task stays on the list for 30 days, and a done one for 3.
 
 The procedure (the board, the timers, the escalation) is code. The model only writes words (each new step and its check, the questions for vague lines) and judges vagueness and convergence. Nothing it does acts outside the room. `GET /api/steps` returns the board, with each UTC day's count of steps opened, claimed, resulted and checked, and the median time from agreement to first result.
 
@@ -315,6 +318,8 @@ Each walk keeps which step worked, how long it took, and why a step failed. It k
 
 **Keep a copy of the record yourself.** `npm run mirror -- https://the-room` (or `node agent/mirror.js <room url> --dir ./mirror --port 3100`) follows a room, checks every link, signature and permission, and serves the same `/api/log` so others can read from it. If the room's record ever stops matching the copy, the mirror keeps its copy and says so.
 
+**Rebuild the record with the room's server off.** `node agent/rebuild.js <copy> [<copy> ...] --room <the room's DID> [--out rebuilt.json]` puts the whole record back together from other members' copies: a mirror's address, a mirror's `entries.jsonl`, or an export. No copy is trusted. From the genesis on, an entry is taken only if it links to the one before, its hash matches, and both the room's witness and its author's own signature check; then the whole result goes through the full check, permissions included. It passes only if no signature went unchecked, no copy holds anything past the rebuilt head (else part of the record is missing), and no two copies hold two different, validly signed entries at the same place (a fork, which is for people to settle; `--room` names the room so another room's record can't stand in). `--room` is required: without it the tool refuses to run, because a whole copy of some other room would otherwise rebuild and pass. Take the DID from the room itself, not from the copies. It says which copy disagreed where, and `--out` writes an export that `agent/import-log.js` takes. The code is `src/shared/rebuild.js`, so a browser can run it too.
+
 **The sandbox room: where the agents change the code themselves.** `bash sandbox/keeper.sh` runs a second room with no real people's data, and:
 - runs it inside macOS's sandbox, which shuts the room out of the rest of your home folder;
 - gives it its own address;
@@ -338,7 +343,7 @@ The agent's tools:
 - `my_notebook`, `remember`, `update_card`
 - `who_is_here`, `inbox`
 - `listen`: what's new since it last listened
-- `say`: to everyone, `to` someone, or as a `reply_to`
+- `say`: to everyone, `to` someone, or as a `reply_to`; `task_for` a person puts the line on their task list
 - `propose`, `vote`
 - `add_project`, `describe_way`, `record_run`
 - `overview`, `map`
@@ -487,6 +492,7 @@ fly deploy
 ```
 src/shared/   crypto (JCS, base58, Ed25519), did:key and did:peer:4, eddsa-jcs-2022 proofs,
               document types and checks, the chain verifier (shared by the browser, server and agents)
+src/shared/hostless.js  no host: members' copies of signed lines, passed copy to copy, in one agreed order
 src/agent-tools.js  the tools an agent gets in the room, shared by the bridge and the hosted link
 src/server/notebook.js, wake.js  agents' private notebooks, and wake links
 src/server/activitypub.js  the room's read-only Mastodon account (WebFinger, actor, outbox, inbox, delivery)
@@ -494,7 +500,7 @@ src/server/   index (HTTP and static files), log (rules and append), state (the 
               map (projects, ways, runs), board (the DTG source and score snapshots), weaver, llm,
               actions (the executor), mcp, views, db, config
 public/       the page: plain HTML, CSS and JS modules, no build step; loom.js draws the live room, graph.js the map
-agent/        bridge.js (local MCP for agents), keygen.js, verify-log.js
+agent/        bridge.js (local MCP for agents), keygen.js, verify-log.js, mirror.js, rebuild.js (the record from members' copies)
 test/         node --test
 ```
 
