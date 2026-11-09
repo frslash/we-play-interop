@@ -20,6 +20,8 @@ const clip = (s, n) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return
 const ROUTINE = /^https:\/\/api\.anthropic\.com\/v1\/claude_code\/routines\/[\w-]+\/fire$/
 export const BUILD_MS = 3 * 3600_000 // a build can take a while: a builder's step is asked about after three quiet hours, not half an hour
 const LOOK_EVERY_MS = 2 * 60_000 // GitHub is asked about the builders' pull requests at most every two minutes, and only while one is building
+export const BLOCKED_AGAIN_MS = 3600_000 // a step reported blocked is not reported again for an hour, unless its pull request changed
+export const BLOCKED_MIN_MS = 10 * 60_000 // and never twice within ten minutes, whatever changed
 const BRIEF_MAX = 12_000 // what a routine's start can carry: the step, its lines and its reading
 /** Where the room shows a pull request's changes as plain text (src/server/index.js), or null with no public address. */
 export const diffLink = (publicUrl, number) => publicUrl ? `${String(publicUrl).replace(/\/+$/, '')}/api/pulls/${number}/diff` : null
@@ -43,7 +45,7 @@ export function stuckOf (pr) {
 }
 
 export class Builder {
-  constructor ({ ctx }) { this.ctx = ctx; this.lookedAt = 0; this.lastError = null; this.fired = [] }
+  constructor ({ ctx }) { this.ctx = ctx; this.lookedAt = 0; this.lastError = null; this.fired = []; this.reported = new Map(); this.guarded = 0 }
   get st () { return this.ctx.log.state }
 
   /** A builder: a hosted agent (the room holds its key) named "… builder", with a live permission and a routine as its wake link. */
@@ -127,6 +129,11 @@ export class Builder {
       if (!pr) continue
       const builder = s.owner, link = pr.html_url ?? `https://github.com/${repo}/pull/${pr.number}`
       if (/^blocked\b/i.test(pr.title ?? '')) {
+        // report once: a step an agent has answered goes back to claimed with its Blocked: pull request still open, and
+        // without this memory the room re-posted "I'm stuck" (and the weaver re-asked) on every look
+        const sig = createHash('sha256').update(`${pr.number}\n${pr.title}\n${pr.body ?? ''}`).digest('hex').slice(0, 16), before = this.reported.get(s.id)
+        if (before && (now - before.at < BLOCKED_MIN_MS || (before.sig === sig && now - before.at < BLOCKED_AGAIN_MS))) { this.guarded++; continue }
+        this.reported.set(s.id, { sig, at: now })
         const stuck = stuckOf(pr)
         const asks = stuck.from && !/^(any|the) agents?\b/i.test(stuck.from) ? `${stuck.from}: can you help?` : 'Any agent here: can you help?'
         const text = [`I’m stuck on ${s.test ? `check (${s.test.n})` : `“${clip(s.title, 120)}”`}.`, stuck.why ? `Why: ${stuck.why}` : null, `What would unblock it: ${stuck.needs}`, asks, `(Pull request #${pr.number}: ${link})`].filter(Boolean).join(' ')
@@ -145,7 +152,7 @@ export class Builder {
 
   view () {
     const seats = [...this.st.participants.values()].filter((p) => p.kind === 'agent' && !p.removed && /\bbuilder$/i.test(p.name ?? ''))
-    return { builders: seats.filter((p) => this.is(p.did)).map((p) => ({ did: p.did, name: p.name })), notReady: seats.filter((p) => !this.is(p.did)).map((p) => ({ did: p.did, name: p.name, why: this.notReady(p.did) })), fired: this.fired.slice(-10), lastError: this.lastError }
+    return { builders: seats.filter((p) => this.is(p.did)).map((p) => ({ did: p.did, name: p.name })), notReady: seats.filter((p) => !this.is(p.did)).map((p) => ({ did: p.did, name: p.name, why: this.notReady(p.did) })), fired: this.fired.slice(-10), lastError: this.lastError, blockedRepeatsHeld: this.guarded }
   }
 }
 

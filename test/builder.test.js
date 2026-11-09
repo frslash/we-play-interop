@@ -169,3 +169,24 @@ describe('the builder builds what the board hands it, from a sandbox with only t
     } finally { await r.stop() }
   })
 })
+
+describe('a blocked step is reported once, not on every look', () => {
+  test('five looks in a minute, and then an hour later, post one "stuck" line, not five', async () => {
+    const r = await room()
+    try {
+      const p1 = await r.agreeForBuilder('Publish the room’s DID document')
+      await r.ctx.facilitator.tick(r.at(11)); await r.ctx.facilitator.tick(r.at(12))
+      const s1 = r.stepFrom(p1)
+      r.pulls.push({ number: 42, title: 'Blocked: publish the room’s DID document', body: 'Needs: Which key signs?\nFrom: East Agent', html_url: 'https://github.com/example/room/pull/42', head: { ref: branchOf(s1), sha: 'c'.repeat(40) } })
+      const b = r.ctx.builder, real = r.ctx.facilitator.steps.bind(r.ctx.facilitator)
+      r.ctx.facilitator.steps = () => real().map((s) => s.id === s1.id ? { ...s, state: 'claimed', waitingOn: null } : s) // an agent answered: back to claimed, the PR still open
+      const stuckLines = () => r.ctx.log.entries.filter((e) => e.author === r.builder && e.document.payload.step?.say === 'blocked').length
+      const t0 = r.at(30)
+      for (let i = 0; i < 5; i++) await b.look(t0 + i * 12_000 + 5 * 120_000 * i) // spaced past the two-minute look interval
+      assert.equal(stuckLines(), 1, 'one line, however often it looks')
+      assert.ok(b.view().blockedRepeatsHeld >= 3, 'the guard counts what it held back')
+      await b.look(t0 + 2 * 3600_000)
+      assert.equal(stuckLines(), 2, 'after an hour it may say so once more')
+    } finally { await r.stop() }
+  })
+})
