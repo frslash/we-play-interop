@@ -15,6 +15,7 @@ import { mentionOptions } from '/shared/mentions.js'
 import { silentRound } from '/shared/round.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
 import { WAITING_FOR_PERSON, allDrafts, heard, lineIsFor, waitingForOk, waitingLabel, waitsForPerson } from '/shared/presence.js'
+import { walletCard } from '/signin.js'
 
 // ---------- tiny DOM helpers (user text only ever goes in as text) ----------
 const $ = (s) => document.querySelector(s)
@@ -1101,6 +1102,7 @@ function lostKeyPanel (mine) {
 // ---------- join on your phone: a short link for this visit only, as a QR code ----------
 // The room makes the link (POST /api/visit); it opens once and runs out after ten minutes. A phone camera
 // opens it into this page's join flow; a wallet reads the room's DID and a DIDComm invitation behind it.
+// This code is for a phone's camera. The code a wallet scans to sign in is another one, on the card after it (signin.js).
 const visit = { url: null, oob: null, keyring: null, until: 0, asking: null, timer: null, img: null, label: null, failed: 0 }
 const visitText = () => visit.oob || visit.url // the ?_oob= invitation itself when the room made one, so a wallet that reads the code (Keyring) finds it
 const keyringLabel = () => visit.keyring?.ready ? 'Ready for Keyring' : '' // only when the room reports every part of it live
@@ -1123,7 +1125,7 @@ function phoneCard () {
   askVisit()
   const did = S.workspace
   return h('div', { class: 'card join-qr' },
-    h('p', { class: 'why' }, 'Scan to join on your phone.'), visit.img, visit.label,
+    h('p', { class: 'why' }, h('strong', null, 'Join on your phone. '), 'Scan with your phone’s camera: it opens this room there.'), visit.img, visit.label,
     h('div', { class: 'row' }, h('span', { class: 'meta grow' }, 'For this visit only.'), h('button', { class: 'btn tiny', onclick: () => askVisit(true) }, 'New code')),
     fold('join-did', null, h('summary', null, 'Show the plain DID code'),
       h('p', { class: 'why' }, 'For a wallet that reads the room’s DID itself. The same for everyone, and it does not run out.'),
@@ -1149,7 +1151,7 @@ function renderYou () {
         h('label', null, 'Name', name),
         h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: join }, 'Join')),
         h('details', null, h('summary', null, 'I already have a key'), h('label', null, 'Your key', seedIn), h('button', { class: 'btn', onclick: () => { try { me = identityFromSeedHex(seedIn.value); store.set('wpi.seed', me.seedHex); store.set('wpi.keySaved', me.did); toast('Key loaded.'); refresh() } catch (err) { toast(err.message) } } }, 'Use this key'))),
-      phoneCard())
+      phoneCard(), walletCard(h, tech, S.signIn))
   }
   const mine = person(me.did)
   const myAgents = S.people.filter((p) => p.kind === 'agent' && p.principal === me.did && !p.removed)

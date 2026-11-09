@@ -72,9 +72,19 @@ export function didcommEndpoint (publicUrl) {
   try { return publicUrl ? new URL(publicUrl).origin + '/didcomm' : '' } catch { return '' }
 }
 
-/** The document the room's DID should have: the room's signing key, a service pointing at the room's site, and its DIDComm inbox. */
+/**
+ * The page a wallet sign-in is started from, for PUBLIC_URL: the room's own page. A wallet refuses a sign-in code
+ * unless the DID that sent it lists a SignInPortal service on the same origin as the page the code was shown on
+ * (OpenVTC vta-sdk/src/did_templates/sign_in_portal.rs). Only for an https address: a wallet will not sign in to a
+ * plain-http page, and an entry it would refuse hides the real gap. '' when there is none.
+ */
+export function signInPortalEndpoint (publicUrl) {
+  try { const u = new URL(publicUrl); return u.protocol === 'https:' ? u.origin + '/' : '' } catch { return '' }
+}
+
+/** The document the room's DID should have: the room's signing key, a service pointing at the room's site, its DIDComm inbox, and the page people sign in on. */
 export function roomDidDocument ({ did, roomPublicKey, publicUrl }) {
-  const vm = `${did}#room`
+  const vm = `${did}#room`, portal = signInPortalEndpoint(publicUrl)
   return {
     '@context': ['https://www.w3.org/ns/did/v1', 'https://w3id.org/security/multikey/v1'],
     id: did,
@@ -84,13 +94,14 @@ export function roomDidDocument ({ did, roomPublicKey, publicUrl }) {
     service: [
       { id: `${did}#room-site`, type: 'LinkedDomains', serviceEndpoint: new URL(publicUrl).origin + '/' },
       { id: `${did}#didcomm`, type: 'DIDCommMessaging', serviceEndpoint: { uri: didcommEndpoint(publicUrl), accept: ['didcomm/v2'] } },
+      ...(portal ? [{ id: `${did}#sign-in-portal`, type: 'SignInPortal', serviceEndpoint: portal }] : []),
     ],
   }
 }
 
 /**
  * What the room's DID says right now, read from the same log /.well-known/did.jsonl serves (so it is what a wallet
- * resolves): its id and its DIDComm endpoint, or nulls when there is no log or it does not verify. Never throws.
+ * resolves): its id, its DIDComm endpoint and the whole document, or nulls when there is no log or it does not verify. Never throws.
  */
 export async function roomDidStatus ({ dataDir, file = '' }) {
   try {
@@ -99,7 +110,7 @@ export async function roomDidStatus ({ dataDir, file = '' }) {
     const r = await resolveDIDFromLog(text.trim().split('\n').map((l) => JSON.parse(l)))
     const s = (r.didDocument.service ?? []).find((x) => x.type === 'DIDCommMessaging')
     const uri = typeof s?.serviceEndpoint === 'string' ? s.serviceEndpoint : s?.serviceEndpoint?.uri ?? (Array.isArray(s?.serviceEndpoint) ? s.serviceEndpoint[0]?.uri : null)
-    return { did: r.didDocument.id ?? null, didcomm: uri ?? null }
+    return { did: r.didDocument.id ?? null, didcomm: uri ?? null, document: r.didDocument }
   } catch { return { did: null, didcomm: null } }
 }
 

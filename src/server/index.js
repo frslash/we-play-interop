@@ -37,6 +37,7 @@ import { Cursors } from './cursors.js'
 import { AGREED } from './rules.js'
 import { ActivityPub } from './activitypub.js'
 import { CODE_RE, Visits, interaction, visitLocation } from './visits.js'
+import { SignIn } from './signin.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { createResolver } from './resolver.js'
@@ -144,6 +145,10 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.visits = new Visits() // join links for one visit each, in memory
   ctx.join = new JoinRoute({ identity, config, resolver }) // the join desk at /didcomm, for the test community only
   await ctx.join.refresh(true)
+  // ── wallet sign-in (auth/oob/*, src/server/signin.js). This and the one line marked the same way in route() are all of it here.
+  ctx.signIn = new SignIn({ identity, config, resolver, log, door: () => ctx.door }) // its six tasks go on the room's Trust Task door (registerSignIn) as soon as there is one, wherever below it is made; until then sign-in says it is off
+  await ctx.signIn.refresh(true)
+  // ── end wallet sign-in
   ctx.types = TYPES
   ctx.changes = new Changes({ ctx, dataDir: config.dataDir })
   log.on('entry', (e) => ctx.changes.onEntry(e))
@@ -237,6 +242,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     }
     if (handleRoomDid(req, res, path, { dataDir: config.dataDir, file: config.didLogFile })) return
     if (await ctx.join.handle(req, res, path, readBody, send)) return
+    if (await ctx.signIn.handle(req, res, path, q, send)) return // ── wallet sign-in: what a page reads to start one, and what the room holds for a browser key (reads only)
     if (path === '/.well-known/webfinger' || path.startsWith('/ap/')) return ctx.activitypub.handle(req, res, url)
     if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
     if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), keyring: ctx.join.readiness({ oob: true }) }) }
