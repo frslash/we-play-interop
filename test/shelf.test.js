@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, test } from 'node:test'
 import { gzipSync } from 'node:zlib'
@@ -266,8 +266,9 @@ describe('the projects shelf', () => {
     assert.deepEqual([two.licence, two.licenceFile, two.licences.map((l) => l.name)], ['CC-BY-4.0', 'LICENSE', ['CC-BY-4.0', 'MIT']])
   })
 
-  test('the ten projects on the list are each under a licence the shelf keeps (checked against the local source copies when they are there)', () => {
-    const top = process.env.WPI_SOURCES ?? join(homedir(), 'Desktop/Umbrella/inwove-sources') // a folder per project, named owner_repo
+  test('the ten projects on the list are each under a licence the shelf keeps (checked against source copies when WPI_SOURCES names their folder)', () => {
+    const top = process.env.WPI_SOURCES // a folder of source copies, one per project, named owner_repo; unset: nothing to check here
+    if (!top) return
     const seen = []
     for (const p of SHELF) {
       const d = join(top, p.repo.replace('/', '_'))
