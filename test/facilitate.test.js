@@ -67,11 +67,11 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       await r.ctx.facilitator.tick(r.at(0))
       const test6 = r.ctx.facilitator.testOf(goal2)
       assert.equal(test6.length, 6, 'six checks, each a step')
-      assert.deepEqual(test6.map((s) => s.test.n), [1, 2, 3, 4, 5, 6])
+      assert.deepEqual(test6.map((s) => s.test.n), [1, 2, 5, 3, 4, 6], 'the checks for now first, the later ones after')
       assert.ok(test6.every((s) => s.state === 'open' && s.goal === goal2))
-      assert.match(test6[2].title, /Geb member and a Keyring member/)
+      assert.match(test6.find((s) => s.test.n === 3).title, /Geb member and a Keyring member/)
       // (5) needs a person (a domain costs money): it waits on the goal's proposer from the start, by name
-      assert.equal(test6[4].waitingOn.who, r.people.a.did)
+      assert.equal(test6.find((s) => s.test.n === 5).waitingOn.who, r.people.a.did)
       const seed = r.said('seed')
       assert.equal(seed.length, 1)
       assert.match(seed[0].payload.text, /Person A: one decision for you: which permanent domain/)
@@ -288,7 +288,7 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       await r.ctx.facilitator.tick(r.at(11) + REPORT_MS + MIN)
       assert.equal(r.said('report').length, 1)
       // a check is claimed: reported sooner (ten minutes after the last report), not at once
-      const check3 = r.ctx.facilitator.testOf(goal)[2]
+      const check3 = r.ctx.facilitator.testOf(goal).find((s) => s.test.n === 3)
       await r.tell('b', check3, 'claim', 'I take the MLS check')
       await r.ctx.facilitator.tick(r.at(5)) // the last report was written just now
       assert.equal(r.said('report').length, 1, 'not five minutes after the last one')

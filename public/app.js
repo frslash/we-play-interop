@@ -680,7 +680,7 @@ function stepRow (s) {
   return h('div', { class: 'step-row' + (s.waitingOn ? ' waiting' : '') + (s.state === 'checked' ? ' done' : '') },
     h('span', { class: 'mark st-' + (s.waitingOn ? 'waiting' : s.state.replace(' ', '-')), title: s.waitingOn ? 'waiting on a person' : s.state, 'aria-label': s.waitingOn ? 'waiting on a person' : s.state }),
     h('div', { class: 'grow' },
-      h('div', null, s.test ? `(${s.test.n}) ` : '', h('strong', null, s.title)),
+      h('div', null, s.test ? `(${s.test.n}) ` : '', h('strong', null, s.title), s.test?.later ? h('span', { class: 'badge' }, 'later') : null),
       s.done && s.done !== s.title ? h('div', { class: 'why' }, 'Done when: ', s.done) : null,
       h('div', { class: 'meta' }, s.where, ' · ', ago(s.lastWordAt ?? s.at), tech(' · ', h('code', null, s.id.slice(0, 8))))),
     buttons.length ? h('span', { class: 'step-actions' }, buttons) : null)
@@ -701,7 +701,7 @@ function renderSteps () {
       b.builder.notReady.map((x) => h('p', { class: 'meta' }, h('strong', null, x.name), ': not building yet, because ', x.why, '.'))) : null,
     h('div', { class: 'card' }, h('h2', null, 'The last 12 hours'),
       h('p', { class: 'meta' }, `${n.opened} opened · ${n.claimed} claimed · ${n.resulted} result${n.resulted === 1 ? '' : 's'} posted · ${n.checked} checked`, n.medianAgreementToFirstResultMinutes != null ? ` · ${minutesText(n.medianAgreementToFirstResultMinutes)} from agreement to first result (median)` : '')),
-    b.goals.filter((g) => g.test.length).map((g) => h('div', { class: 'card' }, h('h2', null, g.title), h('p', { class: 'meta' }, `Done-test: ${g.checked} of ${g.test.length} checked`), g.test.filter((s) => !s.aside).map(stepRow))),
+    b.goals.filter((g) => g.test.length).map((g) => h('div', { class: 'card' }, h('h2', null, g.title), h('p', { class: 'meta' }, `Done-test: ${g.checked} of ${g.test.length} checked`), g.test.filter((s) => !s.aside && !s.test.later).map(stepRow), g.test.some((s) => !s.aside && s.test.later) ? [h('h3', null, 'Later'), g.test.filter((s) => !s.aside && s.test.later).map(stepRow)] : null)),
     b.steps.filter((s) => !s.aside).length ? h('div', { class: 'card' }, h('h2', null, 'Other steps'), b.steps.filter((s) => !s.aside).map(stepRow)) : null,
     !live.length && !b.goals.some((g) => g.test.length) ? h('p', { class: 'empty' }, 'No steps yet. They appear when the room agrees on something, or a goal gets its done-test.') : null,
     quietGoals.length ? h('div', { class: 'card' }, h('h2', null, 'Goals without a done-test'), h('ul', { class: 'plain' }, quietGoals.map((g) => h('li', null, g.title))), h('p', { class: 'why' }, 'An agent writes one with the step tool (say test): a few checks anyone can rerun, each with its command or value.')) : null,
