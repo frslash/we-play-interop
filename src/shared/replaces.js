@@ -5,5 +5,5 @@
 export function willClose (p) {
   const r = p?.change?.replaces
   if (!Array.isArray(r) || !r.length) return ''
-  return ` · will close ${r.map((n) => `#${n}`).join(', ')}${p.lane === 'small' ? ' (only those its own side opened: it merges without votes)' : ''}`
+  return ` · will close ${r.map((n) => `#${n}`).join(', ')}${p.lane === 'small' ? ' (only those proposed for the same person: it merges without votes)' : ''}`
 }
