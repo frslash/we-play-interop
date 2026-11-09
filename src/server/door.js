@@ -9,8 +9,11 @@
 //   5 the signer is let in (a rate limit) · 6 its id has not been taken (the duplicate-id record) · 7 the task runs ·
 //   8 the answer is signed, a refusal as much as a result (sign.rs).
 // A refusal is a trust-task-error document with a shared code (reject.rs); its HTTP status is the binding's table
-// (statusFor in src/shared/trusttask.js). Three answers carry no document, as upstream: 202 (the same document is
-// still running), 204 (it ran, and its answer was not kept) and 429 (slow down, with Retry-After).
+// (statusFor in src/shared/trusttask.js). Three answers carry no signed document: 202 (the same document is
+// still running), 204 (it ran, and its answer was not kept) and 429 (slow down, with Retry-After). The 429 of the
+// per-signer limit is empty, as upstream's trust task server answers it (spine.rs); the 429 of the per-address limit
+// has a small JSON body, as OpenVTC's community gives for its per-address limiter (vtc-service/src/routing/rate_limit.rs):
+// { error: 'rate_limited', limiter, message, retry_after_secs }, with the x-rate-limit-source header.
 //
 // Where the room is stricter than a task's own specification, on purpose: every document needs a proof (a ping's
 // specification asks for none; the room has no other way to know who is asking, and its rate limit is per signer),
@@ -41,10 +44,14 @@ export const FRAMEWORK_VERSION = '0.6.0'
 // (acceptanceWindow.expiryHorizonSeconds) and writes a fresh document instead of sending one older than that.
 export const HORIZON_MS = 3600_000
 const MINUTE = 60_000
+const MAX_PATTERNS = 16 // discovery's request schema: at most 16 patterns
 // Answers kept for a redelivery, all together: about 4 MB of the room's memory (a small container). Past it an
 // answer is not kept, and a redelivery of its document gets 204: done, nothing to send again.
 const MAX_RECORDED_BYTES = 4 * 1024 * 1024
-const PURPOSES = ['authentication', 'assertionMethod'] // a request, or something a person attests; never keyAgreement
+// a request, or something a person attests; never keyAgreement. Upstream also accepts capabilityInvocation and
+// capabilityDelegation (vta-sdk/src/trust_task_proof/purpose.rs); the room does not, on purpose: nothing here takes
+// a capability, and every purpose it accepts is one more way for a proof to be read as something it was not meant for.
+const PURPOSES = ['authentication', 'assertionMethod']
 const EXTENDED = /^[a-z][a-z0-9]*(-[a-z0-9]+)*(\/[a-z][a-z0-9]*(-[a-z0-9]+)*)*:[a-z][a-zA-Z0-9_]*$/ // a task's own code, "<family>:<local>", in the form RLTP's reader holds one to (lib/src/adapters/vti-mediator.ts)
 const OPAQUE = 'the room could not complete this task; nothing was wrong with the document itself' // never the cause: that goes to the host's log
 /**
@@ -135,8 +142,9 @@ export class Door {
    *    the record. Default 2 x RATE_PER_MINUTE (60): twice what the log lets a person write, so someone writing
    *    lines meets the log's own limit, with its own words, first.
    *  - the record holds at most `maxRecords` ids: a quarter more than one address can send, at its limit, in the
-   *    longest time a record is kept (an hour and the slack), so it takes more than one flooding address to fill it.
-   *    About 18,000 ids by default, a few MB.
+   *    longest time a record is kept (an hour and the slack). About 18,000 ids by default, a few MB. Only tasks that
+   *    change something are recorded (register's `once`): discovery and ping are not, so the record is filled only by
+   *    signed documents of tasks that change something, which the per-signer limit and the log's own limits also bound.
    */
   constructor ({ ctx, now = Date.now, perSignerPerMinute, perAddressPerMinute, maxRecords, maxRecordedBytes = MAX_RECORDED_BYTES }) {
     const rate = ctx.config?.ratePerMinute ?? 30
@@ -157,18 +165,21 @@ export class Door {
    * the DID whose proof verified; it is the document's issuer. `purposes`: the proof purposes this task takes
    * (a request is signed for authentication; something a person attests, an approval or a grant, for assertionMethod).
    * `record: false` for an answer that must not be kept or sent twice (it carries a secret): a redelivery gets 204.
+   * `once: false` (default true) leaves the document's id out of the duplicate-id record: the task simply runs each
+   * time it is sent, and the door never answers 202 or 204 for it or keeps its answer. Only for a task that changes
+   * nothing, so running twice is harmless; it keeps such documents from filling the record.
    * `listed: false` keeps the address out of serves() and discovery (a type that is only ever refused here).
    * `precheck(doc)`: the task's own gate before any proof is read (and so before a signer's DID is fetched), after the
    * document is known to be fresh and for the room; it returns a Refusal to refuse, or nothing (OpenVTC's sign-in
    * refuses any signer but an Ed25519 did:key there, vti-oob-server T21).
    */
-  register (typeUri, handler, { purposes = PURPOSES, record = true, listed = true, precheck = null } = {}) {
+  register (typeUri, handler, { purposes = PURPOSES, record = true, listed = true, precheck = null, once = true } = {}) {
     if (typeof typeUri !== 'string' || !typeUri || typeUri.length > 300 || typeUri.includes('#')) throw new Error('a task is registered under its full type address, without a #fragment')
     if (typeof handler !== 'function') throw new Error(`${typeUri}: a task needs a handler`)
     if (!Array.isArray(purposes) || !purposes.length || !purposes.every((p) => SIGNING_RELATIONSHIPS.includes(p))) throw new Error(`${typeUri}: purposes are some of ${SIGNING_RELATIONSHIPS.join(', ')}`)
     if (this.handlers.has(typeUri)) throw new Error(`${typeUri} is already served`) // two parts of the room claiming one task is a mistake to see at start, not at the first document
     if (precheck !== null && typeof precheck !== 'function') throw new Error(`${typeUri}: precheck is a function`)
-    this.handlers.set(typeUri, { handler, purposes, record, listed, precheck })
+    this.handlers.set(typeUri, { handler, purposes, record, listed, precheck, once })
     return this
   }
 
@@ -215,7 +226,7 @@ export class Door {
 
   /**
    * One document in, one answer out: { status, body, headers? }. `raw` is the body exactly as it arrived (a Buffer);
-   * `body` is the signed answer as JSON text, or '' for the answers that carry no document (202, 204, 429).
+   * `body` is the signed answer as JSON text, '' for the answers that carry no document (202, 204, the per-signer 429), or the small JSON of the per-address 429.
    * `http`: { origin, base, host, ip, userAgent, https } for the task, and `bytes` / `cut` when the caller stopped reading
    * a body that was too large (the size is then what it counted, and "more than" that).
    */
@@ -224,11 +235,15 @@ export class Door {
     c.received++
     await this.ctx.join?.refresh?.().catch(() => {})
     const mine = this.identities(), first = mine[0]
-    const slow = (kind, seconds) => { c.rateLimited[kind]++; return { status: 429, body: '', headers: { 'retry-after': String(seconds) } } }
+    const slow = (kind, seconds) => { c.rateLimited[kind]++; return { status: 429, body: '', headers: { 'retry-after': String(seconds) } } } // the signer's: empty, as upstream
+    const slowAddress = (seconds) => { // the address's: the body and header OpenVTC's community gives; the source says 'room', a name no program is asked to match
+      c.rateLimited.address++
+      return { status: 429, body: JSON.stringify({ error: 'rate_limited', limiter: 'address', message: 'too many documents from this address; wait and send again', retry_after_secs: seconds }), headers: { 'retry-after': String(seconds), 'x-rate-limit-source': 'room' } }
+    }
 
     // before the steps, the transport's own limit: so many documents a minute from one address
     const wait = this.addresses.take(String(http.ip || 'unknown'), now)
-    if (wait) return slow('address', wait)
+    if (wait) return slowAddress(wait)
 
     // 1. size, before anything in the body is parsed. The refusal answers no document: nothing in the body was believed.
     const bytes = Math.max(raw?.length ?? 0, Number(http.bytes) || 0)
@@ -252,6 +267,9 @@ export class Door {
       if (!(err instanceof RangeError)) throw err
       v = { ok: false, code: 'malformedRequest', message: 'the document is nested too deeply to check its proof' } // thousands of levels inside 64 KiB: nothing honest looks like that
     }
+    // A proof that is present and does not verify is proofInvalid (422) here; upstream answers permissionDenied (403)
+    // for it, because its verifier's failure is an Unauthorized error (vti-trust-task-server/src/verify.rs, mapped by
+    // reject.rs app_error_to_reject). The code is what a client reads; the room keeps the more exact one.
     if (!v.ok) return this.#refuse(doc, v, as)
     const signer = v.signer
 
@@ -263,7 +281,7 @@ export class Door {
     if (!task) return this.#refuse(doc, this.#unsupported(type), as)
 
     // 6. the duplicate-id record, claimed before the task runs
-    const claim = this.accepted.claim(doc.id, toHex(sha256(canonicalize(doc))), acceptedUntil(doc, { horizonMs: HORIZON_MS }), now)
+    const claim = task.once ? this.accepted.claim(doc.id, toHex(sha256(canonicalize(doc))), acceptedUntil(doc, { horizonMs: HORIZON_MS }), now) : { fresh: null } // `once: false`: nothing is claimed, the task just runs
     if (claim.duplicate) { // never a failure: it already happened
       const r = claim.duplicate
       if (r.body) { c.duplicates.answeredAgain++; return { status: 200, body: r.body } }
@@ -286,10 +304,10 @@ export class Door {
         body = this.#signed(responseTo({ ...doc, type }, payload, as.did), as)
       }
     } catch (err) {
-      this.accepted.release(doc.id, claim.fresh)
+      if (claim.fresh) this.accepted.release(doc.id, claim.fresh)
       return this.#refuse(doc, this.#refusalOf(err, type), as)
     }
-    this.accepted.completed(doc.id, claim.fresh, task.record ? body : null)
+    if (claim.fresh) this.accepted.completed(doc.id, claim.fresh, task.record ? body : null)
     c.answered++; c.answeredByType[type] = (c.answeredByType[type] ?? 0) + 1
     return { status: 200, body }
   }
@@ -329,21 +347,30 @@ export function serveRoomTasks (door, ctx) {
   // Which tasks the room serves, and the window it accepts documents in. The window is read from the same numbers
   // the door checks with, so what is said cannot be wider than what is done. Request { patterns } (none: everything);
   // answer { supportedTypes, acceptanceWindow, frameworkVersion } (vti-common/src/trust_task/discovery.rs). Only to
-  // callers the room can identify, as upstream: every document here is signed.
+  // callers the room can identify: the room refuses an unsigned document for every type, on purpose, which is
+  // stricter than upstream (it accepts a proofless document unless the task's own policy needs a proof, and ping 0.2
+  // does not: vti-trust-task-server/src/spine.rs, the "No proof" branch). The reason is at the top of this file: the
+  // rate limit is per signer.
   const discovery = (horizon) => ({ payload }) => {
     const patterns = payload.patterns ?? []
     if (!Array.isArray(patterns) || !patterns.every((p) => typeof p === 'string')) throw new Refusal('malformedRequest', 'payload: patterns is a list of strings ("*", "<prefix>/*", or one whole slug such as messaging/ping/0.2)')
+    // The discovery schema allows at most 16 patterns, each at least one character (taken from the schema as the review notes give it;
+    // the schema bundle itself is not in the pinned sources). They protect the work: every pattern is tried against every
+    // served type, so an unbounded list is unbounded work for a document that costs nothing to send. 300 characters
+    // is the longest type address the door takes (register), so no honest pattern is longer.
+    if (patterns.length > MAX_PATTERNS || patterns.some((p) => !p || p.length > 300)) throw new Refusal('malformedRequest', `payload: patterns holds at most ${MAX_PATTERNS} patterns, each 1 to 300 characters`, { maxPatterns: MAX_PATTERNS })
     const supportedTypes = door.serves().filter((uri) => !patterns.length || patterns.some((p) => matchSlug(p, slugOf(uri))))
     const acceptanceWindow = { maxAgeSeconds: Math.floor(ACCEPT_MS / 1000), clockSkewSeconds: Math.floor(SKEW_MS / 1000), ...(horizon ? { expiryHorizonSeconds: Math.floor(HORIZON_MS / 1000) } : {}) }
     return { supportedTypes, acceptanceWindow, frameworkVersion: FRAMEWORK_VERSION }
   }
-  door.register(DISCOVERY, discovery(true))
-  door.register(DISCOVERY_0_3, discovery(false)) // 0.3 cannot state a horizon: it says the ten minutes and the slack, which is never wider than applied
+  // discovery and ping change nothing: running twice is harmless, so they take no place in the duplicate-id record (once: false)
+  door.register(DISCOVERY, discovery(true), { once: false })
+  door.register(DISCOVERY_0_3, discovery(false), { once: false }) // 0.3 cannot state a horizon: it says the ten minutes and the slack, which is never wider than applied
 
   // "Are you there, and how do you take documents?" Request { nonce? }; answer { respondedAt, status, protocols,
   // nonce? } with the nonce given back as sent (vta-service/src/trust_tasks/messaging.rs). The room takes Trust
   // Tasks over https only; upstream's word for that way in is "rest".
-  door.register(PING, ({ payload }) => ({ respondedAt: instant(door.now()), status: 'ok', protocols: ['rest'], ...(typeof payload.nonce === 'string' ? { nonce: payload.nonce } : {}) }))
+  door.register(PING, ({ payload }) => ({ respondedAt: instant(door.now()), status: 'ok', protocols: ['rest'], ...(typeof payload.nonce === 'string' ? { nonce: payload.nonce } : {}) }), { once: false })
 
   // A line for the room's log, of any of the room's own types. The answer is the entry the room made (its place in
   // the chain, its hash, the room's witness signature), without the document, which the sender has. Types only the
