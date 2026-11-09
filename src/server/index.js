@@ -2,7 +2,7 @@
 // Trust Task document, verified and appended to the hash-chained log.
 import { handleRoomDid, ensureRoomDid, growRoomDid } from './roomdid.js'
 import { createHash } from 'node:crypto'
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { dirname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -66,6 +66,40 @@ const STATIC = [
   ['/', join(root, 'public/')],
 ]
 
+/**
+ * A fingerprint of everything the browser loads (the page's files, the shared core, the vendored libraries): it changes
+ * exactly when one of those files changes. Each release's files are served under /r/<fingerprint>/ and may be cached
+ * for good, because a new release has a new address; the page itself is always re-checked. Before this, Cloudflare kept
+ * the page's code in browsers for 4 hours whatever the room said, so a deploy looked missing until a hard refresh.
+ */
+export function releaseOf (dirs, base = root) {
+  const h = createHash('sha256')
+  const walk = (d) => {
+    for (const n of readdirSync(d).sort()) {
+      const f = join(d, n), s = statSync(f)
+      if (s.isDirectory()) walk(f)
+      else if (TYPES_OF[n.slice(n.lastIndexOf('.'))]) h.update(f.slice(base.length)).update('\0').update(readFileSync(f)).update('\0')
+    }
+  }
+  for (const d of dirs) if (existsSync(d)) walk(d)
+  return h.digest('hex').slice(0, 12)
+}
+
+/** The page, pointed at one release: its code, its style and every module it imports load from /r/<release>/. */
+export function versioned (html, release, modules) {
+  const r = `/r/${release}`
+  return html
+    .replace(/<script type="importmap">([\s\S]*?)<\/script>/, (_, json) => {
+      const map = JSON.parse(json)
+      const imports = Object.fromEntries(Object.entries(map.imports ?? {}).map(([k, v]) => [k, v.startsWith('/') ? r + v : v]))
+      imports['/shared/'] = `${r}/shared/`
+      for (const n of modules) imports[`/${n}`] = `${r}/${n}` // the page's own modules, imported by absolute path
+      return `<script type="importmap">${JSON.stringify({ ...map, imports })}</script>`
+    })
+    .replace('<script type="module" src="/app.js">', `<script type="module" src="${r}/app.js">`)
+    .replace('<link rel="stylesheet" href="/style.css">', `<link rel="stylesheet" href="${r}/style.css">`)
+}
+
 function workspaceIdentity (config) {
   if (config.workspaceKey) return identityFromSeedHex(config.workspaceKey)
   if (config.production) throw new Error('WORKSPACE_KEY is required in production (npm run keygen makes one).')
@@ -127,7 +161,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   log.on('entry', (e) => ctx.notNamed.onEntry(e).catch(() => {}))
   ctx.builder = new Builder({ ctx }) // builds what the board hands it, from a routine with only this repository
 
-  const page = readFileSync(join(root, 'public/index.html'), 'utf8')
+  const release = releaseOf(STATIC.map(([, dir]) => dir))
+  const page = versioned(readFileSync(join(root, 'public/index.html'), 'utf8'), release, readdirSync(join(root, 'public')).filter((n) => n.endsWith('.js')).sort())
   const importMap = /<script type="importmap">([\s\S]*?)<\/script>/.exec(page)?.[1] ?? ''
   const csp = `default-src 'self'; script-src 'self' 'sha256-${createHash('sha256').update(importMap).digest('base64')}'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`
 
@@ -412,9 +447,12 @@ export async function createApp (config = defaultConfig, { resolver = createReso
 
   function serveStatic (path, res) {
     if (path === '/' || path === '/index.html') {
-      res.writeHead(200, { 'content-type': TYPES_OF['.html'], 'content-security-policy': csp, 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' })
+      res.writeHead(200, { 'content-type': TYPES_OF['.html'], 'content-security-policy': csp, 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'cache-control': 'no-cache' }) // always re-checked: it names the release to load
       return res.end(page)
     }
+    const r = /^\/r\/([0-9a-f]{12})(\/.*)$/.exec(path)
+    const forGood = Boolean(r && r[1] === release) // this release's address: its files never change under it
+    if (r) path = r[2] // an older release's address still answers, with today's files, re-checked
     for (const [prefix, dir] of STATIC) {
       if (!path.startsWith(prefix)) continue
       const rel = normalize(decodeURIComponent(path.slice(prefix.length))).replace(/^(\.\.[/\\])+/, '')
@@ -422,7 +460,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       const ext = rel.slice(rel.lastIndexOf('.'))
       if (!file.startsWith(dir) || !TYPES_OF[ext] || !existsSync(file)) continue
       if (prefix.startsWith('/vendor/') && ext !== '.js') continue
-      res.writeHead(200, { 'content-type': TYPES_OF[ext], 'x-content-type-options': 'nosniff', 'cache-control': prefix.startsWith('/vendor/') ? 'public, max-age=3600' : 'no-cache' })
+      res.writeHead(200, { 'content-type': TYPES_OF[ext], 'x-content-type-options': 'nosniff', 'cache-control': forGood ? 'public, max-age=31536000, immutable' : prefix.startsWith('/vendor/') ? 'public, max-age=3600' : 'no-cache' })
       return res.end(readFileSync(file))
     }
     send(res, 404, 'not found')
