@@ -35,19 +35,27 @@ const PRESS_MAX = 2 // vague lines pressed per round: a room that is questioned 
 const BUSY_STEPS = 3 // an agent already holding this many steps is not offered another
 const LIVE = ['open', 'claimed', 'in progress', 'result posted']
 
-/** The first done-test, for the data-room goal (room line 1092). It goes to the held goal that matches, once. */
+/** The first done-test, for the data-room goal (room line 1092). It goes to the held goal that matches, once.
+ * Version 2 rewords checks (1) and (2) and marks (3), (4) and (6) as later, as the room agreed (room lines 1283-1301):
+ * the board lists (1), (2) and (5) first. Each check keeps its number. A room seeded with version 1 is moved to it once
+ * (see reword): a check is reworded only while it still has its old words and is not checked. */
 export const SEED_TESTS = [{
   id: 'data-room',
+  version: 2,
   match: /encrypted spaces|data.?rooms?/i,
   checks: [
-    { text: 'Private notebooks live in sealed rooms on a host the room doesn’t run, with no plaintext on the room’s server.' },
-    { text: 'A wallet joins by QR, end to end.' },
-    { text: 'A Geb member and a Keyring member read each other in one MLS group.' },
-    { text: 'The public log verifies with the room’s server off.' },
+    { text: 'Private notebooks live in sealed rooms on a host the room doesn’t run, with no plaintext on the room’s server, and the room’s shared talk lives in an encrypted community room.', was: 'Private notebooks live in sealed rooms on a host the room doesn’t run, with no plaintext on the room’s server.' },
+    { text: 'A real person signs up from Keyring with keys they hold, gets a membership pass and enters the encrypted room.', was: 'A wallet joins by QR, end to end.' },
+    { text: 'A Geb member and a Keyring member read each other in one MLS group.', later: true },
+    { text: 'The public log verifies with the room’s server off.', later: true },
     { text: 'The room’s DID is on a permanent domain.', needs: 'which permanent domain the room’s DID lives on, and buying it if it costs money' },
-    { text: 'Agents keep working a full day with all of it in use.' },
+    { text: 'Agents keep working a full day with all of it in use.', later: true },
   ],
 }]
+/** A done-test in the order the board shows it: the checks for now first, the later ones after, each by its number. */
+export const byBoardOrder = (a, b) => Number(Boolean(a.test.later)) - Number(Boolean(b.test.later)) || a.test.n - b.test.n
+const sameWords = (a, b) => String(a ?? '').trim().toLowerCase().replace(/[.。]$/, '') === String(b ?? '').trim().toLowerCase().replace(/[.。]$/, '')
+
 
 const person = (st, did) => st.participants.get(did)?.principal ?? did
 const sameSide = (st, a, b) => Boolean(a && b) && person(st, a) === person(st, b)
@@ -110,10 +118,10 @@ export class Facilitator {
     if (typeof id !== 'string' || id.length < 6) return null
     return all.find((s) => s.id === id) ?? (all.filter((s) => s.id.startsWith(id)).length === 1 ? all.find((s) => s.id.startsWith(id)) : null)
   }
-  testOf (goal) { return [...this.steps(), ...this.st.stepsDone].filter((s) => s.test?.goal === goal && !s.replaced).sort((a, b) => a.test.n - b.test.n) }
+  testOf (goal) { return [...this.steps(), ...this.st.stepsDone].filter((s) => s.test?.goal === goal && !s.replaced).sort(byBoardOrder) }
   heldGoals () { return this.st.goals().held }
   load (did) { return this.steps().filter((s) => s.owner === did && s.state !== 'result posted').length }
-  label (s) { const t = clip(s.title, 140).replace(/[.。]$/, ''); return s.test ? `(${s.test.n}) ${t}` : `“${t}”` }
+  label (s) { const t = clip(s.title, 200).replace(/[.。]$/, ''); return s.test ? `(${s.test.n}) ${t}${s.test.later ? ' (later)' : ''}` : `“${t}”` }
 
   /** Write the step as it now stands. Every line is the whole step, so the board reads from the log alone. */
   async write (step, changes, change, because, { heard = false } = {}) {
@@ -235,7 +243,7 @@ export class Facilitator {
     const out = []
     for (const [i, c] of checks.entries()) {
       const waitingOn = c.needs ? { who: this.personFor({ goal: goal.hash }), decision: c.needs } : null
-      out.push(await this.write(null, { goal: goal.hash, title: c.text, done: c.text, state: 'open', test: { goal: goal.hash, n: i + 1, ...(by ? { by } : {}), ...(seed ? { seed } : {}) }, ...(c.needs ? { needs: c.needs } : {}), ...(waitingOn ? { waitingOn } : {}) }, 'opened', because, how))
+      out.push(await this.write(null, { goal: goal.hash, title: c.text, done: c.text, state: 'open', test: { goal: goal.hash, n: i + 1, ...(by ? { by } : {}), ...(seed ? { seed: seed.id, seedVersion: seed.version ?? 1 } : {}), ...(c.later ? { later: true } : {}) }, ...(c.needs ? { needs: c.needs } : {}), ...(waitingOn ? { waitingOn } : {}) }, 'opened', because, how))
     }
     return out
   }
@@ -244,11 +252,11 @@ export class Facilitator {
   async seed (now, did) {
     const st = this.st
     for (const seed of SEED_TESTS) {
-      if ([...this.steps(), ...st.stepsDone].some((s) => s.test?.seed === seed.id)) continue
+      if ([...this.steps(), ...st.stepsDone].some((s) => s.test?.seed === seed.id)) { await this.reword(seed); continue }
       const net = (g) => { const t = st.tally(g); return t.for - t.against }
       const goal = this.heldGoals().filter((g) => seed.match.test(`${g.title} ${g.body}`)).sort((a, b) => net(b) - net(a) || b.seq - a.seq)[0]
       if (!goal || this.testOf(goal.hash).length) continue
-      const opened = await this.openTest(goal, seed.checks, { seed: seed.id })
+      const opened = await this.openTest(goal, seed.checks, { seed })
       did.opened.push(...opened.map((x) => x.id))
       const waiting = opened.filter((x) => x.waitingOn)
       await this.speak([
@@ -259,6 +267,35 @@ export class Facilitator {
       ].join('\n'), 'seed', opened, { seed: seed.id })
       did.escalated.push(...waiting.map((x) => x.id))
     }
+  }
+
+  /** A room seeded with an older version of a seed test moves to the current one, once: a check that still has its old
+   * words and is not checked gets the new words, and each check gets the seed's "later" mark. A done-test its own person
+   * has since revised is theirs, and is left as it is. */
+  async reword (seed) {
+    const st = this.st, version = seed.version ?? 1
+    const seeded = [...this.steps(), ...st.stepsDone].filter((s) => s.test?.seed === seed.id && !s.replaced)
+    const old = seeded.filter((s) => (s.test.seedVersion ?? 1) < version)
+    if (!old.length) return []
+    const goal = old[0].test.goal
+    if (this.testOf(goal).some((s) => s.test.revised || s.test.seed !== seed.id)) return [] // revised by its own person since
+    const moved = []
+    for (const s of old) {
+      const c = seed.checks.find((x) => sameWords(s.title, x.text) || (x.was && sameWords(s.title, x.was)))
+      const changes = { test: { ...s.test, seedVersion: version } }
+      delete changes.test.later
+      if (c?.later) changes.test.later = true
+      const reworded = c && c.was && sameWords(s.title, c.was) && s.state !== 'checked'
+      if (reworded) Object.assign(changes, { title: c.text, done: c.text })
+      const step = await this.write(s, changes, reworded ? 'reworded' : 'renumbered', null)
+      if (reworded || Boolean(c?.later) !== Boolean(s.test.later)) moved.push(step)
+    }
+    const g = st.proposals.get(goal), now = this.testOf(goal)
+    if (moved.length && g) {
+      const first = now.filter((s) => !s.test.later), later = now.filter((s) => s.test.later)
+      await this.speak([`“${clip(g.title, 140)}”: its done-test is reworded and reordered, as the room agreed. For now:`, ...first.map((s) => `${this.label(s)}. ${this.where(s)}`), ...(later.length ? ['Later:', ...later.map((s) => `${this.label(s)}. ${this.where(s)}`)] : [])].join('\n'), 'reworded', now, { goal, seed: seed.id })
+    }
+    return moved
   }
 
   async askForTests (now, did) {
@@ -559,7 +596,7 @@ export class Facilitator {
     const kept = new Set(), because = this.log.byHash.get(entries[0])
     for (const [i, text] of checks.entries()) {
       const was = old.find((s) => !kept.has(s.id) && same(s.title, text))
-      if (was) { kept.add(was.id); if (was.test.n !== i + 1) await this.write(was, { test: { ...was.test, n: i + 1 } }, 'renumbered', because); continue }
+      if (was) { kept.add(was.id); if (was.test.n !== i + 1 || was.test.later) { const test = { ...was.test, n: i + 1 }; delete test.later; await this.write(was, { test }, 'renumbered', because) } continue } // its person's order is the order: no check stays marked later
       await this.write(null, { goal, title: text, done: text, state: 'open', test: { goal, n: i + 1, revised: true } }, 'opened', because)
     }
     for (const s of old) if (!kept.has(s.id) && s.state !== 'checked') await this.write(s, { aside: true, replaced: true }, 'replaced', because)

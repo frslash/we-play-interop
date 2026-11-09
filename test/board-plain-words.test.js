@@ -57,7 +57,7 @@ describe('the board hears plain words', () => {
     const r = await room()
     try {
       const g = await r.goal2()
-      const five = () => r.ctx.facilitator.testOf(g)[4]
+      const five = () => r.ctx.facilitator.testOf(g).find((x) => x.test.n === 5)
       assert.equal(five().waitingOn.who, r.people.a.did)
       await r.send(r.people.b, 'note', { text: 'the permanent domain should be inwove.org', kind: 'message' })
       await r.ctx.facilitator.tick()
@@ -76,17 +76,17 @@ describe('the board hears plain words', () => {
       const f = q.ctx.facilitator
       const answer = (await q.send(q.people.a, 'note', { text: 'decided: the permanent domain is inwove.org', kind: 'message' })).body
       f.heard = answer.seq // as if an older board had read past it without knowing
-      const five = f.testOf(g)[4] // and the step changed after the answer (claimed and given back), still waiting
+      const five = f.testOf(g).find((x) => x.test.n === 5) // and the step changed after the answer (claimed and given back), still waiting
       await q.as('c', 'note', { text: 'mine', kind: 'message', step: { of: five.id, say: 'claim' } }, { threadId: five.thread }); await f.tick()
       await q.as('c', 'note', { text: 'giving it back', kind: 'message', step: { of: five.id, say: 'release' } }, { threadId: five.thread }); await f.tick()
-      assert.ok(f.testOf(g)[4].seq > answer.seq && f.testOf(g)[4].waitingOn, 'it changed since, and still waits')
-      const s3 = f.testOf(g)[2]
+      assert.ok(f.testOf(g).find((x) => x.test.n === 5).seq > answer.seq && f.testOf(g).find((x) => x.test.n === 5).waitingOn, 'it changed since, and still waits')
+      const s3 = f.testOf(g).find((x) => x.test.n === 3)
       await q.say('b', 'taking the MLS check', { threadId: s3.thread }); await q.as('b', 'note', { text: 'claim', kind: 'message', step: { of: s3.id, say: 'claim' } }, { threadId: s3.thread })
       await f.tick()
-      assert.ok(f.testOf(g)[4].waitingOn, 'not heard yet')
+      assert.ok(f.testOf(g).find((x) => x.test.n === 5).waitingOn, 'not heard yet')
       q.ctx.facilitator = new Facilitator({ ctx: q.ctx }) // the room restarts
       await q.ctx.facilitator.tick()
-      assert.equal(q.ctx.facilitator.testOf(g)[4].waitingOn, undefined)
+      assert.equal(q.ctx.facilitator.testOf(g).find((x) => x.test.n === 5).waitingOn, undefined)
     } finally { await q.stop() }
   })
 
@@ -123,7 +123,7 @@ describe('the board hears plain words', () => {
       const g = await r.goal2()
       const p1 = await r.agree('b', 'Write up the carrier test', 'c')
       await r.ctx.facilitator.tick(r.at(11))
-      const s1 = r.stepFrom(p1), five = r.ctx.facilitator.testOf(g)[4]
+      const s1 = r.stepFrom(p1), five = r.ctx.facilitator.testOf(g).find((x) => x.test.n === 5)
       const decided = (await r.say('a', 'Settled: we use the one I bought tonight.')).body.hash
       const passOn = (await r.say('b', 'This one is really East Agent’s area, they wrote the carrier.')).body.hash
       const stranger = (await r.say('c', 'Give check 5 to me.')).body.hash
@@ -131,9 +131,9 @@ describe('the board hears plain words', () => {
       r.ctx.weaver.llm = { configured: true, model: 'test/model', chat: async () => ({ model: 'test/model', latencyMs: 1, usage: {}, finishReason: 'stop', jsonMode: true, content: JSON.stringify({ heard: [], threads: [], agreements: [], conflicts: [], next: [], moves }) }) }
       const round = (await r.ctx.weaver.round()).document.payload
       assert.equal(round.facilitate.moved.length, 2)
-      assert.equal(r.ctx.facilitator.testOf(g)[4].waitingOn, undefined, 'answered by its person')
+      assert.equal(r.ctx.facilitator.testOf(g).find((x) => x.test.n === 5).waitingOn, undefined, 'answered by its person')
       assert.equal(r.stepFrom(p1).offeredTo, r.agents.c.did, 'declined, and offered where it said')
-      assert.equal(r.ctx.facilitator.testOf(g)[4].offeredTo, undefined, 'someone it is not with cannot hand it to themselves')
+      assert.equal(r.ctx.facilitator.testOf(g).find((x) => x.test.n === 5).offeredTo, undefined, 'someone it is not with cannot hand it to themselves')
     } finally { await r.stop() }
   })
 
