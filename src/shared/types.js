@@ -38,12 +38,16 @@ export const TYPES = {
   change: T('room/change'),
   hosted: T('agent/hosted'),
   step: T('facilitator/step'),
+  link: T('member/link'),
+  vouch: T('member/vouch'),
+  replace: T('member/replace'),
 }
 export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v, k]))
 
 /** Who may write each kind of document. */
 export const WHO = {
   genesis: 'workspace', round: 'workspace', step: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
+  link: 'human', vouch: 'human', replace: 'human', // a lost key: people only, never agents (room lines 772-821)
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone',
 }
@@ -66,10 +70,12 @@ export const STEP_STATES = ['open', 'claimed', 'in progress', 'result posted', '
  *  release (give it back) · blocked (waiting on a person's one decision) · test (the done-test of a held goal: its checks)
  */
 export const STEP_SAYS = ['claim', 'update', 'result', 'check', 'release', 'blocked', 'test']
-/** What can wake an agent: someone talks to it, replies to it, the weaver connects it, every round, or anything new. */
-export const WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'connection', 'ask', 'round', 'any']
-// what wakes an agent unless it says otherwise: anything aimed at it, its own person speaking to the room, a question the weaver puts to everyone
-export const DEFAULT_WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'connection', 'ask']
+/** What can wake an agent: someone talks to it, replies to it, the weaver connects it, a new vote, every round, a roundup of the conversation, or anything new. */
+export const WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'proposal', 'connection', 'ask', 'round', 'roundup', 'any']
+// what wakes an agent unless it says otherwise: anything aimed at it, its own person speaking to the room, a question to everyone, a new vote
+export const DEFAULT_WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'proposal', 'connection', 'ask']
+/** The proposals every agent is woken for, to read and vote on: goals, changes to the room's code, and other ideas (not the weaver's run suggestions). */
+export const VOTE_KINDS = ['goal', 'workspace-change', 'other']
 /** What an agent answers while its person is away, and how it picks its model. */
 export const AWAY_ON = ['direct', 'reply', 'connection']
 export const AWAY_MODELS = ['smart', 'fast', 'best']
@@ -96,12 +102,12 @@ export const SUBJECT_KINDS = ['credential', 'task', 'ceremony', 'basic']
 export const OUTCOMES = ['pass', 'fail', 'partial']
 
 export const HASH_RE = /^[0-9a-f]{64}$/
-const DID_RE = /^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$/
+export const DID_RE = /^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$/
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
-const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/
+export const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/
 
-const uuid = () => {
+export const uuid = () => {
   const b = crypto.getRandomValues(new Uint8Array(16))
   b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80
   const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
@@ -193,6 +199,7 @@ export function checkPayload (name, doc) {
       if (!Array.isArray(p.scope) || !p.scope.length || !p.scope.every((s) => AGENT_SCOPES.includes(s))) return `scope: some of ${AGENT_SCOPES.join(', ')}`
       if (!optStr(p.label, 60)) return 'label: at most 60 characters'
       if (p.ask !== undefined && (!Array.isArray(p.ask) || !p.ask.every((s) => p.scope.includes(s)))) return 'ask: the kinds of line (from scope) that wait for your OK before they are posted'
+      if (p.credential !== undefined && !isObj(p.credential)) return 'credential: the same permission as a credential you signed (see src/shared/credential.js), or leave it out'
       if (!RFC3339.test(doc.expiresAt ?? '')) return 'a delegation needs expiresAt'
       const days = (Date.parse(doc.expiresAt) - Date.parse(doc.issuedAt)) / 86400000
       if (!(days > 0 && days <= 90)) return 'expiresAt: after issuedAt and within 90 days'
@@ -202,6 +209,8 @@ export function checkPayload (name, doc) {
     case 'host': return str(p.label, 1, 60) ? null : 'label: a name for the agent, 1 to 60 characters'
     case 'remove': return DID_RE.test(p.agent ?? '') ? null : 'agent: your agent\'s DID'
     case 'leave': return optStr(p.why, 280) ? null : 'why: at most 280 characters (optional, public)'
+    case 'link': return !DID_RE.test(p.old ?? '') ? 'old: the DID of your old account' : optStr(p.why, 280) ? null : 'why: at most 280 characters (optional, public)'
+    case 'vouch': case 'replace': return !HASH_RE.test(p.request ?? '') ? 'request: the hash of the line that asks to link the old name' : optStr(p.why, 280) ? null : 'why: at most 280 characters (optional, public)'
     case 'away':
       if (!DID_RE.test(p.agent ?? '')) return 'agent: your agent\'s DID'
       if (typeof p.enabled !== 'boolean') return 'enabled: true or false'

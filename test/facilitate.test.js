@@ -19,7 +19,7 @@ const BOARD = { generated: new Date().toISOString().slice(0, 10), projects: [{ s
 const MIN = 60_000
 
 /** A room with three people, each with one agent, and helpers to speak in it. */
-async function room () {
+async function room ({ running = true } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'wpi-facilitate-'))
   const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, voteMinutes: 10, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }
   const ctx = await createApp(config, { resolver: createResolver(), hostWelcomeMs: null })
@@ -50,6 +50,7 @@ async function room () {
     await closeVotes(ctx, at(11), { max: 10 })
     return pr
   }
+  if (running) await ctx.facilitator.tick() // the room is running: its facilitator has started before anything below happens
   const stop = async () => { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) }
   return { ctx, send, as, people, agents, st, steps, stepFrom, said, tell, at, agree, stop }
 }
@@ -132,6 +133,19 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       await closeVotes(r.ctx, r.at(11), { max: 10 })
       await r.ctx.facilitator.tick(r.at(13))
       assert.equal(r.stepFrom(pr3).owner, r.agents.b.did)
+    } finally { await r.stop() }
+  })
+
+  test('agreements from before the board started are not opened all at once; the ones after it are', async () => {
+    const r = await room({ running: false })
+    try {
+      const before = await r.agree('a', 'Something the room agreed yesterday')
+      await r.ctx.facilitator.tick(r.at(11))
+      assert.ok(!r.stepFrom(before), 'no backlog')
+      assert.equal(r.said('open').length, 0)
+      const after = await r.agree('b', 'Something the room agrees now')
+      await r.ctx.facilitator.tick(r.at(12))
+      assert.equal(r.stepFrom(after).owner, r.agents.b.did)
     } finally { await r.stop() }
   })
 

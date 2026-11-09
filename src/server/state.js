@@ -1,13 +1,23 @@
 // The workspace's current state, folded from the log entry by entry.
 // Nothing here is stored on its own: restart, replay the log, same state.
+import { checkPermissionCredential, claimsOf, grantMismatch } from '../shared/credential.js'
 import { DEFAULT_MODE, NAME_OF } from '../shared/types.js'
+
+// What a grant's credential says: its signature was verified when the grant was appended (log.js).
+// null for a grant without one, and for one that is not well formed (never a crash on replay).
+function credentialOf (doc, room) {
+  const c = doc.payload.credential
+  if (!c || checkPermissionCredential(c)) return null
+  const claims = claimsOf(c)
+  return grantMismatch(claims, doc, room) ? null : claims
+}
 
 export class State {
   constructor () {
     this.workspace = null // the workspace DID (author of the genesis)
     this.genesis = null
     this.participants = new Map() // did -> { did, kind, name, projects, about, since, principal? }
-    this.delegations = new Map() // entry hash -> { hash, issuer, delegate, scope, label, expiresAt, revoked, seq }
+    this.delegations = new Map() // entry hash -> { hash, issuer, delegate, scope, label, expiresAt, revoked, endedBy, seq, credential }
     this.proposals = new Map() // entry hash -> proposal (see addProposal)
     this.mode = { mode: DEFAULT_MODE, by: null, seq: null }
     this.rounds = [] // the last 20 rounds
@@ -17,6 +27,7 @@ export class State {
     this.score = null // latest score snapshot payload
     this.scoreHistory = [] // compact score history from every snapshot
     this.mapProjects = new Map() // slug -> project the workspace added or extended
+    this.links = new Map() // hash -> a request to link an old name to a new key: { hash, from, old, why, at, vouches: Map(person -> { at, hash }), replacedAt }
     this.mapWays = new Map() // id -> a way of doing interop, defined in the workspace
     this.mapRuns = [] // runs recorded in the workspace
     this.hosted = new Set() // agent DIDs whose key the workspace holds (shown to everyone)
@@ -29,6 +40,7 @@ export class State {
     this.stepDays = new Map() // 'YYYY-MM-DD' -> { opened, claimed, resulted, checked, toResultMs: [agreement to first result] } (the last 60 days)
     this.stepOf = new Map() // a proposal, closer look or line a step came from -> the step (the latest 5000)
     this.stepsHeard = -1 // the last line the board acted on (the facilitator listens on from there after a restart)
+    this.stepsSince = null // when the board's first line was written: agreements from before it are not turned into steps
     this.pressed = new Set() // lines the facilitator asked to be made exact (the latest 200)
     this.testAsked = new Map() // goal -> when the facilitator last asked for its done-test
     this.lastReport = null // { at, seq } of the facilitator's latest report
@@ -66,7 +78,7 @@ export class State {
         break
       }
       case 'delegate': {
-        this.delegations.set(e.hash, { hash: e.hash, issuer: e.author, delegate: p.delegate, scope: p.scope, ask: p.ask ?? [], label: p.label ?? '', expiresAt: doc.expiresAt, revoked: false, seq: e.seq })
+        this.delegations.set(e.hash, { hash: e.hash, issuer: e.author, delegate: p.delegate, scope: p.scope, ask: p.ask ?? [], label: p.label ?? '', expiresAt: doc.expiresAt, revoked: false, endedBy: null, seq: e.seq, credential: credentialOf(doc, this.workspace) })
         const prev = this.participants.get(p.delegate)
         this.participants.set(p.delegate, { ...prev, did: p.delegate, kind: 'agent', name: p.label || `agent of ${this.nameOf(e.author)}`, principal: e.author, hosted: this.hosted.has(p.delegate), since: prev?.since ?? e.timestamp })
         break
@@ -84,18 +96,33 @@ export class State {
         const who = this.participants.get(e.author)
         if (who) { who.left = e.timestamp }
         for (const p of this.participants.values()) if (p.kind === 'agent' && p.principal === e.author) { p.removed = true; p.removedAt = e.timestamp }
-        for (const d of this.delegations.values()) if (d.issuer === e.author) d.revoked = true
+        for (const d of this.delegations.values()) if (d.issuer === e.author && !d.revoked) { d.revoked = true; d.endedBy = e.hash }
+        break
+      }
+      case 'link': this.links.set(e.hash, { hash: e.hash, from: e.author, old: p.old, why: p.why ?? '', at: e.timestamp, vouches: new Map(), replacedAt: null }); break
+      case 'vouch': { const l = this.links.get(p.request); if (l && !l.vouches.has(e.author)) l.vouches.set(e.author, { at: e.timestamp, hash: e.hash, why: p.why ?? '' }); break }
+      case 'replace': {
+        // a lost key, replaced (room line 781): the old account is retired and linked to the new one, its
+        // permissions for agents end in the same step, and its projects and card move to the new account
+        const l = this.links.get(p.request), was = l && this.participants.get(l.old), now = l && this.participants.get(l.from)
+        if (!l || !was || !now) break
+        l.replacedAt = e.timestamp
+        was.replacedBy = l.from; was.replacedAt = e.timestamp
+        now.replaces = [...new Set([...(now.replaces ?? []), l.old])]
+        now.projects = [...new Set([...(now.projects ?? []), ...(was.projects ?? [])])].slice(0, 5); was.projects = []
+        now.card ??= was.card
+        for (const d of this.delegations.values()) if (d.issuer === l.old) d.revoked = true
         break
       }
       case 'remove': {
         // the record stays (it is permanent); the agent is stopped and no longer listed
         const a = this.participants.get(p.agent)
         if (a) { a.removed = true; a.removedAt = e.timestamp }
-        for (const d of this.delegations.values()) if (d.delegate === p.agent) d.revoked = true
+        for (const d of this.delegations.values()) if (d.delegate === p.agent && !d.revoked) { d.revoked = true; d.endedBy = e.hash }
         break
       }
       case 'hosted': { this.hosted.add(p.agent); const a = this.participants.get(p.agent); if (a) a.hosted = true; break }
-      case 'revoke': { const d = this.delegations.get(p.delegation); if (d && d.issuer === e.author) d.revoked = true; break }
+      case 'revoke': { const d = this.delegations.get(p.delegation); if (d && d.issuer === e.author && !d.revoked) { d.revoked = true; d.endedBy = e.hash }; break }
       case 'note':
         if (e.author !== this.workspace) break
         if (p.dive) this.dive(e)
@@ -174,6 +201,7 @@ export class State {
     const s = { ...p, id, hash: e.hash, seq: e.seq, at: e.timestamp, thread: prev?.thread ?? e.document.id, openedAt: prev?.openedAt ?? e.timestamp, claimedAt: prev?.claimedAt ?? null, resultAt: prev?.resultAt ?? null, checkedAt: prev?.checkedAt ?? null }
     delete s.of
     if (!prev) t.opened++
+    this.stepsSince ??= e.timestamp
     if (!s.claimedAt && s.owner && ['claimed', 'in progress', 'result posted', 'checked'].includes(s.state)) { s.claimedAt = e.timestamp; t.claimed++ }
     if (!s.resultAt && ['result posted', 'checked'].includes(s.state)) { s.resultAt = e.timestamp; t.resulted++; if (s.agreedAt) t.toResultMs.push(Date.parse(e.timestamp) - Date.parse(s.agreedAt)) }
     if (s.state === 'checked' && prev?.state !== 'checked') { s.checkedAt = e.timestamp; t.checked++ }

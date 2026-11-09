@@ -4,8 +4,10 @@
 // of the entry before it, document is the signed Trust Task document exactly as
 // received, and witness is the workspace's eddsa-jcs-2022 signature over the
 // same fields (the workspace saying "I put this here, at this place").
-// verifyChain re-checks all of it; anyone can run it on the public log.
+// verifyChain re-checks all of it; anyone can run it on the public log,
+// including each permission signed as a credential and every write made under one.
 import { canonicalize, fromBase58btc, sha256, toHex } from './crypto.js'
+import { credentialRefuses, grantMismatch, verifyPermissionCredential } from './credential.js'
 import { multikeyToEd25519, resolveDidKey, SIGNING_RELATIONSHIPS } from './did.js'
 import { verifySignature } from './proof.js'
 import { NAME_OF, TYPES } from './types.js'
@@ -49,7 +51,7 @@ export const didKeyOnly = async (did, vmRef, purpose) => did.startsWith('did:key
 export async function verifyChain (entries, { keyFor = didKeyOnly } = {}) {
   const problems = []
   let checked = 0, skipped = 0, prev = null, workspace = null
-  const delegations = new Map() // hash -> { issuer, delegate, scope, expiresAt, revokedAt }
+  const delegations = new Map() // hash -> { issuer, delegate, scope, expiresAt, revokedAt, credential }
   const bad = (seq, problem) => problems.push({ seq, problem })
   for (const [i, e] of entries.entries()) {
     const core = entryCore(e)
@@ -82,9 +84,21 @@ export async function verifyChain (entries, { keyFor = didKeyOnly } = {}) {
         if (!d.scope.includes(name)) bad(e.seq, `delegation does not cover ${name}`)
         if (Date.parse(e.timestamp) >= Date.parse(d.expiresAt)) bad(e.seq, 'delegation had expired')
         if (d.revokedAt && d.revokedAt <= e.seq) bad(e.seq, 'delegation had been revoked')
+        // the grant is earlier in the log than the write, so only the end of the window is checked against the time
+        const no = d.credential && credentialRefuses(d.credential, { agent: doc.issuer, person: doc.onBehalfOf, room: workspace, kind: name === 'approve' ? 'vote' : name, at: Date.parse(e.timestamp), slackMs: Infinity })
+        if (no) bad(e.seq, `credential: ${no.message}`)
       }
     }
-    if (name === 'delegate') delegations.set(e.hash, { issuer: doc.issuer, delegate: doc.payload.delegate, scope: doc.payload.scope, expiresAt: doc.expiresAt })
+    if (name === 'delegate') {
+      let credential = null
+      if (doc.payload?.credential !== undefined) {
+        const r = await verifyPermissionCredential(doc.payload.credential, { keyFor })
+        const why = r.ok ? grantMismatch(r.claims, doc, workspace) : r.reason
+        if (why) bad(e.seq, `the permission's credential: ${why}`)
+        else { credential = r.claims; if (!r.checked) skipped++ }
+      }
+      delegations.set(e.hash, { issuer: doc.issuer, delegate: doc.payload.delegate, scope: doc.payload.scope, expiresAt: doc.expiresAt, credential })
+    }
     if (name === 'revoke') { const d = delegations.get(doc.payload.delegation); if (d && d.issuer === doc.issuer && !d.revokedAt) d.revokedAt = e.seq }
     checked++
     prev = e

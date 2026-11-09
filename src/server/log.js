@@ -1,9 +1,13 @@
 // The append-only, hash-chained log, and the rules for what may be appended.
 // Every write goes through accept(): shape, freshness, replay, signature,
 // who-may-say-what, delegation. Nothing is appended without a verified signature.
+// A delegation that carries its permission as a credential the person signed
+// (src/shared/credential.js) has it verified once, here, and every write the
+// agent makes is then checked against what the credential says.
 import { EventEmitter } from 'node:events'
 import { canonicalize } from '../shared/crypto.js'
 import { hashCore, verifyChain } from '../shared/chain.js'
+import { credentialRefuses, grantMismatch, verifyPermissionCredential } from '../shared/credential.js'
 import { sign, verifySignature } from '../shared/proof.js'
 import { AGENT_SCOPES, buildDocument, checkPayload, checkShape, NAME_OF, TYPES, WHO } from '../shared/types.js'
 import { insertEntry, loadEntries } from './db.js'
@@ -121,25 +125,40 @@ export class Log extends EventEmitter {
       if (!delegation) throw new TaskError('permissionDenied', 'the delegation named is not in the log', { status: 403 })
       if (delegation.issuer !== doc.onBehalfOf || delegation.delegate !== doc.issuer) throw new TaskError('permissionDenied', 'that delegation is not from this human to this agent', { status: 403 })
       if (delegation.revoked) throw new TaskError('permissionDenied', 'that delegation was revoked', { status: 403 })
+      if (delegation.credential) { // the permission as its person signed it decides, not only the room's own table
+        const no = credentialRefuses(delegation.credential, { agent: doc.issuer, person: doc.onBehalfOf, room: st.workspace, kind: sandboxApprove ? 'vote' : name, at: now, slackMs: skew })
+        if (no) throw new TaskError(no.code, no.message, { status: no.code === 'expired' ? 400 : 403 })
+      }
       if (Date.parse(delegation.expiresAt) <= now) throw new TaskError('expired', 'that delegation has expired; ask your human for a new one')
       if (!delegation.scope.includes(sandboxApprove ? 'vote' : name)) throw new TaskError('permissionDenied', `the delegation does not cover ${name}`, { status: 403 })
       if (sandboxApprove && st.proposals.get(doc.payload.proposal)?.kind !== 'workspace-change') throw new TaskError('permissionDenied', 'agents approve only changes to the room\'s own code (workspace-change); other outside actions stay with people', { status: 403 })
       const target = sandboxApprove ? st.proposals.get(doc.payload.proposal) : null, handedBy = target?.byWeaver && target.sources?.length ? this.byHash.get(target.sources[0])?.onBehalfOf : null
       if (sandboxApprove && (target?.principal === doc.onBehalfOf || handedBy === doc.onBehalfOf)) throw new TaskError('permissionDenied', 'an agent never approves its own person\'s change: another person\'s agent has to', { status: 403 })
-      if (delegation.ask?.includes(name) && !approved) throw new TaskError('permissionDenied', `your person asked to see each ${name} first, so it was not posted: tell them what you would like to say (or bring them in through the room's link, where it can wait for their OK)`, { status: 403 })
+      if ((delegation.ask?.includes(name) || delegation.credential?.askFirst.includes(name)) && !approved) throw new TaskError('permissionDenied', `your person asked to see each ${name} first, so it was not posted: tell them what you would like to say (or bring them in through the room's link, where it can wait for their OK)`, { status: 403 })
       if (!st.isHuman(doc.onBehalfOf)) throw new TaskError('permissionDenied', 'onBehalfOf has not joined', { status: 403 })
     } else {
       if (st.isAgent(doc.issuer)) throw new TaskError('permissionDenied', 'this DID belongs to an agent: sign with onBehalfOf and delegation', { status: 403 })
       if (name !== 'join' && !st.isHuman(doc.issuer)) throw new TaskError('permissionDenied', 'join first (member/join)', { status: 403 })
       if (name !== 'join' && st.participants.get(doc.issuer)?.left) throw new TaskError('permissionDenied', 'you left this room; join again to take part', { status: 403 })
+      if (st.participants.get(doc.issuer)?.replacedBy) throw new TaskError('permissionDenied', `this account was replaced by ${st.nameOf(st.participants.get(doc.issuer).replacedBy)}'s new key; use that one`, { status: 403 })
     }
     if (name === 'card' && (doc.payload.model !== undefined || doc.payload.runsOn !== undefined) && !(doc.onBehalfOf && st.isAgent(doc.issuer))) throw new TaskError('permissionDenied', 'model and runsOn are an agent\'s own word about itself: only the agent sets them', { status: 403 })
+    if (name === 'delegate' && doc.payload.credential !== undefined) await this.#checkCredential(doc)
     this.#checkContext(name, doc, principal)
     for (const guard of this.guards ?? []) { const why = guard(doc, principal, name); if (why) throw new TaskError('malformedRequest', why, { status: 422 }) } // nothing secret enters the permanent record
     this.#limit(principal, ip)
     this.verified = null
     const entry = await this.#append(doc, { author: doc.issuer, onBehalfOf: principal, delegation: delegation?.hash })
     return { entry, duplicate: false }
+  }
+
+  /** A grant carrying its permission as a credential: the person's signature on it, and that it says what the grant says. */
+  async #checkCredential (doc) {
+    const r = await verifyPermissionCredential(doc.payload.credential, { keyFor: (d, vm, pp) => this.resolver.keyFor(d, vm, pp) })
+    if (!r.ok) throw new TaskError(r.problem === 'shape' ? 'malformedRequest' : 'proofInvalid', `the permission's credential: ${r.reason}`, { retryable: /fetch|timeout/i.test(r.reason) })
+    if (!r.checked) throw new TaskError('proofInvalid', 'the permission\'s credential: the room could not check its signature')
+    const why = grantMismatch(r.claims, doc, this.state.workspace)
+    if (why) throw new TaskError(r.claims.issuer !== doc.issuer ? 'permissionDenied' : 'malformedRequest', `the permission's credential does not match the grant: ${why}`, { status: r.claims.issuer !== doc.issuer ? 403 : 400 })
   }
 
   #checkContext (name, doc, principal) {
@@ -149,13 +168,35 @@ export class Log extends EventEmitter {
       case 'delegate': {
         if (p.delegate === doc.issuer || p.delegate === st.workspace || st.isHuman(p.delegate)) throw new TaskError('permissionDenied', 'an agent needs a DID of its own, not a person\'s', { status: 403 })
         const other = st.participants.get(p.delegate)
-        if (other?.kind === 'agent' && other.principal !== doc.issuer) throw new TaskError('permissionDenied', 'that agent already acts for someone else', { status: 403 })
+        if (other?.kind === 'agent' && other.principal !== doc.issuer && st.participants.get(other.principal)?.replacedBy !== doc.issuer) throw new TaskError('permissionDenied', 'that agent already acts for someone else', { status: 403 }) // a replaced key's agents can be signed for again by its new key
         break
       }
       case 'away':
         if (st.participants.get(p.agent)?.principal !== doc.issuer) throw new TaskError('permissionDenied', 'you can set this only for your own agent', { status: 403 })
         if (!st.hosted.has(p.agent)) throw new TaskError('permissionDenied', 'only agents brought in with a link can answer while you are away (the room needs their key)', { status: 403 })
         break
+      case 'link': {
+        const old = st.participants.get(p.old)
+        if (p.old === doc.issuer || old?.kind !== 'human') throw new TaskError('malformedRequest', 'old: the DID of the account you had before (a person in this room)')
+        if (old.replacedBy) throw new TaskError('permissionDenied', `that account was already replaced by ${st.nameOf(old.replacedBy)}`, { status: 403 })
+        break
+      }
+      case 'vouch': {
+        const l = st.links.get(p.request)
+        if (!l) throw new TaskError('malformedRequest', 'no request to link an old name with that hash')
+        if (l.replacedAt) throw new TaskError('permissionDenied', 'that old name is already linked', { status: 403 })
+        if (doc.issuer === l.from || doc.issuer === l.old) throw new TaskError('permissionDenied', 'someone else has to vouch for you: people who know you', { status: 403 })
+        break
+      }
+      case 'replace': {
+        const l = st.links.get(p.request)
+        if (!this.config.hosts?.includes(doc.issuer)) throw new TaskError('permissionDenied', this.config.hosts?.length ? 'only the room\'s host marks an account replaced' : 'this room has no host named yet (ROOM_HOSTS), so no one can mark an account replaced', { status: 403 })
+        if (!l) throw new TaskError('malformedRequest', 'no request to link an old name with that hash')
+        if (l.replacedAt) throw new TaskError('permissionDenied', 'that old name is already linked', { status: 403 })
+        if (st.participants.get(l.old)?.replacedBy) throw new TaskError('permissionDenied', 'that account was already replaced', { status: 403 })
+        if (![...l.vouches.keys()].some((d) => d !== l.from && d !== l.old && st.isHuman(d))) throw new TaskError('permissionDenied', 'no one has vouched for this yet: people who know them vouch first', { status: 403 })
+        break
+      }
       case 'remove':
         if (st.participants.get(p.agent)?.kind !== 'agent' || st.participants.get(p.agent).principal !== doc.issuer) throw new TaskError('permissionDenied', 'you can remove only your own agents', { status: 403 })
         break

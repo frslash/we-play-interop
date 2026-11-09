@@ -28,7 +28,9 @@ import { Host } from './host.js'
 import { Media } from './media.js'
 import { Changes } from './changes.js'
 import { Workshop } from './workshop.js'
+import { Sources } from './sources.js'
 import { Cursors } from './cursors.js'
+import { AGREED } from './rules.js'
 import { ActivityPub } from './activitypub.js'
 import { CODE_RE, Visits, interaction } from './visits.js'
 import { secretIn } from '../shared/guard.js'
@@ -46,6 +48,7 @@ function waitLine (a) {
   const seq = a.head?.seq ?? -1
   if (a.woke) return `woke ${seq} ${(a.reasons ?? []).join(',') || 'any'}\n`
   if (a.replaced) return `replaced ${seq}\n`
+  if (a.restarting) return `busy ${seq} restarting\n`
   if (/not an agent/.test(a.reason ?? '')) return `stop ${a.reason}\n`
   if (a.reason) return `busy ${seq}\n`
   return `quiet ${seq}\n`
@@ -71,7 +74,7 @@ function workspaceIdentity (config) {
   return id
 }
 
-export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, apFetch, awayGatherMs, hostWelcomeMs = 3000 } = {}) {
+export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, apFetch, awayGatherMs, hostWelcomeMs = 3000, sources } = {}) {
   const identity = workspaceIdentity(config)
   const db = await openDb(config)
   const log = new Log({ db, identity, resolver, config })
@@ -98,6 +101,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.host = new Host({ ctx, welcomeAfterMs: hostWelcomeMs })
   ctx.media = new Media({ dataDir: config.dataDir })
   ctx.cursors = new Cursors({ dataDir: config.dataDir })
+  ctx.sources = new Sources({ dataDir: config.dataDir, ...sources }) // `sources` lets tests point it at a fake server; the app passes none
   ctx.visits = new Visits() // join links for one visit each, in memory
   ctx.types = TYPES
   ctx.changes = new Changes({ ctx, dataDir: config.dataDir })
@@ -159,6 +163,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     const url = new URL(req.url, 'http://local')
     const path = url.pathname, q = Object.fromEntries(url.searchParams)
     if (req.method === 'OPTIONS') return send(res, 204, '', { 'access-control-allow-methods': 'GET, POST', 'access-control-allow-headers': 'content-type, accept, mcp-protocol-version' })
+    // the room is updating itself: say so the standard way (503 with Retry-After), so callers try again soon instead of failing
+    if (ctx.waits.stopping) { const a = ctx.waits.restarting(); return send(res, 503, path === '/api/wait' && q.as === 'text' ? waitLine(a) : { error: a.reason, retryAfter: a.retryAfter }, { 'retry-after': String(a.retryAfter) }) }
 
     if (path.startsWith('/mcp/a/')) {
       const [token, ...rest] = path.slice(7).split('/'), sub = rest.join('/')
@@ -188,10 +194,12 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (path === '/api/messages') return send(res, 200, views.messages(ctx, q))
     if (path === '/api/wait') { // held open until something is for this agent, or the timeout
       const a = await ctx.waits.wait(q)
-      return q.as === 'text' ? send(res, 200, waitLine(a)) : send(res, 200, a) // as=text: one line a shell hook can read without a JSON parser
+      const status = a.restarting ? 503 : 200, headers = a.restarting ? { 'retry-after': String(a.retryAfter) } : {} // a wait cut off by a restart
+      return q.as === 'text' ? send(res, status, waitLine(a), headers) : send(res, status, a, headers) // as=text: one line a shell hook can read without a JSON parser
     }
     if (path.startsWith('/api/log/')) { const e = log.byHash.get(path.slice(9)); return e ? send(res, 200, e) : send(res, 404, { error: 'no entry with that hash' }) }
     if (path === '/api/verify') return send(res, 200, await log.verify())
+    if (path.startsWith('/api/credentials/')) { const c = views.credential(ctx, decodeURIComponent(path.slice(17))); return typeof c === 'string' ? send(res, 404, { error: c }) : send(res, 200, c) }
     if (path.startsWith('/api/participants/')) { const p = views.participant(ctx, decodeURIComponent(path.slice(18))); return p ? send(res, 200, p) : send(res, 404, { error: 'not in the workspace yet' }) }
     if (path === '/api/qr.svg') {
       const t = String(q.text ?? '')
@@ -250,6 +258,13 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       } catch (err) { return refuse(res, err, doc) }
     }
     if (path.startsWith('/api/files/')) { const r = await views.fileText(ctx, path.slice(11), q); return r ? send(res, 200, r) : send(res, 404, { error: 'no file in this room has that sha256, or it has no text (a photo). The path is /api/files/<the sha256 a message lists under files>' }) }
+    if (path === '/api/sources') return send(res, 200, ctx.sources.view())
+    if (path.startsWith('/api/sources/')) { // the cached copy, exactly as the source sent it
+      const body = ctx.sources.body(decodeURIComponent(path.slice(13)))
+      if (!body) return send(res, 404, { error: 'no such source, or its first copy has not been fetched yet' })
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': '*', 'x-content-type-options': 'nosniff' }); return res.end(body)
+    }
+    if (path === '/rules.json') return send(res, 200, AGREED) // the room's rules as plain data, for anyone to read and check
     if (path === '/api/workshop') return send(res, 200, ctx.workshop.view()) // every change to the room's own code, in public
     if (path.startsWith('/patches/') && req.method === 'GET') { // a change an agent handed the room, to read before approving it
       const d = ctx.changes.get(path.slice(9))
@@ -382,9 +397,10 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     await ctx.host.start()
     ctx.changes.start()
     ctx.workshop.start()
+    ctx.sources.start()
     timers.push(setInterval(() => closeVotes(ctx).catch((e) => console.error('closing votes:', e)), 30_000))
   }
-  ctx.stop = async () => { timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); ctx.waits.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { ctx.waits.stop(); timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.sources.stop(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }

@@ -1,6 +1,9 @@
 // Read views shared by the HTTP API and the MCP server: everything is public.
 import { proofConfig, signingInputHex } from '../shared/proof.js'
-import { buildDocument, checkPayload, NAME_OF, TYPES } from '../shared/types.js'
+import { buildDocument, checkPayload, NAME_OF, TYPES, VOTE_KINDS } from '../shared/types.js'
+import { heard } from '../shared/presence.js'
+import { differences, inEffect } from '../shared/rules.js'
+import { AGREED } from './rules.js'
 import { gist } from './weaver.js'
 
 export function info (ctx) {
@@ -19,7 +22,7 @@ export function info (ctx) {
     mode: st.mode,
     head: log.head(),
     weaver: { model: llm.configured ? (llm.model ?? 'chosen at first round') : null, configured: llm.configured, endpoint: llm.endpoint ?? config.llm.baseUrl, nextRoundAt: new Date(weaver.nextRoundAt()).toISOString(), rounds: st.roundCount, lastError: weaver.lastError, lastSilent: weaver.lastSilent ?? null, speaksAfterQuietMinutes: config.weaverQuietMinutes, atMostEveryMinutes: config.weaverIntervalMinutes },
-    rules: { voteMinutes: config.voteMinutes, agentApprovers: config.agentApprovals ? config.agentApprovers : null, vetoWindowMinutes: config.vetoWindowMinutes, approvalsRequired: config.approvalsRequired, freshDays: config.freshDays, actsOutside: config.githubToken ? 'opens pull requests and issues itself' : 'prepares links for a person to open (no GitHub token set)' },
+    rules: { voteMinutes: config.voteMinutes, agentApprovers: config.agentApprovals ? config.agentApprovers : null, vetoWindowMinutes: config.vetoWindowMinutes, approvalsRequired: config.approvalsRequired, freshDays: config.freshDays, actsOutside: config.githubToken ? 'opens pull requests and issues itself' : 'prepares links for a person to open (no GitHub token set)' , data: { agreed: '/rules.json', inEffect: inEffect(AGREED, config), differences: differences(AGREED, inEffect(AGREED, config)) } },
     types: TYPES,
   }
 }
@@ -35,7 +38,7 @@ function listeningOf (ctx, p) {
 
 export function state (ctx) {
   const { log, board, executor } = ctx, st = log.state
-  const people = [...st.participants.values()].filter((p) => p.kind !== 'workspace' && !p.left).map((p) => ({ ...p, delegation: p.kind === 'agent' ? st.activeDelegation(p.did)?.hash ?? null : undefined, ...(p.kind === 'agent' && ctx.waker?.status.get(p.did) ? { wakeLast: ctx.waker.status.get(p.did) } : {}), ...(p.kind === 'agent' && st.away.get(p.did) ? { away: st.away.get(p.did), awayLast: ctx.away?.status.get(p.did) ?? null } : {}), ...(p.kind === 'agent' ? { listening: listeningOf(ctx, p), connected: ctx.connected?.get(p.did) ?? null, ask: st.activeDelegation(p.did)?.ask ?? [], scope: st.activeDelegation(p.did)?.scope ?? [], until: st.activeDelegation(p.did)?.expiresAt ?? null, waiting: ctx.drafts?.list(p.did).length ?? 0 } : {}) }))
+  const people = [...st.participants.values()].filter((p) => p.kind !== 'workspace' && !p.left && !p.replacedBy).map((p) => ({ ...p, delegation: p.kind === 'agent' ? st.activeDelegation(p.did)?.hash ?? null : undefined, ...(p.kind === 'agent' && ctx.waker?.status.get(p.did) ? { wakeLast: ctx.waker.status.get(p.did) } : {}), ...(p.kind === 'agent' && st.away.get(p.did) ? { away: st.away.get(p.did), awayLast: ctx.away?.status.get(p.did) ?? null } : {}), ...(p.kind === 'agent' ? { listening: listeningOf(ctx, p), connected: ctx.connected?.get(p.did) ?? null, ask: st.activeDelegation(p.did)?.ask ?? [], scope: st.activeDelegation(p.did)?.scope ?? [], until: st.activeDelegation(p.did)?.expiresAt ?? null, credential: !!st.activeDelegation(p.did)?.credential, waiting: ctx.drafts?.list(p.did).length ?? 0 } : {}) }))
   const checkDids = ctx.check?.dids() ?? []
   const theirs = people.filter((p) => p.kind === 'agent' && p.hosted && !checkDids.includes(p.did))
   const comingIn = { agents: theirs.length, saidHello: theirs.filter((p) => p.firstSaid).length, answeringNow: theirs.filter((p) => p.listening).length }
@@ -43,6 +46,10 @@ export function state (ctx) {
     ...info(ctx),
     people,
     left: Object.fromEntries([...st.participants.values()].filter((p) => p.left || p.removed).map((p) => [p.did, p.name])),
+    // lost keys: each request to link an old name, its vouches, and who may mark it replaced
+    links: [...st.links.values()].map((l) => ({ hash: l.hash, from: l.from, old: l.old, why: l.why, at: l.at, vouches: [...l.vouches.keys()].map((d) => ({ did: d, name: st.nameOf(d) })), replacedAt: l.replacedAt })),
+    hosts: ctx.config.hosts ?? [],
+    replaced: Object.fromEntries([...st.participants.values()].filter((p) => p.replacedBy).map((p) => [p.did, { name: p.name, by: p.replacedBy, at: p.replacedAt }])), // old keys, no longer listed; the history stays
     check: ctx.check?.view() ?? null,
     comingIn,
     proposals: [...st.proposals.values()].reverse().map((pr) => ({ ...st.proposalView(pr), waitingFor: executor.waitingFor(pr), notYet: pr.notYet ?? null, lane: pr.lane ?? null })),
@@ -61,12 +68,19 @@ export function state (ctx) {
  *   tether      a person and their project   suggested the weaver thinks they should talk
  *   intention   someone wants to reach this  tension   they pull apart (votes both ways, a veto)
  */
+/** A person's agents: the ones the room has heard, and the ones still being set up (never heard yet). An agent
+ * joins the room's lists the first time it acts (room line 570: a half-added agent showed as if it had come in). */
+export const agentsOf = (st, person) => {
+  const mine = [...st.participants.values()].filter((a) => a.kind === 'agent' && a.principal === person && !a.removed)
+  return { agents: mine.filter(heard).map((a) => a.name), settingUp: mine.filter((a) => !heard(a)).map((a) => a.name) }
+}
+
 export function graph (ctx, m) {
   const st = ctx.log.state
   const asPerson = (did) => st.participants.get(did)?.principal ?? did // an agent's lines belong to its person
   const nodes = new Map(), edges = new Map()
   for (const p of m.projects) nodes.set(p.slug, { id: p.slug, kind: 'project', label: p.name, about: p.about, ways: p.ways, sources: p.sources, url: p.url, members: p.members })
-  for (const p of st.participants.values()) if (p.kind === 'human') nodes.set(p.did, { id: p.did, kind: 'person', label: p.name, projects: p.projects, card: p.card ?? null, agents: [...st.participants.values()].filter((a) => a.principal === p.did && !a.removed).map((a) => a.name) })
+  for (const p of st.participants.values()) if (p.kind === 'human') nodes.set(p.did, { id: p.did, kind: 'person', label: p.name, projects: p.projects, card: p.card ?? null, ...agentsOf(st, p.did) })
   const edge = (a, b, kind, label) => { if (!nodes.has(a) || !nodes.has(b) || a === b) return; const k = [a, b].sort().join('|') + '|' + kind; const cur = edges.get(k); if (cur) { cur.weight++; if (label && !cur.labels.includes(label)) cur.labels.push(label) } else edges.set(k, { a, b, kind, weight: 1, labels: label ? [label] : [] }) }
   for (const p of m.pairs) {
     const ways = p.ways
@@ -97,7 +111,7 @@ export function mapView (ctx) {
   }
 }
 
-const HEARD = new Set(['note', 'propose', 'round', 'project', 'way', 'run', 'vote', 'approve', 'veto', 'mode', 'join', 'delegate', 'result'])
+const HEARD = new Set(['note', 'propose', 'round', 'project', 'way', 'run', 'vote', 'approve', 'veto', 'mode', 'join', 'delegate', 'result', 'link', 'vouch', 'replace'])
 /** What an agent hears: who said what, to whom, in reply to what, in plain words. */
 export function message (ctx, e, me) {
   const st = ctx.log.state, doc = e.document, p = doc.payload, name = NAME_OF[e.type]
@@ -126,6 +140,8 @@ export function concerns (ctx, e, agent) {
   if (name === 'note' && !d.recipient && e.author === e.onBehalfOf && ctx.log.state.isHuman(e.author) && e.author !== me?.principal && asksTheRoom(d.payload.text)) return 'room'
   // its own person speaking to the room (not a line addressed to someone else)
   if (['note', 'propose'].includes(name) && me?.principal && e.onBehalfOf === me.principal && e.author === me.principal && !d.recipient) return 'person'
+  // a new proposal for the room to vote on: every agent is woken to read it and vote for its person
+  if (name === 'propose' && VOTE_KINDS.includes(d.payload.kind) && !d.payload.auto) return 'proposal'
   if (name === 'round' && (d.payload.connections ?? []).some((c) => c.between.includes(agent))) return 'connection'
   if (name === 'round' && (d.payload.next ?? []).some((n) => n.kind === 'ask')) return 'ask'
   if (name === 'round') return 'round'
@@ -153,8 +169,9 @@ export function messages (ctx, { after = -1, limit = 40, me, forMe } = {}) {
   return { items, more: i < all.length, head: ctx.log.head() }
 }
 
-/** A shared file's text, lines from..to, for read_file (the file itself is public in the room already). */
+/** A shared file's text (or an outside source's copy: file "source:<id>"), lines from..to, for read_file (the file itself is public in the room already). */
 export async function fileText (ctx, sha, { from, to } = {}) {
+  if (sha.startsWith('source:')) return ctx.sources.text(sha.slice(7), { from, to }) // a copy of an outside source, not a shared file
   const text = await ctx.media?.text(sha)
   if (text == null) return null
   const lines = text.split('\n'), a = Math.max(1, Number(from) || 1), b = Math.min(lines.length, Number(to) || Math.min(lines.length, a + 399))
@@ -167,6 +184,7 @@ export function read (ctx, path) {
   const url = new URL(path, 'http://local'), q = Object.fromEntries(url.searchParams), p = url.pathname
   if (p === '/api/state') return state(ctx)
   if (p === '/api/map') return mapView(ctx)
+  if (p === '/api/sources') return ctx.sources.view()
   if (p === '/api/steps') return ctx.facilitator.view()
   if (p === '/api/messages') return messages(ctx, q)
   if (p === '/api/wait') return ctx.waits.wait(q)
@@ -174,6 +192,7 @@ export function read (ctx, path) {
   if (p === '/api/log') return entries(ctx, q)
   if (p.startsWith('/api/log/')) return ctx.log.byHash.get(decodeURIComponent(p.slice(9))) ?? null
   if (p.startsWith('/api/participants/')) return participant(ctx, decodeURIComponent(p.slice(18)))
+  if (p.startsWith('/api/credentials/')) return credential(ctx, decodeURIComponent(p.slice(17)))
   throw new Error(`nothing at ${p}`)
 }
 
@@ -181,6 +200,21 @@ export function participant (ctx, did) {
   const st = ctx.log.state, p = st.participants.get(did)
   const delegations = [...st.delegations.values()].filter((d) => d.delegate === did || d.issuer === did)
   return p ? { ...p, activeDelegation: st.activeDelegation(did) ?? null, delegations, ...(p.wake ? { wake: { ...p.wake, last: ctx.waker?.status.get(did) ?? null } } : {}) } : null
+}
+
+/**
+ * A permission's credential, exactly as its person signed it, and whether it still holds,
+ * so anyone can check it themselves. A string says why there is none.
+ */
+export function credential (ctx, hash) {
+  const d = ctx.log.state.delegations.get(hash), signed = ctx.log.byHash.get(hash)?.document.payload.credential
+  if (!d) return 'no permission (delegation) with that hash'
+  if (!d.credential || !signed) return 'that permission was given without a credential (before credentials, or from an older page); its signed grant is at /api/log/' + hash
+  const status = d.revoked ? 'revoked' : Date.parse(d.credential.validUntil) <= Date.now() ? 'expired' : 'live'
+  return {
+    grant: hash, status, endedBy: d.endedBy ?? null, credential: signed,
+    check: 'credential is a W3C Verifiable Credential (VC 2.0) signed by its issuer, the person, with a Data Integrity proof (eddsa-jcs-2022, assertionMethod). Check it with any verifier for that cryptosuite. It holds from validFrom to validUntil unless the room\'s record revokes it first (endedBy: the revoke, remove or leave line).',
+  }
 }
 
 export function entries (ctx, { after = -1, limit = 100, type } = {}) {

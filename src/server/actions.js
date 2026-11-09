@@ -8,6 +8,8 @@
 // It never edits another project's files. Without GITHUB_TOKEN it prepares the
 // step (a link a person can open) and says so in the log.
 import { EXTERNAL_KINDS, checkBoardRun } from '../shared/types.js'
+import { inEffect, laneOf, needAPerson, onlyOwnYes, waitingFor } from '../shared/rules.js'
+import { AGREED } from './rules.js'
 
 const API = 'https://api.github.com'
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64')
@@ -31,25 +33,21 @@ export function github (token) {
 export class Executor {
   constructor ({ config, log, board, gh = github(config.githubToken) }) { this.config = config; this.log = log; this.board = board; this.gh = gh; this.busy = false }
 
-  /** Why a proposal is (not yet) ready to act; null means ready. */
-  waitingFor (pr, now = Date.now()) {
+  /** The rules in effect in this room: the agreed data (rules.json), with what its host set. */
+  rules () { return inEffect(AGREED, this.config) }
+
+  /** The facts the rules' checker reads about a proposal. */
+  facts (pr, now = Date.now()) {
     const st = this.log.state
-    if (!EXTERNAL_KINDS.includes(pr.kind)) return 'stays inside the workspace'
-    if (pr.vetoes.length) return 'vetoed'
-    if (pr.outcome) return 'already acted on'
     const people = [...new Set([...pr.approvals.keys(), ...[...pr.votes].filter(([, v]) => v.choice === 'for').map(([d]) => d)])].filter((d) => st.isHuman(d)) // a person's yes in the open vote is their approval
     const owner = pr.byWeaver && pr.sources?.length ? this.log.byHash.get(pr.sources[0])?.onBehalfOf ?? pr.principal : pr.principal // a change an agent handed the room is its person's
     const backers = new Set([...pr.approvals.keys()].map((d) => st.participants.get(d)?.principal ?? d).filter((p) => p !== owner)) // different people, never the proposer's own
-    const byAgents = pr.kind === 'workspace-change' && this.config.agentApprovals && backers.size >= this.config.agentApprovers
-    const small = pr.kind === 'workspace-change' && pr.lane === 'small' // the small lane: the page only, nothing about keys, permissions or the rules
-    if (small) { const until = Date.parse(pr.at) + this.config.vetoWindowMinutes * 60_000; return now < until ? `small change: it goes live at ${new Date(until).toISOString()} unless someone holds it (veto)` : null }
-    if (people.length < this.config.approvalsRequired && !byAgents) return pr.kind === 'workspace-change' && this.config.agentApprovals ? `needs approval from ${this.config.agentApprovers - backers.size} more person's agent(s) (or a person)` : `needs ${this.config.approvalsRequired - pr.approvals.size} more human approval(s)`
-    const yesAt = [pr.lastApprovalAt, ...[...pr.votes.values()].filter((v) => v.choice === 'for').map((v) => v.at)].filter(Boolean).map((t) => Date.parse(t)).filter(Number.isFinite)
-    const quietUntil = Math.max(...yesAt, 0) + this.config.vetoWindowMinutes * 60_000 // the veto window runs from the latest yes, an approval or a yes vote
-    if (now < quietUntil) return `veto window open until ${new Date(quietUntil).toISOString()}`
-    if (st.mode.mode === 'democracy') { const t = st.tally(pr); if (t.for <= t.against) return `democracy: ${t.for} for, ${t.against} against` }
-    return null
+    const yesTimes = [pr.lastApprovalAt, ...[...pr.votes.values()].filter((v) => v.choice === 'for').map((v) => v.at)].filter(Boolean).map((t) => Date.parse(t)).filter(Number.isFinite)
+    return { kind: pr.kind, external: EXTERNAL_KINDS.includes(pr.kind), vetoed: pr.vetoes.length > 0, acted: Boolean(pr.outcome), lane: pr.lane ?? null, proposedAt: Date.parse(pr.at), yesTimes, people, owner, otherPeoplesAgents: backers.size, democracy: st.mode.mode === 'democracy' ? st.tally(pr) : null, now }
   }
+
+  /** Why a proposal is (not yet) ready to act; null means ready. The rules' checker decides, from rules.json. */
+  waitingFor (pr, now = Date.now()) { return waitingFor(this.rules(), this.facts(pr, now)) }
 
   async tick () {
     if (this.busy) return
@@ -60,6 +58,7 @@ export class Executor {
         if (this.waitingFor(pr)) continue
         let result
         try { result = await this.act(pr) } catch (err) { result = { status: 'failed', detail: err.message.slice(0, 500) } }
+        if (result.status !== 'failed' && onlyOwnYes(this.rules(), this.facts(pr))) result = { ...result, ownYesOnly: true, detail: `${result.detail ?? ''} (on its own person's yes alone, which the rules allow for now: an open question)`.trim() } // said openly, room lines 309-315
         await this.log.appendAsWorkspace('result', { proposal: pr.hash, kind: pr.kind, ...result }, { threadId: this.log.byHash.get(pr.hash).document.id })
       }
     } finally { this.busy = false }
@@ -150,11 +149,12 @@ export class Executor {
     if (pull.head.sha !== sha) return `failed: pull request #${number} changed after it was approved (now ${pull.head.sha.slice(0, 10)}); propose the new commit`
     const files = await this.gh('GET', `/repos/${repo}/pulls/${number}/files?per_page=100`)
     const names = files.map((f) => f.filename)
-    pr.lane = names.length && names.every((f) => (f.startsWith('public/') && f !== 'public/setup.js') || /^(docs\/.*|[^/]+\.md)$/.test(f)) ? 'small' : 'normal' // public/setup.js writes what runs on people's computers, so it is never small
-    const touched = names.filter((f) => this.config.protectedPaths.some((p) => (p.endsWith('/') ? f.startsWith(p) : f === p)))
+    const rules = this.rules()
+    pr.lane = laneOf(rules, names) // the small lane, by rules.json: the page and the docs only (public/setup.js is never small)
+    const touched = needAPerson(rules, names)
     if (touched.length && ![...pr.approvals.keys(), ...[...pr.votes].filter(([, v]) => v.choice === 'for').map(([d]) => d)].some((d) => st.isHuman(d))) return `it changes the room's safety (${touched.slice(0, 3).join(', ')}), so a person approves it too`
     const runs = (await this.gh('GET', `/repos/${repo}/actions/runs?head_sha=${sha}&per_page=20`)).workflow_runs ?? []
-    const tests = runs.filter((r) => /test/i.test(r.name ?? ''))
+    const tests = runs.filter((r) => (r.name ?? '').toLowerCase().includes(rules.codeChanges.testsMustPass.toLowerCase()))
     if (!tests.length) return 'its tests have not run yet'
     if (tests.some((r) => r.status !== 'completed')) return 'its tests are still running'
     if (tests.some((r) => r.conclusion !== 'success')) return `failed: its tests did not pass (${tests.find((r) => r.conclusion !== 'success').html_url})`
