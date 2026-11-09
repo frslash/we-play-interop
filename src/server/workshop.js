@@ -41,6 +41,15 @@ export class Workshop {
     } catch (err) { this.cache = { ...this.cache, error: String(err.message).slice(0, 200) } }
   }
 
+  /** Every change to the board's words (steps and goal checks are data, not code): old and new words, who, why, and where it stands. */
+  edits () {
+    const st = this.ctx.log.state, n = (d) => (d ? st.nameOf(d) : null)
+    return [...st.stepEdits.values()].reverse().slice(0, 30).map((x) => {
+      const s = st.steps.get(x.step) ?? st.stepsDone.find((y) => y.id === x.step)
+      return { ...x, byName: n(x.by), confirmedByName: n(x.confirmedBy), undoneByName: n(x.undoneBy), withdrawnByName: n(x.withdrawnBy), stepTitle: s?.title ?? null, test: s?.test ? { n: s.test.n, goal: s.test.goal } : null, goalTitle: s?.goal ? st.proposals.get(s.goal)?.title ?? null : null, thread: s?.thread ?? null, stepState: s?.state ?? null }
+    })
+  }
+
   view () {
     const st = this.ctx.log.state, changes = []
     for (const e of this.ctx.log.entries) {
@@ -55,6 +64,6 @@ export class Workshop {
         pr: pr?.change?.pr ?? null, approvals: pr ? [...pr.approvals.keys()].map((d) => st.nameOf(d)) : [],
       })
     }
-    return { repo: this.ctx.config.workspaceRepo, branch: this.ctx.config.workspaceBranch || 'main', running: this.running(), ...this.cache, changes: changes.reverse().slice(0, 30) }
+    return { repo: this.ctx.config.workspaceRepo, edits: this.edits(), branch: this.ctx.config.workspaceBranch || 'main', running: this.running(), ...this.cache, changes: changes.reverse().slice(0, 30) }
   }
 }

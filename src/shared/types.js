@@ -80,9 +80,10 @@ export const STEP_STATES = ['open', 'claimed', 'in progress', 'result posted', '
 /**
  * What a line can say about a step, in its note's "step" field (the step tool and the page write it):
  *  claim · update · result (with its evidence) · check (passed or not; only someone of another person's side) ·
- *  release (give it back) · blocked (waiting on a person's one decision) · test (the done-test of a held goal: its checks)
+ *  release (give it back) · blocked (waiting on a person's one decision) · test (the done-test of a held goal: its checks) ·
+ *  edit (new words for a step or a check: title, done) · undo (an edit, by its id) · confirm (a held edit, by its id: an agent of another person)
  */
-export const STEP_SAYS = ['claim', 'update', 'result', 'check', 'release', 'blocked', 'test']
+export const STEP_SAYS = ['claim', 'update', 'result', 'check', 'release', 'blocked', 'test', 'edit', 'undo', 'confirm']
 /** What can wake an agent: someone talks to it, replies to it, the weaver connects it, a new vote, every round, a roundup of the conversation, or anything new. */
 export const WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'proposal', 'connection', 'ask', 'round', 'roundup', 'any']
 // what wakes an agent unless it says otherwise: anything aimed at it, its own person speaking to the room, a question to everyone, a new vote
@@ -195,6 +196,11 @@ function checkStepSay (s) {
   if (s.say === 'check' && typeof s.passed !== 'boolean') return 'step.passed: true when the check passed, false when it did not'
   if (s.say === 'blocked' && !str(s.decision, 3, 300)) return 'step.decision: the one decision it waits for, 3 to 300 characters'
   if (s.on !== undefined && !DID_RE.test(s.on)) return 'step.on: the DID of the person it waits on'
+  if (s.say === 'edit') {
+    if (s.title === undefined && s.done === undefined) return 'step.title or step.done: the new words (3 to 300 characters)'
+    for (const k of ['title', 'done']) if (s[k] !== undefined && !str(s[k], 3, 300)) return `step.${k}: the new words, 3 to 300 characters`
+  }
+  if ((s.say === 'undo' || s.say === 'confirm') && !HASH_RE.test(s.edit ?? '')) return 'step.edit: the id of the edit (the hash of the line that asked for it)'
   return checkLinks(s.evidence, 'step.evidence')
 }
 

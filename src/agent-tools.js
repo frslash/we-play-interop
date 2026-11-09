@@ -119,7 +119,7 @@ export function registerAgentTools (server, adapter) {
   }))
   server.registerTool('map', { description: 'The interop map: projects, the ways each speaks, runs between them, pairs that speak the same way and never tried it.' }, safe(() => adapter.read('/api/map')))
   // the facilitator's board: the steps toward the held goals, each with an owner and a check (facilitate mode)
-  const brief = (x) => ({ id: x.id, step: x.title, ...(x.done !== x.title ? { doneWhen: x.done } : {}), state: x.state, owner: x.ownerName, where: x.where, ...(x.goalTitle ? { goal: x.goalTitle } : {}) })
+  const brief = (x) => ({ id: x.id, step: x.title, ...(x.done !== x.title ? { doneWhen: x.done } : {}), state: x.state, owner: x.ownerName, where: x.where, ...(x.goalTitle ? { goal: x.goalTitle } : {}), ...(x.pendingEdits?.length ? { heldEdits: x.pendingEdits.map((p) => ({ edit: p.id.slice(0, 8), by: p.byName, why: p.why, ...Object.fromEntries(Object.entries(p.fields).map(([k, v]) => [k, `“${v.old}” → “${v.new}”`])) })) } : {}) })
   server.registerTool('steps', { description: 'The board of steps toward the room\'s held goals: each goal with its done-test (checks anyone can rerun), and every step in work, with what done looks like, its owner and where it stands. Yours come first. Move one with the step tool.' }, safe(async () => {
     const b = await adapter.read('/api/steps'), all = [...b.goals.flatMap((g) => g.test), ...b.steps]
     return {
@@ -130,9 +130,9 @@ export function registerAgentTools (server, adapter) {
     }
   }))
   server.registerTool('step', {
-    description: 'Move a step on the board (ids from the steps tool; the first 8 characters are enough). say: claim (take it on) · update (what you did so far, or that you are on it) · result (it is done: give the evidence in text or evidence: the link, the command and what it printed, or the test value) · check (you reran someone else\'s result: passed true or false; only someone of another person\'s side than its owner) · release (give it back) · blocked (it waits on one person\'s decision: on (a name or DID), decision) · test (the done-test of a held goal that has none: goal (its hash), checks: each one thing anyone can rerun, with its command or value). text is what the room reads.',
-    inputSchema: { say: z.enum(STEP_SAYS), step: z.string().optional(), text: z.string().min(1).max(2000), technical: z.string().min(1).max(4000).optional(), evidence: z.array(z.object({ label: z.string().min(1).max(200), url: z.string().url() })).max(10).optional(), passed: z.boolean().optional(), on: z.string().optional(), decision: z.string().min(3).max(300).optional(), goal: z.string().optional(), checks: z.array(z.string().min(3).max(300)).min(1).max(12).optional() },
-  }, safe(async ({ say, step: id, text, technical, evidence, passed, on, decision, goal, checks }) => {
+    description: 'Move a step on the board (ids from the steps tool; the first 8 characters are enough). say: claim (take it on) · update (what you did so far, or that you are on it) · result (it is done: give the evidence in text or evidence: the link, the command and what it printed, or the test value) · check (you reran someone else\'s result: passed true or false; only someone of another person\'s side than its owner) · release (give it back) · blocked (it waits on one person\'s decision: on (a name or DID), decision) · test (the done-test of a held goal that has none: goal (its hash), checks: each one thing anyone can rerun, with its command or value) · edit (new words for a step or a goal\'s check: title and/or done; text says why. Anyone may ask. A change to a goal\'s check, or to what a check asks, waits until an agent of another person confirms it) · confirm (a held edit: edit (its id); only an agent of another person than the one who asked) · undo (an edit: edit (its id); a held one is withdrawn, an applied one turned back). Every edit shows on the Workshop tab. text is what the room reads.',
+    inputSchema: { say: z.enum(STEP_SAYS), step: z.string().optional(), text: z.string().min(1).max(2000), technical: z.string().min(1).max(4000).optional(), evidence: z.array(z.object({ label: z.string().min(1).max(200), url: z.string().url() })).max(10).optional(), passed: z.boolean().optional(), on: z.string().optional(), decision: z.string().min(3).max(300).optional(), goal: z.string().optional(), checks: z.array(z.string().min(3).max(300)).min(1).max(12).optional(), title: z.string().min(3).max(300).optional(), done: z.string().min(3).max(300).optional(), edit: z.string().optional() },
+  }, safe(async ({ say, step: id, text, technical, evidence, passed, on, decision, goal, checks, title, done, edit }) => {
     const b = await adapter.read('/api/steps'), people = (await adapter.read('/api/state')).people
     const personOf = (did) => people.find((p) => p.did === did)?.principal ?? did
     const tech = technical ? { tech: technical } : {}
@@ -147,8 +147,18 @@ export function registerAgentTools (server, adapter) {
     const hits = all.filter((x) => x.id === id || (id?.length >= 6 && x.id.startsWith(id)))
     if (hits.length > 1) throw new Error(`"${id}" matches ${hits.length} steps; give more of its id`)
     const s = hits[0]
-    const why = whyNot(s, { say }, adapter.did, personOf, s?.ownerName ?? 'its owner')
+    const why = whyNot(s, { say, ...(edit ? { edit } : {}) }, adapter.did, personOf, s?.ownerName ?? 'its owner')
     if (why) throw new Error(why)
+    if (say === 'edit') {
+      if (!title && !done) throw new Error('title or done: the new words for the step (and text: why)')
+      return adapter.act('note', { text, kind: 'message', ...tech, step: { of: s.id, say, ...(title ? { title } : {}), ...(done ? { done } : {}) } }, { threadId: s.thread })
+    }
+    if (say === 'undo' || say === 'confirm') {
+      const all = (await adapter.read('/api/workshop')).edits ?? [], mine = [...(s.pendingEdits ?? []), ...all.filter((x) => x.step === s.id)]
+      const hit = [...new Set(mine.filter((x) => edit && (x.id === edit || (edit.length >= 6 && x.id.startsWith(edit)))).map((x) => x.id))]
+      if (hit.length !== 1) throw new Error('edit: the id of an edit of this step (the Workshop tab and the steps tool list them; the first 8 characters are enough)')
+      return adapter.act('note', { text, kind: 'message', ...tech, step: { of: s.id, say, edit: hit[0] } }, { threadId: s.thread })
+    }
     if (say === 'check' && typeof passed !== 'boolean') throw new Error('passed: true if the check passed when you reran it, false if not')
     if (say === 'blocked' && !decision) throw new Error('decision: the one decision it waits for')
     const who = say === 'blocked' && on ? await findPerson(on) : null

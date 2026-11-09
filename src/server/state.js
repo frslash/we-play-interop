@@ -44,6 +44,7 @@ export class State {
     this.stepsDone = [] // the latest steps checked or set aside (newest last, at most 30)
     this.stepDays = new Map() // 'YYYY-MM-DD' -> { opened, claimed, resulted, checked, toResultMs: [agreement to first result] } (the last 60 days)
     this.stepOf = new Map() // a proposal, closer look or line a step came from -> the step (the latest 5000)
+    this.stepEdits = new Map() // edit id (the hash of the line that asked for it) -> { id, step, fields: { title|done: { old, new } }, by, why, status: pending · applied · undone · withdrawn, ... } (the latest 300)
     this.stepsHeard = -1 // the last line the board acted on (the facilitator listens on from there after a restart)
     this.stepsSince = null // when the board's first line was written: agreements from before it are not turned into steps
     this.pressed = new Set() // lines the facilitator asked to be made exact (the latest 200)
@@ -219,6 +220,8 @@ export class State {
     if (!this.stepDays.has(day)) { this.stepDays.set(day, t); for (const d of [...this.stepDays.keys()].slice(0, -60)) this.stepDays.delete(d) }
     const s = { ...p, id, hash: e.hash, seq: e.seq, at: e.timestamp, thread: prev?.thread ?? e.document.id, openedAt: prev?.openedAt ?? e.timestamp, claimedAt: prev?.claimedAt ?? null, resultAt: prev?.resultAt ?? null, checkedAt: prev?.checkedAt ?? null }
     delete s.of
+    delete s.edit
+    if (p.edit) this.stepEdit(e, id)
     // since when it has waited on this one decision (the line that first asked it), so an answer given since then counts
     s.waitingSince = p.waitingOn ? (prev?.waitingOn && prev.waitingOn.who === p.waitingOn.who && prev.waitingOn.decision === p.waitingOn.decision ? prev.waitingSince ?? prev.seq : e.seq) : null
     if (!prev) t.opened++
@@ -231,6 +234,22 @@ export class State {
     while (this.stepOf.size > 5000) this.stepOf.delete(this.stepOf.keys().next().value)
     this.stepsDone = this.stepsDone.filter((x) => x.id !== id)
     if (s.state === 'checked' || s.aside) { this.steps.delete(id); this.stepsDone.push(s); if (this.stepsDone.length > 30) this.stepsDone.shift() } else this.steps.set(id, s)
+  }
+
+  /** A step line that carries an edit: the record of who asked for new words, why, the old and new words, and where it stands. */
+  stepEdit (e, step) {
+    const d = e.document.payload.edit, c = e.document.payload.change
+    if (!d?.id || !d.fields) return
+    const base = { id: d.id, step, fields: d.fields, by: d.by, why: d.why ?? '', at: e.timestamp, line: e.hash, held: Boolean(d.held) }
+    const rec = this.stepEdits.get(d.id) ?? base
+    if (c === 'edited' || c === 'undone') Object.assign(rec, base, { status: 'applied', ...(d.undoes ? { undoes: d.undoes } : {}) })
+    if (c === 'edit held') Object.assign(rec, base, { status: 'pending' })
+    if (c === 'edit confirmed') Object.assign(rec, { status: 'applied', confirmedBy: d.confirmedBy, confirmedAt: e.timestamp, line: e.hash })
+    if (c === 'edit withdrawn') Object.assign(rec, { status: 'withdrawn', withdrawnBy: d.withdrawnBy, withdrawnAt: e.timestamp, stale: Boolean(d.stale) })
+    if (!rec.status) return
+    this.stepEdits.delete(d.id); this.stepEdits.set(d.id, rec)
+    if (d.undoes) { const was = this.stepEdits.get(d.undoes); if (was) Object.assign(was, { status: 'undone', undoneBy: d.by, undoneAt: e.timestamp, undoneWith: d.id }) }
+    while (this.stepEdits.size > 300) this.stepEdits.delete(this.stepEdits.keys().next().value)
   }
 
   /** What the facilitator said that its procedure needs to remember: the lines it pressed, its asks for done-tests, its reports. */

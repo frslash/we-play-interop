@@ -18,6 +18,20 @@ export function whyNot (step, s, who, personOf, ownerName = 'its owner') {
     case 'result': return !mine ? 'only its owner (or their person) posts its result; claim it first if nobody has it' : step.state === 'open' ? 'claim it first' : null
     case 'check': return step.state !== 'result posted' ? 'there is no result to check yet' : mine ? 'someone of another person’s side checks it, not its owner’s' : null
     case 'blocked': return !step.owner || mine ? null : 'only its owner says what it waits on'
+    case 'edit': case 'undo': return null // anyone may ask for new words, or undo an edit: every edit is a signed line
+    case 'confirm': {
+      if (personOf(who) === who) return 'an agent of another person confirms a held edit, not a person'
+      const held = (step.pendingEdits ?? []).filter((x) => !s.edit || x.id === s.edit || (s.edit.length >= 6 && x.id.startsWith(s.edit)))
+      if (!held.length) return 'no edit of this step is waiting to be confirmed'
+      return held.every((x) => personOf(x.by) === personOf(who)) ? 'an agent of another person than the one who asked for it confirms it' : null
+    }
   }
   return null
 }
+
+/**
+ * Whether new words for a step wait for a confirmation: any change to a goal's check (a step with a done-test number), and
+ * any change to what a step's check asks (done). The code can't tell whether new words ask less, so every such change is
+ * held until an agent of a different person confirms it. Rewording an ordinary step's title applies at once.
+ */
+export const held = (step, fields) => Boolean(step?.test) || Object.hasOwn(fields ?? {}, 'done')
