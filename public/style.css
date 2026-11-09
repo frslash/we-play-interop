@@ -184,6 +184,8 @@ body[data-view="tech"] .plain-only { display: none !important; }
 .btn.tiny { min-height: 24px; padding: 1px 8px; font-size: 12px; border-radius: 7px; }
 .listen { flex: none; display: inline-block; width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid var(--muted); opacity: 0.7; vertical-align: middle; }
 .listen.on { background: var(--good); border-color: var(--good); opacity: 1; }
+.listen.held { background: var(--warn); border-color: var(--warn); opacity: 1; }
+.badge.held { background: var(--warn-soft); color: var(--warn); font-size: 11px; padding: 0 6px; margin-left: 4px; }
 .msg .read { color: var(--good); }
 .reply-chip .deaf { color: var(--warn); }
 .msg-actions { display: inline-flex; gap: 4px; opacity: 0; transition: opacity 0.12s; }
