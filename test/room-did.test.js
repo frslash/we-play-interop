@@ -29,3 +29,25 @@ test('no log, a bad log, other methods and other paths', () => {
   f = fake(); handleRoomDid({ method: 'POST' }, f.res, '/.well-known/did.jsonl', { dataDir: dir }); assert.equal(f.r.status, 405)
   assert.equal(handleRoomDid({ method: 'GET' }, fake().res, '/api/state', { dataDir: dir }), false)
 })
+
+test('first start mints a test DID once, keeps the key private, and logs no key', async () => {
+  const { ensureRoomDid, didHostOf } = await import('../src/server/roomdid.js')
+  const { readFileSync, statSync, existsSync } = await import('node:fs')
+  const dir = mkdtempSync(join(tmpdir(), 'wpi-did-')); const lines = []
+  const log = (l) => lines.push(l)
+  assert.deepEqual(await ensureRoomDid({ dataDir: dir, publicUrl: '', log }), { minted: false, reason: 'no PUBLIC_URL' })
+  assert.equal(existsSync(join(dir, 'did.jsonl')), false)
+  const r = await ensureRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org/', log })
+  assert.equal(r.minted, true); assert.match(r.did, /:inwove\.org$/)
+  for (const f of ['did.jsonl', 'update-key.txt', 'did-test.json']) assert.equal(statSync(join(dir, f)).mode & 0o777, 0o600, f)
+  const key = readFileSync(join(dir, 'update-key.txt'), 'utf8').trim()
+  assert.ok(key.length >= 32)
+  assert.equal(JSON.parse(readFileSync(join(dir, 'did-test.json'), 'utf8')).test, true)
+  assert.ok(lines.length === 1 && lines[0].includes(r.did) && lines.every((l) => !l.includes(key)))
+  assert.doesNotMatch(readFileSync(join(dir, 'did.jsonl'), 'utf8') + readFileSync(join(dir, 'did-test.json'), 'utf8'), new RegExp(key))
+  const again = await ensureRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', log }) // second start: nothing new
+  assert.equal(again.minted, false); assert.equal(lines.length, 1)
+  const failing = await ensureRoomDid({ dataDir: join(dir, 'x', 'y'), file: join(dir, 'did-test.json', 'nope', 'did.jsonl'), publicUrl: 'https://inwove.org', log })
+  assert.equal(failing.minted, false); assert.ok(lines.every((l) => !l.includes(key)))
+  assert.equal(didHostOf('http://localhost:3000'), 'localhost%3A3000')
+})
