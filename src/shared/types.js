@@ -87,12 +87,12 @@ export const SUBJECT_KINDS = ['credential', 'task', 'ceremony', 'basic']
 export const OUTCOMES = ['pass', 'fail', 'partial']
 
 export const HASH_RE = /^[0-9a-f]{64}$/
-const DID_RE = /^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$/
+export const DID_RE = /^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$/
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
-const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/
+export const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/
 
-const uuid = () => {
+export const uuid = () => {
   const b = crypto.getRandomValues(new Uint8Array(16))
   b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80
   const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
@@ -169,6 +169,7 @@ export function checkPayload (name, doc) {
       if (!Array.isArray(p.scope) || !p.scope.length || !p.scope.every((s) => AGENT_SCOPES.includes(s))) return `scope: some of ${AGENT_SCOPES.join(', ')}`
       if (!optStr(p.label, 60)) return 'label: at most 60 characters'
       if (p.ask !== undefined && (!Array.isArray(p.ask) || !p.ask.every((s) => p.scope.includes(s)))) return 'ask: the kinds of line (from scope) that wait for your OK before they are posted'
+      if (p.credential !== undefined && !isObj(p.credential)) return 'credential: the same permission as a credential you signed (see src/shared/credential.js), or leave it out'
       if (!RFC3339.test(doc.expiresAt ?? '')) return 'a delegation needs expiresAt'
       const days = (Date.parse(doc.expiresAt) - Date.parse(doc.issuedAt)) / 86400000
       if (!(days > 0 && days <= 90)) return 'expiresAt: after issuedAt and within 90 days'

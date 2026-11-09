@@ -38,7 +38,7 @@ function listeningOf (ctx, p) {
 
 export function state (ctx) {
   const { log, board, executor } = ctx, st = log.state
-  const people = [...st.participants.values()].filter((p) => p.kind !== 'workspace' && !p.left).map((p) => ({ ...p, delegation: p.kind === 'agent' ? st.activeDelegation(p.did)?.hash ?? null : undefined, ...(p.kind === 'agent' && ctx.waker?.status.get(p.did) ? { wakeLast: ctx.waker.status.get(p.did) } : {}), ...(p.kind === 'agent' && st.away.get(p.did) ? { away: st.away.get(p.did), awayLast: ctx.away?.status.get(p.did) ?? null } : {}), ...(p.kind === 'agent' ? { listening: listeningOf(ctx, p), connected: ctx.connected?.get(p.did) ?? null, ask: st.activeDelegation(p.did)?.ask ?? [], scope: st.activeDelegation(p.did)?.scope ?? [], until: st.activeDelegation(p.did)?.expiresAt ?? null, waiting: ctx.drafts?.list(p.did).length ?? 0 } : {}) }))
+  const people = [...st.participants.values()].filter((p) => p.kind !== 'workspace' && !p.left).map((p) => ({ ...p, delegation: p.kind === 'agent' ? st.activeDelegation(p.did)?.hash ?? null : undefined, ...(p.kind === 'agent' && ctx.waker?.status.get(p.did) ? { wakeLast: ctx.waker.status.get(p.did) } : {}), ...(p.kind === 'agent' && st.away.get(p.did) ? { away: st.away.get(p.did), awayLast: ctx.away?.status.get(p.did) ?? null } : {}), ...(p.kind === 'agent' ? { listening: listeningOf(ctx, p), connected: ctx.connected?.get(p.did) ?? null, ask: st.activeDelegation(p.did)?.ask ?? [], scope: st.activeDelegation(p.did)?.scope ?? [], until: st.activeDelegation(p.did)?.expiresAt ?? null, credential: !!st.activeDelegation(p.did)?.credential, waiting: ctx.drafts?.list(p.did).length ?? 0 } : {}) }))
   const checkDids = ctx.check?.dids() ?? []
   const theirs = people.filter((p) => p.kind === 'agent' && p.hosted && !checkDids.includes(p.did))
   const comingIn = { agents: theirs.length, saidHello: theirs.filter((p) => p.firstSaid).length, answeringNow: theirs.filter((p) => p.listening).length }
@@ -185,6 +185,7 @@ export function read (ctx, path) {
   if (p === '/api/log') return entries(ctx, q)
   if (p.startsWith('/api/log/')) return ctx.log.byHash.get(decodeURIComponent(p.slice(9))) ?? null
   if (p.startsWith('/api/participants/')) return participant(ctx, decodeURIComponent(p.slice(18)))
+  if (p.startsWith('/api/credentials/')) return credential(ctx, decodeURIComponent(p.slice(17)))
   throw new Error(`nothing at ${p}`)
 }
 
@@ -192,6 +193,21 @@ export function participant (ctx, did) {
   const st = ctx.log.state, p = st.participants.get(did)
   const delegations = [...st.delegations.values()].filter((d) => d.delegate === did || d.issuer === did)
   return p ? { ...p, activeDelegation: st.activeDelegation(did) ?? null, delegations, ...(p.wake ? { wake: { ...p.wake, last: ctx.waker?.status.get(did) ?? null } } : {}) } : null
+}
+
+/**
+ * A permission's credential, exactly as its person signed it, and whether it still holds,
+ * so anyone can check it themselves. A string says why there is none.
+ */
+export function credential (ctx, hash) {
+  const d = ctx.log.state.delegations.get(hash), signed = ctx.log.byHash.get(hash)?.document.payload.credential
+  if (!d) return 'no permission (delegation) with that hash'
+  if (!d.credential || !signed) return 'that permission was given without a credential (before credentials, or from an older page); its signed grant is at /api/log/' + hash
+  const status = d.revoked ? 'revoked' : Date.parse(d.credential.validUntil) <= Date.now() ? 'expired' : 'live'
+  return {
+    grant: hash, status, endedBy: d.endedBy ?? null, credential: signed,
+    check: 'credential is a W3C Verifiable Credential (VC 2.0) signed by its issuer, the person, with a Data Integrity proof (eddsa-jcs-2022, assertionMethod). Check it with any verifier for that cryptosuite. It holds from validFrom to validUntil unless the room\'s record revokes it first (endedBy: the revoke, remove or leave line).',
+  }
 }
 
 export function entries (ctx, { after = -1, limit = 100, type } = {}) {
