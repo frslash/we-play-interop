@@ -193,6 +193,13 @@ export function registerAgentTools (server, adapter) {
     const live = adapter.code ? await adapter.code.read(path, { from, to }).catch(() => null) : null
     return live ?? { commit: localCommit(), ...readCode(path, { from, to }) }
   }))
+  server.registerTool('read_pull_request', {
+    description: 'Read a pull request to the room\'s own code (its number), read-only: plain text, its head commit at the top, then the diff of every file, whole or lines from..to. Read it before you approve a change: an approval counts for the head commit you read, and a later push needs reading again. Only the room\'s own repository.',
+    inputSchema: { pr: z.number().int().min(1), from: z.number().int().min(1).optional(), to: z.number().int().min(1).optional() },
+  }, safe(async ({ pr, from, to }) => {
+    if (!adapter.code?.pullDiff) throw new Error('this room has no link to its repository on GitHub, so it cannot show pull requests here')
+    return (await adapter.code.pullDiff(pr, { from, to })).text
+  }))
   server.registerTool('submit_change', {
     description: 'Hand the room a change to its own code, when the room has agreed on it: a unified diff (as git diff prints it) against the latest main, or against base. The room tests it with no secrets and no network, and on green opens the pull request itself and proposes it in Decide, crediting you and your person. Red comes back to you with the end of the test log. Keep it small and focused; the room\'s dependencies go through a person.',
     inputSchema: { title: z.string().min(1).max(140), why: z.string().max(2000).optional(), patch: z.string().min(1).max(200000), base: z.string().regex(/^[0-9a-f]{40}$/).optional() },
@@ -203,9 +210,9 @@ export function registerAgentTools (server, adapter) {
     return { ...r, sha256: kept.sha256, next: r.waiting ? 'It waits for your person\'s OK first.' : 'The room is testing it now; it will tell you here, by name, how it went.' }
   }))
   server.registerTool('approve', {
-    description: 'Approve a proposed change to the room\'s own code (a workspace-change proposal, by its id) after you have read the pull request yourself. It merges once agents of enough different people approve, its tests pass on GitHub and nobody vetoes in the window. Never your own person\'s change. A change to the room\'s safety (keys, permissions, the approval rules, dependencies) needs a person\'s approval too.',
-    inputSchema: { proposal: z.string() },
-  }, safe(({ proposal }) => adapter.act('approve', { proposal })))
+    description: 'Approve a proposed change to the room\'s own code (a workspace-change proposal, by its id) after you have read the pull request yourself. Send sha: the 40-character head commit you read (the proposal\'s head); your approval covers only that commit, and a later push voids it until you read and approve again. It merges once agents of enough different people approve, its tests pass on GitHub and nobody vetoes in the window. Never your own person\'s change. A change to the room\'s safety (keys, permissions, the approval rules, dependencies) needs a person\'s approval too.',
+    inputSchema: { proposal: z.string(), sha: z.string().regex(/^[0-9a-f]{40}$/).optional() },
+  }, safe(({ proposal, sha }) => adapter.act('approve', { proposal, ...(sha ? { sha } : {}) })))
   server.registerTool('vote', { description: 'Vote on a proposal (by its id). Your human\'s own vote always outweighs yours. Send judgment: true when the vote is your own judgment, not your human\'s words, so the room can see which it is. Never vote on anything that commits your human\'s time, money or name, or on keys, permissions or access; leave those to them. Do not vote on your own if your human switched agent voting off.', inputSchema: { proposal: z.string(), choice: z.enum(VOTE_CHOICES), reason: z.string().max(500).optional(), judgment: z.boolean().optional() } }, safe((p) => adapter.act('vote', p)))
   server.registerTool('resources', {
     description: 'The room\'s resources: the specs, code, boards and writing the projects here build on, each with who it is from, how current it is, and the notes agents and people left on what they found in it. Read the ones that bear on a question before you answer it. Filter with kind or q (words to look for).',

@@ -135,6 +135,8 @@ export function concerns (ctx, e, agent) {
   if (e.author === agent) return null
   if (name === 'note' && d.recipient === agent) return 'direct'
   if (name === 'note' && d.threadId && ctx.log.byDocId.get(d.threadId)?.author === agent) return 'reply'
+  // a choice the facilitator puts to the agents wakes them, as a question to everyone does
+  if (name === 'note' && e.author === ctx.log.state.workspace && d.payload.facilitator?.what === 'decide' && me?.kind === 'agent') return 'ask'
   // the facilitator's report names owners to say where things stand, not to ask them anything: it wakes no one
   if (['note', 'propose'].includes(name) && me?.name && !d.payload.facilitator?.report && mentions(d.payload.text ?? d.payload.title ?? '', me.name)) return 'mention'
   // a person asking the whole room something (a question, or a call to everyone): every agent is woken, so they all answer

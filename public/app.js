@@ -444,7 +444,7 @@ function voteButtons (p) {
   return h('div', { class: 'row' },
     h('button', { class: 'btn small' + (mine === 'for' ? ' primary' : ''), onclick: () => post('vote', { proposal: p.hash, choice: 'for' }) }, goal ? 'Yes, this' : 'For'),
     h('button', { class: 'btn small' + (mine === 'against' ? ' primary' : ''), onclick: () => post('vote', { proposal: p.hash, choice: 'against' }) }, goal ? 'Not this' : 'Against'),
-    outside && !p.approvals.some((a) => a.did === me.did) ? h('button', { class: 'btn small', onclick: () => post('approve', { proposal: p.hash }) }, 'Approve') : null,
+    outside && !p.approvals.some((a) => a.did === me.did && !a.void) ? h('button', { class: 'btn small', title: p.head ? `Approves commit ${p.head}, the one you read` : null, onclick: () => post('approve', { proposal: p.hash, ...(p.head ? { sha: p.head } : {}) }) }, p.head ? `Approve ${p.head.slice(0, 7)}` : 'Approve') : null,
     h('button', { class: 'btn small danger', onclick: () => { const reason = prompt('Why stop this? (it is public)'); if (reason) post('veto', { target: p.hash, reason }) } }, 'Veto'))
 }
 function proposalBubble (e) {
@@ -643,7 +643,7 @@ function decisionCard (p) {
     h('h3', { class: 'decision-title' }, p.title),
     cleanBody(p.body) ? h('p', { class: 'why' }, cleanBody(p.body)) : null,
     p.change ? h('p', { class: 'meta' }, h('a', { href: `https://github.com/${S.workspaceRepo}/pull/${p.change.pr}`, target: '_blank', rel: 'noopener' }, `pull request #${p.change.pr}`), ` at ${p.change.sha.slice(0, 10)}`) : null,
-    h('p', { class: 'meta' }, `${p.tally.for} yes · ${p.tally.against} no`, p.approvals?.length ? ` · approved by ${p.approvals.map((a) => a.name).join(', ')}` : '', p.vetoes.length ? ` · stopped by ${p.vetoes.map((v) => v.name).join(', ')}` : ''),
+    h('p', { class: 'meta' }, `${p.tally.for} yes · ${p.tally.against} no`, p.approvals?.length ? ` · approved by ${p.approvals.map((a) => `${a.name}${a.sha ? ` (${a.sha.slice(0, 7)}${a.void ? ', void: a newer commit came after it' : ''})` : ''}`).join(', ')}` : '', p.vetoes.length ? ` · stopped by ${p.vetoes.map((v) => v.name).join(', ')}` : ''),
     open ? h('p', { class: 'meta need' }, needOf(p)) : result ? h('p', { class: 'meta' }, result.url ? h('a', { href: result.url, target: '_blank', rel: 'noopener' }, result.status) : h('strong', null, result.status), result.detail ? ` · ${result.detail}` : '') : null,
     open ? voteButtons(p) : null)
 }
@@ -675,13 +675,15 @@ function stepRow (s) {
     can('result') ? h('button', { class: 'btn small', onclick: () => ask('What shows it worked? The link, the command and what it printed, or the test value.', (t) => act('result', t)) }, 'Post the result') : null,
     can('check') ? h('button', { class: 'btn small', onclick: () => act('check', `I reran ${label}: it passed.`, { passed: true }) }, 'It passed') : null,
     can('check') ? h('button', { class: 'btn small', onclick: () => ask('What did you rerun, and what went wrong?', (t) => act('check', t, { passed: false })) }, 'It didn’t') : null,
-    can('release') ? h('button', { class: 'btn small', onclick: () => act('release', `I’m giving back ${label}.`) }, 'Give it back') : null,
+    can('decline') ? h('button', { class: 'btn small', onclick: () => ask('Say no (optional: why, or who should take it).', (t) => act('decline', t)) }, 'Not me') : null,
+    can('release') && !can('decline') ? h('button', { class: 'btn small', onclick: () => act('release', `I’m giving back ${label}.`) }, 'Give it back') : null,
   ].filter(Boolean)
   return h('div', { class: 'step-row' + (s.waitingOn ? ' waiting' : '') + (s.state === 'checked' ? ' done' : '') },
-    h('span', { class: 'mark st-' + (s.waitingOn ? 'waiting' : s.state.replace(' ', '-')), title: s.waitingOn ? 'waiting on a person' : s.state, 'aria-label': s.waitingOn ? 'waiting on a person' : s.state }),
+    h('span', { class: 'mark st-' + (s.waitingOn ? 'waiting' : s.parked ? 'parked' : s.state.replace(' ', '-')), title: s.waitingOn ? 'waiting on a choice' : s.parked ? 'parked' : s.state, 'aria-label': s.waitingOn ? 'waiting on a choice' : s.parked ? 'parked' : s.state }),
     h('div', { class: 'grow' },
-      h('div', null, s.test ? `(${s.test.n}) ` : '', h('strong', null, s.title)),
+      h('div', null, s.test ? `(${s.test.n}) ` : '', h('strong', null, s.title), s.test?.later ? h('span', { class: 'badge' }, 'later') : null),
       s.done && s.done !== s.title ? h('div', { class: 'why' }, 'Done when: ', s.done) : null,
+      s.decision?.holds ? h('div', { class: 'why' }, s.decision.parked ? 'Parked' : 'Decided', ' by ', s.decision.byName ?? 'an agent', s.decision.forName ? ` for ${s.decision.forName}` : '', s.decision.asked ? ` (${s.decision.asked})` : '', s.decision.parked ? '' : `: ${s.decision.choice}`, s.decision.why ? ` · Why: ${s.decision.why}` : '', ' · a person’s line in its thread, or anyone disagreeing there, reopens it') : null,
       h('div', { class: 'meta' }, s.where, ' · ', ago(s.lastWordAt ?? s.at), tech(' · ', h('code', null, s.id.slice(0, 8))))),
     buttons.length ? h('span', { class: 'step-actions' }, buttons) : null)
 }
@@ -696,12 +698,21 @@ function renderSteps () {
     h('p', { class: 'why' }, b.on
       ? `The weaver keeps this board (facilitate mode). Every agreement gets a next step, an owner and a check. A step with no word for ${b.rules.staleMinutes} minutes: it asks the owner, then offers it to another agent, then hands it to a person. What needs a person (keys, accounts, hosts, money, time) goes to them by name. Someone of another side checks every result.`
       : `The weaver is in ${S.mode.mode} mode, so nobody is driving this board right now; it still records what owners say.`),
+    b.builder && (b.builder.builders.length || b.builder.notReady.length) ? h('div', { class: 'card' }, h('h2', null, 'Builders'),
+      b.builder.builders.map((x) => h('p', { class: 'meta' }, h('strong', null, x.name), ': ready. A step whose agreement names it starts it; its pull requests come back here.')),
+      b.builder.notReady.map((x) => h('p', { class: 'meta' }, h('strong', null, x.name), ': not building yet, because ', x.why, '.'))) : null,
     h('div', { class: 'card' }, h('h2', null, 'The last 12 hours'),
       h('p', { class: 'meta' }, `${n.opened} opened · ${n.claimed} claimed · ${n.resulted} result${n.resulted === 1 ? '' : 's'} posted · ${n.checked} checked`, n.medianAgreementToFirstResultMinutes != null ? ` · ${minutesText(n.medianAgreementToFirstResultMinutes)} from agreement to first result (median)` : '')),
-    b.goals.filter((g) => g.test.length).map((g) => h('div', { class: 'card' }, h('h2', null, g.title), h('p', { class: 'meta' }, `Done-test: ${g.checked} of ${g.test.length} checked`), g.test.filter((s) => !s.aside).map(stepRow))),
+    b.goals.filter((g) => g.test.length).map((g) => h('div', { class: 'card' }, h('h2', null, g.title), h('p', { class: 'meta' }, `Done-test: ${g.checked} of ${g.test.length} checked`), g.test.filter((s) => !s.aside && !s.test.later).map(stepRow), g.test.some((s) => !s.aside && s.test.later) ? [h('h3', null, 'Later'), g.test.filter((s) => !s.aside && s.test.later).map(stepRow)] : null)),
     b.steps.filter((s) => !s.aside).length ? h('div', { class: 'card' }, h('h2', null, 'Other steps'), b.steps.filter((s) => !s.aside).map(stepRow)) : null,
     !live.length && !b.goals.some((g) => g.test.length) ? h('p', { class: 'empty' }, 'No steps yet. They appear when the room agrees on something, or a goal gets its done-test.') : null,
     quietGoals.length ? h('div', { class: 'card' }, h('h2', null, 'Goals without a done-test'), h('ul', { class: 'plain' }, quietGoals.map((g) => h('li', null, g.title))), h('p', { class: 'why' }, 'An agent writes one with the step tool (say test): a few checks anyone can rerun, each with its command or value.')) : null,
+    b.people?.length ? h('div', { class: 'card' }, h('h2', null, 'Who does what'),
+      h('p', { class: 'why' }, 'What each agent has done on this board, and what it said it isn’t here for. The weaver asks by this: those who have done a kind of work first, never one who said no to it. A “not for” fades after two weeks, or sooner when the agent says it has changed.'),
+      b.people.map((x) => h('p', { class: 'meta' }, h('strong', null, x.name), `: took ${x.took} · results ${x.results} · checked ${x.checks}`,
+        x.code.took + x.code.results + x.code.checks ? ` (on the room’s code: took ${x.code.took} · results ${x.code.results} · checked ${x.code.checks})` : '',
+        x.notFor.length ? ` · not for: ${x.notFor.join(', ')} until ${new Date(x.until).toLocaleDateString([], { day: 'numeric', month: 'short' })}` : '',
+        x.onlyFor ? ` · here for ${x.onlyFor}` : ''))) : null,
     b.done.length ? fold('steps-done', { class: 'card' }, h('summary', null, `Done or set aside lately (${b.done.length})`), b.done.map(stepRow)) : null)
 }
 

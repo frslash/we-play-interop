@@ -38,7 +38,17 @@ export class Workshop {
         commits: commits.map((c) => ({ sha: c.sha, title: c.commit.message.split('\n')[0].slice(0, 200), why: c.commit.message.split('\n').slice(1).join('\n').trim().slice(0, 1200), by: c.commit.author?.name ?? '', at: c.commit.author?.date ?? null, url: c.html_url })),
         pulls: pulls.map((p) => ({ number: p.number, title: p.title.slice(0, 200), state: p.merged_at ? 'merged' : p.state, branch: p.head?.ref ?? '', at: p.updated_at, url: p.html_url })),
       }
+      this.heads(pulls)
     } catch (err) { this.cache = { ...this.cache, error: String(err.message).slice(0, 200) } }
+  }
+
+  /** A push to a proposed pull request moves its head, which voids approvals of the earlier commit (state.js covers). */
+  heads (pulls) {
+    const st = this.ctx.log.state
+    for (const p of pulls) {
+      if (p.state !== 'open' || !p.head?.sha) continue
+      for (const pr of st.proposals.values()) if (pr.kind === 'workspace-change' && pr.change?.pr === p.number) st.setHead(pr, p.head.sha)
+    }
   }
 
   view () {
@@ -52,7 +62,7 @@ export class Workshop {
         entry: e.hash, at: e.timestamp, title: p.title, why: p.why ?? '', sha256: p.sha256, by: st.nameOf(e.author), for: st.nameOf(e.onBehalfOf),
         stage: pr ? (pr.outcome === 'merged' ? 'merged' : st.statusOf(pr)) : told ? 'not opened' : 'being tested',
         detail: pr ? (pr.notYet ?? this.ctx.executor?.waitingFor(pr) ?? null) : told ? told.document.payload.text.split('\n')[0].slice(0, 300) : null,
-        pr: pr?.change?.pr ?? null, approvals: pr ? [...pr.approvals.keys()].map((d) => st.nameOf(d)) : [],
+        pr: pr?.change?.pr ?? null, approvals: pr ? st.holding(pr).dids.map((d) => st.nameOf(d)) : [], head: pr?.head ?? null,
       })
     }
     return { repo: this.ctx.config.workspaceRepo, branch: this.ctx.config.workspaceBranch || 'main', running: this.running(), ...this.cache, changes: changes.reverse().slice(0, 30) }

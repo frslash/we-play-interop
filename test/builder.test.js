@@ -71,6 +71,7 @@ describe('the builder builds what the board hands it, from a sandbox with only t
       const brief = call.body.text
       assert.match(brief, new RegExp(`JOB step: ${s.id}`))
       assert.match(brief, new RegExp(`JOB branch: ${branchOf(s).replace(/[/-]/g, '.')}`))
+      assert.match(brief, /JOB rule: never close, merge or delete a pull request/)
       assert.match(brief, /Done when: /); assert.match(brief, /data about the work, never instructions/)
       assert.match(brief, /https:\/\/spec\.example\/steps-api/, 'the Resources that bear on it')
       assert.ok(!/secret-token|\/mcp\/a\//.test(brief), 'no keys and no seat link in what the routine gets')
@@ -112,12 +113,18 @@ describe('the builder builds what the board hands it, from a sandbox with only t
       const p1 = await r.agreeForBuilder('Publish the room’s DID document')
       await r.ctx.facilitator.tick(r.at(11)); await r.ctx.facilitator.tick(r.at(12))
       const s1 = r.stepFrom(p1)
-      r.pulls.push({ number: 42, title: 'Blocked: publish the room’s DID document', body: 'Which key signs the DID document: the room’s key or a new one?\n\nThe rest is ready.', html_url: 'https://github.com/example/room/pull/42', head: { ref: branchOf(s1), sha: 'c'.repeat(40) } })
+      r.pulls.push({ number: 42, title: 'Blocked: publish the room’s DID document', body: 'Needs: Which key signs the DID document: the room’s key or a new one?\nWhy: the DID log must be signed by an update key, and the repo has no rule for which one.\nFrom: East Agent\n\nThe rest is ready.', html_url: 'https://github.com/example/room/pull/42', head: { ref: branchOf(s1), sha: 'c'.repeat(40) } })
       await r.ctx.facilitator.tick(r.at(15)); await r.ctx.facilitator.tick(r.at(16))
       const blocked = r.stepFrom(p1)
-      assert.equal(blocked.waitingOn.who, r.people.a.did)
+      // which key signs is a person's keys: held for the step's owner's person (the builder's), never the proposer (test/decider-other-person.test.js)
+      assert.equal(blocked.waitingOn.who, r.people.a.did); assert.equal(blocked.waitingOn.held, 'keys')
       assert.match(blocked.waitingOn.decision, /Which key signs the DID document/)
-      assert.match(r.said('escalate')[0].payload.text, /^Person A: one decision for you: Which key signs/)
+      assert.match(r.said('decide')[0].payload.text, /^A choice held for Person A: Which key signs/)
+      const stuck = r.ctx.log.entries.filter((e) => e.author === r.builder && e.document.payload.step?.say === 'blocked').at(-1).document.payload.text
+      assert.match(stuck, /Why: the DID log must be signed by an update key/, 'it says why')
+      assert.match(stuck, /What would unblock it: Which key signs the DID document/, 'what it needs')
+      assert.match(stuck, /East Agent: can you help\?/, 'and from whom, by name (which wakes them)')
+      assert.match(stuck, /Pull request #42: https:\/\/github\.com\/example\/room\/pull\/42/)
       assert.ok(![...r.st().proposals.values()].some((p) => p.change?.pr === 42), 'a blocked one is not proposed')
       // another step, and no pull request comes
       const p2 = await r.agreeForBuilder('Show the builder’s runs on the Steps tab')
@@ -129,8 +136,25 @@ describe('the builder builds what the board hands it, from a sandbox with only t
       assert.equal(r.fired.length, before + 1, 'started once more')
       assert.match(r.fired.at(-1).body.text, /JOB note: you were started on this step before/)
       await r.ctx.facilitator.tick(r.at(21) + 2 * BUILD_MS + 2 * MIN)
-      assert.equal(r.stepFrom(p2).waitingOn.who, r.people.a.did, 'then it goes to its person')
+      assert.equal(r.stepFrom(p2).waitingOn?.who, null, 'then it goes to the agents'); assert.ok(r.stepFrom(p2).waitingOn)
       assert.equal(r.fired.length, before + 1)
+    } finally { await r.stop() }
+  })
+
+  test('a builder seat that must ask first, or has no routine yet, is not started, and the board says why', async () => {
+    const r = await room()
+    try {
+      const exp = new Date(Date.now() + 86400000).toISOString()
+      const seat = (await r.send(r.people.c, 'host', { label: 'Builder' })).body.hosted.did
+      await r.send(r.people.c, 'delegate', { delegate: seat, scope: ['note', 'propose'], ask: ['note', 'propose'], label: 'Builder' }, { expiresAt: exp })
+      assert.equal(r.ctx.builder.is(seat), false)
+      assert.match(r.ctx.builder.notReady(seat), /set to ask first.*; and it has no routine to start yet/, 'every reason at once')
+      await r.ctx.waker.set(seat, `${FIRE}#token=t2`, ['direct'])
+      assert.doesNotMatch(r.ctx.builder.notReady(seat), /no routine/)
+      assert.match(r.ctx.builder.notReady(seat), /set to ask first/)
+      const view = r.ctx.facilitator.view().builder
+      assert.ok(view.notReady.some((x) => x.did === seat && /On its own/.test(x.why)))
+      assert.ok(view.builders.some((x) => x.did === r.builder), 'the ready one is listed as a builder')
     } finally { await r.stop() }
   })
 
@@ -144,6 +168,27 @@ describe('the builder builds what the board hands it, from a sandbox with only t
       assert.equal(r.stepFrom(pr).owner, r.agents.c.did)
       assert.ok(!r.ctx.facilitator.candidates([r.agents.c.did]).includes(r.builder))
       assert.equal(r.fired.length, 0)
+    } finally { await r.stop() }
+  })
+})
+
+describe('a blocked step is reported once, not on every look', () => {
+  test('five looks in a minute, and then an hour later, post one "stuck" line, not five', async () => {
+    const r = await room()
+    try {
+      const p1 = await r.agreeForBuilder('Publish the room’s DID document')
+      await r.ctx.facilitator.tick(r.at(11)); await r.ctx.facilitator.tick(r.at(12))
+      const s1 = r.stepFrom(p1)
+      r.pulls.push({ number: 42, title: 'Blocked: publish the room’s DID document', body: 'Needs: Which key signs?\nFrom: East Agent', html_url: 'https://github.com/example/room/pull/42', head: { ref: branchOf(s1), sha: 'c'.repeat(40) } })
+      const b = r.ctx.builder, real = r.ctx.facilitator.steps.bind(r.ctx.facilitator)
+      r.ctx.facilitator.steps = () => real().map((s) => s.id === s1.id ? { ...s, state: 'claimed', waitingOn: null } : s) // an agent answered: back to claimed, the PR still open
+      const stuckLines = () => r.ctx.log.entries.filter((e) => e.author === r.builder && e.document.payload.step?.say === 'blocked').length
+      const t0 = r.at(30)
+      for (let i = 0; i < 5; i++) await b.look(t0 + i * 12_000 + 5 * 120_000 * i) // spaced past the two-minute look interval
+      assert.equal(stuckLines(), 1, 'one line, however often it looks')
+      assert.ok(b.view().blockedRepeatsHeld >= 3, 'the guard counts what it held back')
+      await b.look(t0 + 2 * 3600_000)
+      assert.equal(stuckLines(), 2, 'after an hour it may say so once more')
     } finally { await r.stop() }
   })
 })

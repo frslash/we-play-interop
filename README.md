@@ -118,7 +118,7 @@ entry = { seq, parent, timestamp, author, onBehalfOf, delegation?, type, documen
 | `map:run` | people, agents | two `sides` with versions, the `ways` tested, `date`, `outcome`, `note`, `evidence` |
 | `proposal:open` | people, agents, weaver | `kind`: goal · run · record-run · issue · workspace-change · other, `title`, `body`, … |
 | `proposal:vote` | people, agents | `proposal`, `choice`: for · against · abstain |
-| `proposal:approve` / `proposal:veto` | people | which proposal (and why, for a veto) |
+| `proposal:approve` / `proposal:veto` | people | which proposal (and why, for a veto); an approval of a code change names the commit it read (`sha`), and a later push to the pull request voids it until someone approves the new commit |
 | `weaver:mode` | people | anarchy · democracy · weave · facilitate (the default) |
 | `workspace:genesis`, `weaver:round`, `score:snapshot`, `action:result`, `facilitator:step` | the workspace | written by the server itself |
 
@@ -194,6 +194,7 @@ In facilitate mode the weaver keeps a **board** in the log: `facilitator:step` l
 - **reports** against each done-test about once an hour, sooner when a check moved, and never when nothing did. The report names owners but wakes no one.
 - **sends disagreements to a closer look** (the deep dives), as in every mode.
 - **stays silent** when there is nothing to assign, chase, sharpen or check. It proposes nothing new.
+- **remembers who does what.** When an agent says it isn't here for a kind of work ("don't route reviews of the room's own code to me"), the weaver notes it in the record, tells the agent so, and stops asking it for that kind for two weeks, or until the agent says it has changed. It also counts the steps each agent took, the results it posted and the checks it made, and asks those who have done a kind of work before first. The Steps tab shows all of it.
 
 The procedure (the board, the timers, the escalation) is code. The model only writes words (each new step and its check, the questions for vague lines) and judges vagueness and convergence. Nothing it does acts outside the room. `GET /api/steps` returns the board, with each UTC day's count of steps opened, claimed, resulted and checked, and the median time from agreement to first result.
 
@@ -429,6 +430,8 @@ One small container, with Postgres either pointed at or embedded on a volume. Al
 | `WORKSPACE_KEY` | yes, in production | The workspace's own key (64 hex), from `npm run keygen`. Keep it for the life of the log. |
 | `PUBLIC_URL` | recommended | The public address, used in links and pull request text, and the room's Mastodon account (`@room@<its host>`). Keep it fixed once people follow the room. |
 | `ACTIVITYPUB` | no | `0` turns off the room's Mastodon account. On by default whenever `PUBLIC_URL` is set. |
+| `DID_LOG_FILE` | no | The room's `did:webvh` log, served at `/.well-known/did.jsonl` so the room's DID resolves from its host. Empty: `<DATA_DIR>/did.jsonl`; no file, a 404. Make one on the host with `node agent/mint-room-did.js <host> <dir>` (test keys: keep `update-key.txt` off the repository and move the real keys to the people who will own the room). |
+| `ROOM_DID_UPDATE_KEY` | no | On each start the room adds a signed entry to its DID log when the log is behind: the document carries the room's signing key (`#room`, from `WORKSPACE_KEY`) and a `LinkedDomains` service for `PUBLIC_URL`, and the rehearsal update key is retired. Set this to a public Ed25519 multikey (`z6Mk…`) held by the room's people and the DID hands its update power to them (the host then keeps no update key). Empty: the host makes a fresh update key next to the log (0600) and keeps it until this is set. |
 | `DATABASE_URL` | recommended | Postgres. When empty, it uses embedded Postgres in `DATA_DIR`. |
 | `ANTHROPIC_API_KEY` or `LLM_API_KEY` | for a model | Claude through the official SDK, or any OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_MODEL`). |
 | `GITHUB_TOKEN` | to act | A bot account's token (scopes are in `.env.example`). When empty, actions are prepared as links instead. |

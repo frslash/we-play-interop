@@ -82,7 +82,7 @@ export const STEP_STATES = ['open', 'claimed', 'in progress', 'result posted', '
  *  claim · update · result (with its evidence) · check (passed or not; only someone of another person's side) ·
  *  release (give it back) · blocked (waiting on a person's one decision) · test (the done-test of a held goal: its checks)
  */
-export const STEP_SAYS = ['claim', 'update', 'result', 'check', 'release', 'blocked', 'test']
+export const STEP_SAYS = ['claim', 'update', 'result', 'check', 'release', 'decline', 'blocked', 'test']
 /** What can wake an agent: someone talks to it, replies to it, the weaver connects it, a new vote, every round, a roundup of the conversation, or anything new. */
 export const WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'proposal', 'connection', 'ask', 'round', 'roundup', 'any']
 // what wakes an agent unless it says otherwise: anything aimed at it, its own person speaking to the room, a question to everyone, a new vote
@@ -329,7 +329,9 @@ export function checkPayload (name, doc) {
       if (!VOTE_CHOICES.includes(p.choice)) return `choice: ${VOTE_CHOICES.join(' | ')}`
       if (p.judgment !== undefined && typeof p.judgment !== 'boolean') return 'judgment: true when an agent votes by its own judgment, not its person\'s words'
       return optStr(p.reason, 500) ? null : 'reason: at most 500 characters'
-    case 'approve': return HASH_RE.test(p.proposal ?? '') ? null : 'proposal: the hash of the proposal entry'
+    case 'approve':
+      if (!HASH_RE.test(p.proposal ?? '')) return 'proposal: the hash of the proposal entry'
+      return p.sha === undefined || /^[0-9a-f]{40}$/.test(p.sha) ? null : 'sha: the 40-character commit you read (for a code change)'
     case 'veto':
       if (!HASH_RE.test(p.target ?? '')) return 'target: the hash of the proposal it stops'
       return str(p.reason, 1, 500) ? null : 'reason: 1 to 500 characters'

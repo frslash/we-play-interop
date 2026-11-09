@@ -94,7 +94,7 @@ export class Weaver {
         return { held: g.held.map(view), candidates: g.candidates.slice(-10).map(view) }
       })(),
       newInputs: inputs.map((e) => gist(e, st)),
-      openProposals: open.filter((pr) => pr.kind !== 'goal').map((pr) => ({ hash: pr.hash, kind: pr.kind, title: pr.title, body: clip(pr.body, 400), run: pr.run, by: st.nameOf(pr.principal), byWeaver: pr.byWeaver, tally: st.tally(pr), approvals: pr.approvals.size, status: st.statusOf(pr) })),
+      openProposals: open.filter((pr) => pr.kind !== 'goal').map((pr) => ({ hash: pr.hash, kind: pr.kind, title: pr.title, body: clip(pr.body, 400), run: pr.run, by: st.nameOf(pr.principal), byWeaver: pr.byWeaver, tally: st.tally(pr), approvals: st.holding(pr).dids.length, status: st.statusOf(pr) })),
       intentions: intentions.map((e) => ({ entry: e.hash, who: st.nameOf(e.onBehalfOf), text: clip(e.document.payload.text, 300) })),
       deepDives: diveContext(this.log),
       // the Resources tab, the slice that bears on what is being said now: specs, code and maps, with what agents found in each
@@ -233,7 +233,7 @@ Answer with one JSON object only:
  "tensions":[{"between":["<did>","<did>"],"about":"<what they disagree on, in a few words>"}],
  "next":[{"action":"<one sentence>","why":"<one or two sentences>","kind":"ask|goal|run|issue|other","measure":"<for a goal, optional: one of ${MEASURES.join(', ')}>","direction":"up|down","proposal":"<hash of an existing open proposal, or null>","holds":["<hashes of intentions it serves>"],"run":{"sides":["<project slug>","<project slug>"],"ways":["<way id>"]},"issue":{"title":"<title>","body":"<body>"}}]}
 Use only hashes that appear in the input. Prefer an existing proposal over a new one. "ask" is a question to the room (it does not become a proposal); "goal" proposes what winning looks like; "run" is an invitation to a pair of projects on the map to try ways together; "issue" is an issue on the DTG board's repository; "other" is anything else, including inviting a project onto the map and ideas to improve this workspace. Plain words, no marketing language.
-${DIVE_PROMPT}${ctx.mode === 'facilitate' ? `\n${ROUND_PROMPT}\nAdd them to the same JSON object: "vague":[...], "converged":[...].` : ''}`
+${DIVE_PROMPT}${ctx.mode === 'facilitate' ? `\n${ROUND_PROMPT}\nAdd them to the same JSON object: "vague":[...], "converged":[...], "moves":[...], "revisedTest":{...} or null.` : ''}`
     return [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(ctx) }]
   }
 
@@ -339,9 +339,9 @@ ${DIVE_PROMPT}${ctx.mode === 'facilitate' ? `\n${ROUND_PROMPT}\nAdd them to the 
     // closer looks where agents disagree, judged and opened every round, model or not; while one is open, the round speaks
     result.dives = await runDives(this, { round: n, judged: result.dives ?? [], conflicts: result.conflicts ?? [] }).catch((err) => { this.lastError = `closer looks: ${err.message}`; console.error('closer looks:', err); return [] })
     // facilitate: press the lines the model found vague, open a step where people converged
-    const acted = facilitate && this.facilitator ? await this.facilitator.fromRound(result.facilitate, model.ok ? { model: model.id, latencyMs: model.latencyMs } : null).catch((err) => { this.lastError = `facilitator: ${err.message}`; console.error('facilitator round:', err); return { pressed: [], opened: [] } }) : null
+    const acted = facilitate && this.facilitator ? await this.facilitator.fromRound(result.facilitate, model.ok ? { model: model.id, latencyMs: model.latencyMs } : null).catch((err) => { this.lastError = `facilitator: ${err.message}`; console.error('facilitator round:', err); return { pressed: [], opened: [], moved: [] } }) : null
     if (acted) result.facilitate = { ...result.facilitate, ...acted, board: { steps: this.log.state.steps.size } }
-    if (!result.next.length && !result.connections?.length && !result.intentions?.length && !result.tensions?.length && !result.dives.length && !acted?.pressed.length && !acted?.opened.length) {
+    if (!result.next.length && !result.connections?.length && !result.intentions?.length && !result.tensions?.length && !result.dives.length && !acted?.pressed.length && !acted?.opened.length && !acted?.moved?.length) {
       this.heardUpTo = lastSeq // heard it all; nothing new to say, so say nothing
       this.lastSilent = { at: new Date().toISOString(), model }
       return null
