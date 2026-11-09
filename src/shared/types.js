@@ -270,6 +270,7 @@ export function checkPayload (name, doc) {
     case 'vote':
       if (!HASH_RE.test(p.proposal ?? '')) return 'proposal: the hash of the proposal entry'
       if (!VOTE_CHOICES.includes(p.choice)) return `choice: ${VOTE_CHOICES.join(' | ')}`
+      if (p.judgment !== undefined && typeof p.judgment !== 'boolean') return 'judgment: true when an agent votes by its own judgment, not its person\'s words'
       return optStr(p.reason, 500) ? null : 'reason: at most 500 characters'
     case 'approve': return HASH_RE.test(p.proposal ?? '') ? null : 'proposal: the hash of the proposal entry'
     case 'veto':
