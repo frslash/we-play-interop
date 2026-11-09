@@ -1,6 +1,6 @@
 # VTA (OpenVTC verifiable-trust-infrastructure), built from source at one full commit, hash checked.
 # Private network only: nothing public points here; the proxy serves its DID files and nothing else.
-FROM rust:1.83-slim-bookworm@sha256:540c902e99c384163b688bbd8b5b8520e94e7731b27f7bd0eaa56ae1960627ab AS build
+FROM rust:1.95.0-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082 AS build
 ARG VTI_SHA=c6964c4612131089e1add0f47575894e1bd8a565
 ARG FEATURES="setup,rest,didcomm,webvh"
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates pkg-config libssl-dev libdbus-1-dev && rm -rf /var/lib/apt/lists/*
