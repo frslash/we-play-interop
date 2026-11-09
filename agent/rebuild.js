@@ -3,7 +3,9 @@
 // Each source is a copy someone keeps: a mirror's address (it serves /api/log, see agent/mirror.js),
 // a mirror's entries.jsonl, or an export (.json). No source is trusted: every entry must link, hash and
 // carry two good signatures, and the result must pass the whole-log check with no signature unchecked.
-//   node agent/rebuild.js <copy> [<copy> ...] [--room did:key:...] [--out rebuilt-export.json]
+//   node agent/rebuild.js <copy> [<copy> ...] --room did:key:... [--out rebuilt-export.json]
+// --room is required: the room's DID, from somewhere other than the copies (the room's page, your own
+// notes). Without it, a full copy of some other room would rebuild and pass as this one.
 // Prints one JSON result (no entries in it); exits 0 only when the rebuild checks out.
 // --out writes the rebuilt record as an export, which agent/import-log.js or agent/roundtrip-log.js take.
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -14,7 +16,12 @@ import { createResolver } from '../src/server/resolver.js'
 const args = process.argv.slice(2)
 const opt = (k) => { const i = args.indexOf('--' + k); return i >= 0 ? args.splice(i, 2)[1] : null }
 const out = opt('out'), room = opt('room')
-if (!args.length) { console.error('usage: node agent/rebuild.js <mirror url | entries.jsonl | export.json> [...] [--room did] [--out file]'); process.exit(2) }
+const usage = 'usage: node agent/rebuild.js <mirror url | entries.jsonl | export.json> [...] --room did [--out file]'
+if (!room || !/^did:[a-z0-9]+:\S+$/.test(room)) {
+  console.error(room ? `--room must be a DID (did:method:...), got: ${String(room).slice(0, 80)}` : 'refusing to rebuild without --room: name the room\'s DID, so another room\'s record cannot pass as this one')
+  console.error(usage); process.exit(2)
+}
+if (!args.length) { console.error(usage); process.exit(2) }
 
 async function readCopy (src) {
   if (/^https?:\/\//.test(src)) {

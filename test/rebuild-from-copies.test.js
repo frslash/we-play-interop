@@ -111,7 +111,7 @@ describe('the record rebuilds from members\' copies with the server off', () => 
 
       const out = join(dir, 'rebuilt.json')
       // one mirror by its address, the other from the file it keeps
-      const { stdout } = await run(process.execPath, ['agent/rebuild.js', mirrors[0].url, join(mirrors[1].dir, 'entries.jsonl'), '--out', out])
+      const { stdout } = await run(process.execPath, ['agent/rebuild.js', mirrors[0].url, join(mirrors[1].dir, 'entries.jsonl'), '--room', all[0].author, '--out', out])
       const r = JSON.parse(stdout)
       assert.equal(r.ok, true); assert.equal(r.entries, all.length); assert.equal(r.signaturesNotChecked, 0)
       assert.deepEqual(r.head, { seq: all.at(-1).seq, hash: all.at(-1).hash })
@@ -122,7 +122,7 @@ describe('the record rebuilds from members\' copies with the server off', () => 
       // a bad copy alone fails, with exit code 1
       const bad = clone(all); bad[1].document.payload.name = 'x'
       writeFileSync(join(dir, 'bad.json'), JSON.stringify(bad))
-      await assert.rejects(run(process.execPath, ['agent/rebuild.js', join(dir, 'bad.json')]), (err) => err.code === 1 && JSON.parse(err.stdout).ok === false)
+      await assert.rejects(run(process.execPath, ['agent/rebuild.js', join(dir, 'bad.json'), '--room', all[0].author]), (err) => err.code === 1 && JSON.parse(err.stdout).ok === false)
     } finally {
       for (const k of kids) k.kill()
       rmSync(dir, { recursive: true, force: true })
