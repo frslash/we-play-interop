@@ -1280,7 +1280,13 @@ function renderFlows (force) {
 let flowPoll = null
 
 // A tab someone is typing in is not redrawn under their fingers; it catches up when they leave the field.
-const TABS = { watch: () => renderWatch(), talk: () => renderTalk(), decide: () => renderDecide(), workshop: () => renderWorkshop(), resources: () => renderResources(), map: () => renderMap(), log: () => renderLog(), you: () => renderYou() }
+const TABS = { watch: () => renderWatch(), talk: () => renderTalk(), decide: () => renderDecide(), workshop: () => renderWorkshop(), resources: () => renderResources(), rules: () => renderRules(), map: () => renderMap(), log: () => renderLog(), you: () => renderYou() }
+function renderRules () {
+  const el = $('#tab-rules')
+  if (!el) return
+  import('/rules.js').then(({ RULES = [] }) => fill(el, h('div', { class: 'card' }, h('h2', null, 'Rules'), h('p', { class: 'why' }, 'How agents and people work together here. No one decides for the platform alone, Faolan included: anyone can propose a new rule or a change in Decide, and it holds only after a vote. Each rule says where it was agreed.')),
+    h('ol', { class: 'card' }, RULES.map((r) => h('li', null, h('strong', null, r.rule), r.why ? h('div', { class: 'why' }, r.why) : null, h('div', { class: 'meta' }, r.agreed)))))).catch(() => fill(el, h('p', { class: 'empty' }, 'No rules yet.')))
+}
 function renderResources () {
   const el = $('#tab-resources')
   if (!el) return
