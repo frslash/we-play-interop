@@ -6,10 +6,13 @@
 //   WPI_URL=https://your-workspace npx -y -p github:Project-Weave-Tech/we-play-interop wpi-agent
 //   wpi-agent link     prints the agent's DID and the delegation link + QR, then exits
 //   wpi-agent move-notebook   copies the notes the room's server holds into the sealed room, then exits
+//   wpi-agent community-room offers | accept <roomId> | status | say "<text>" | drafts | send <n> | discard <n>   the community's encrypted room (agent/community-room.js)
 //   wpi-agent join-community  joins COMMUNITY_DID as COMMUNITY_PERSONA through your own trust agent (agent/community-join.js; --status shows where it stands)
 //
 // Env: WPI_URL (required) · WPI_AGENT_KEY (64 hex) or WPI_AGENT_KEY_FILE
 // (default ~/.config/we-play-interop/agent-key, created on first run).
+// A community's encrypted room to read and talk in (after `community-room accept`): COMMUNITY_DID · COMMUNITY_PERSONA · VTA_CREDENTIAL (or _FILE)
+// · optional COMMUNITY_ROOM (when several are joined) · COMMUNITY_TALK_AGENT_MAY_SAY=yes lets the agent speak there without asking (default: it keeps a draft).
 // Notebook in a sealed room the person holds (all three, or none): VTA_CREDENTIAL (or VTA_CREDENTIAL_FILE) ·
 // NOTEBOOK_ROOM · NOTEBOOK_HOST_DID. Then the notebook never touches the room's server (agent/vti-notebook.js).
 import { createHash } from 'node:crypto'
@@ -77,7 +80,9 @@ async function submitChange ({ title, why, base, patch }) {
 }
 
 if (process.argv[2] === 'link') { await showLink(); process.exit(0) }
-if (process.argv[2] === 'join-community') process.exit(await (await import('./community-join.js')).joinCommunityCommand(process.argv.slice(3), process.env, { say, roomUrl: base, stateDir: dirname(process.env.WPI_AGENT_KEY_FILE || join(homedir(), '.config/we-play-interop/agent-key')) }))
+const stateDir = dirname(process.env.WPI_AGENT_KEY_FILE || join(homedir(), '.config/we-play-interop/agent-key'))
+if (process.argv[2] === 'join-community') process.exit(await (await import('./community-join.js')).joinCommunityCommand(process.argv.slice(3), process.env, { say, roomUrl: base, stateDir }))
+if (process.argv[2] === 'community-room') process.exit(await (await import('./community-room.js')).communityRoomCommand(process.argv.slice(3), process.env, { say, stateDir }))
 
 // Where this agent's notebook lives. With the three settings it is a sealed room its person holds, reached through
 // their own trust agent from this machine; the credential for that trust agent stays here and is never sent to the room.
@@ -104,11 +109,20 @@ if (process.argv[2] === 'move-notebook') {
   } catch (err) { say(`The move stopped: ${err.message} Nothing on the room's server was changed.`); process.exit(1) }
 }
 
+// The community's encrypted room, when this person has joined one: the agent then gets two tools to read and say things there.
+let talk = null
+if (process.env.COMMUNITY_DID) {
+  try {
+    const made = (await import('./community-room.js')).communityRoomFromEnv(process.env, { stateDir })
+    if (made) talk = { read: ({ since } = {}) => made.cr.read(made.roomId, { since }), say: (text, { inReplyTo } = {}) => made.cr.agentSay(made.roomId, text, { inReplyTo }), room: made.roomId, maySay: made.cr.agentMaySay }
+  } catch (err) { say(err.message); process.exit(1) }
+}
+
 const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js')
 const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js')
-const { ROOM_INSTRUCTIONS, registerAgentTools } = await import('../src/agent-tools.js')
+const { COMMUNITY_TALK_INSTRUCTIONS, ROOM_INSTRUCTIONS, registerAgentTools } = await import('../src/agent-tools.js')
 
-const server = new McpServer({ name: 'we-play-interop-agent', version: '0.1.0' }, { instructions: ROOM_INSTRUCTIONS(base, '', !!sealed) })
+const server = new McpServer({ name: 'we-play-interop-agent', version: '0.1.0' }, { instructions: ROOM_INSTRUCTIONS(base, '', !!sealed) + (talk ? `\n${COMMUNITY_TALK_INSTRUCTIONS}` : '') })
 registerAgentTools(server, {
   did: me.did,
   delegateLink: link,
@@ -117,6 +131,7 @@ registerAgentTools(server, {
   notebookHome: () => (sealed ? sealed.status() : { lives: 'room-server' }),
   act: async (name, payload, extra = {}) => { const r = await act(name, payload, extra); return { accepted: true, id: r.hash, seq: r.seq } },
   submitChange,
+  ...(talk ? { communityTalk: talk } : {}),
 })
 
 await server.connect(new StdioServerTransport())
@@ -125,3 +140,4 @@ try { p = await api(`/api/participants/${encodeURIComponent(me.did)}`) } catch {
 if (!p?.activeDelegation) await showLink()
 else say(`InWove agent ${me.did} acting for ${p.activeDelegation.issuer}`)
 say(sealed ? `Notebook: in the sealed room ${sealed.roomId}, through your own trust agent. The room's server is never asked for it.` : 'Notebook: on the room\'s server, encrypted with a key that server holds. To keep it in a room you hold, see the README.')
+if (talk) say(`Community room: ${talk.room}, read and talk through your own trust agent. The agent ${talk.maySay ? 'may speak there on its own' : 'keeps what it wants to say as a draft: wpi-agent community-room drafts, send <n>'}.`)
