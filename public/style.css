@@ -202,6 +202,8 @@ body[data-view="tech"] .plain-only { display: none !important; }
 .sys .time { opacity: 0.7; }
 .composer { position: sticky; bottom: calc(58px + env(safe-area-inset-bottom)); background: var(--bg); padding: 8px 0 4px; border-top: 1px solid var(--line); z-index: 4; }
 @media (min-width: 760px) { .composer { bottom: 0; } }
+.mentions { position: absolute; left: 0; right: 0; bottom: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 -4px 12px rgba(0,0,0,.12); }
+.mentions[hidden] { display: none; }
 .composer-row { display: flex; gap: 8px; align-items: flex-end; }
 .composer textarea { min-height: 44px; max-height: 160px; resize: none; border-radius: 22px; padding: 11px 16px; }
 .composer .send { width: 44px; min-width: 44px; height: 44px; border-radius: 50%; font-size: 20px; padding: 0; }
