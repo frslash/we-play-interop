@@ -14,4 +14,13 @@ try {
   const resolver = createResolver()
   const r = await importExport(db, JSON.parse(readFileSync(file, 'utf8')), { keyFor: (d, vm, p) => resolver.keyFor(d, vm, p) })
   console.log(JSON.stringify({ ok: true, ...r }, null, 2))
-} catch (err) { console.error(err.message); process.exitCode = 1 } finally { await db.close() }
+} catch (err) {
+  console.error(err.message)
+  // Say where it failed: the verifier's own report (seq and reason of each problem, the first 50).
+  const rep = err.report
+  if (rep) {
+    console.error(`checked ${rep.checked} of ${rep.entries} entries, ${rep.problems.length} problem(s), ${rep.signaturesNotChecked} signature(s) not checked`)
+    for (const p of rep.problems.slice(0, 50)) console.error(`  seq ${p.seq}: ${p.problem}`)
+  }
+  process.exitCode = 1
+} finally { await db.close() }

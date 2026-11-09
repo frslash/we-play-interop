@@ -63,3 +63,21 @@ describe('log round trip: export-log.js from a running room, import-log.js into 
     assert.doesNotMatch(code, /secrets\.|id-token|pull_request_target|environment:/, 'stays read-only')
   })
 })
+
+describe('log round trip: a refused import says where the chain breaks', () => {
+  test('import-log.js prints the seq and reason of each problem', async () => {
+    const roomDir = mkdtempSync(join(tmpdir(), 'wpi-rt2-room-')), emptyDir = mkdtempSync(join(tmpdir(), 'wpi-rt2-empty-')), work = mkdtempSync(join(tmpdir(), 'wpi-rt2-work-'))
+    const ctx = await createApp(roomConfig(roomDir), { awayGatherMs: 0, hostWelcomeMs: null })
+    try {
+      await ctx.log.accept(signedDocument(newIdentity(), { type: TYPES.join, payload: { name: 'Person A' } })).catch(() => {})
+      const { makeExport } = await import('../src/server/export.js')
+      const doc = JSON.parse(JSON.stringify(makeExport(ctx.log.entries)))
+      const last = doc.entries.at(-1); last.document.payload.name = 'tampered'
+      const file = join(work, 'bad.json'); writeFileSync(file, JSON.stringify(doc))
+      await assert.rejects(() => run(process.execPath, ['agent/import-log.js', file, emptyDir], { env }), (err) => err.code === 1 && /the chain does not verify/.test(err.stderr) && new RegExp(`seq ${last.seq}: `).test(err.stderr))
+    } finally {
+      await ctx.stop()
+      for (const d of [roomDir, emptyDir, work]) rmSync(d, { recursive: true, force: true })
+    }
+  })
+})
