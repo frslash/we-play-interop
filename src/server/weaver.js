@@ -13,6 +13,9 @@ import { conflictSides, DIVE_PROMPT, diveContext, runDives, sanitizeDives } from
 import { ROUND_PROMPT } from './facilitator.js'
 import { citedIn, resourcesFor } from './views.js'
 import { parseJsonAnswer } from './llm.js'
+// What changes slowly in a round's context (the map, who is here, the goals): it goes first, so a model that caches reads it from
+// its cache; what is new this round (lines, the board, proposals, the resources they bring up) follows
+export const SLOW_KEYS = ['mode', 'map', 'people', 'inRoom', 'goals', 'intentions']
 
 const clip = (s, n) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s }
 const MAX_NEW_PROPOSALS = 5 // what a room can read between two rounds; anarchy only, the other modes add one at most
@@ -234,7 +237,20 @@ Answer with one JSON object only:
  "next":[{"action":"<one sentence>","why":"<one or two sentences>","kind":"ask|goal|run|issue|other","measure":"<for a goal, optional: one of ${MEASURES.join(', ')}>","direction":"up|down","proposal":"<hash of an existing open proposal, or null>","holds":["<hashes of intentions it serves>"],"run":{"sides":["<project slug>","<project slug>"],"ways":["<way id>"]},"issue":{"title":"<title>","body":"<body>"}}]}
 Use only hashes that appear in the input. Prefer an existing proposal over a new one. "ask" is a question to the room (it does not become a proposal); "goal" proposes what winning looks like; "run" is an invitation to a pair of projects on the map to try ways together; "issue" is an issue on the DTG board's repository; "other" is anything else, including inviting a project onto the map and ideas to improve this workspace. Plain words, no marketing language.
 ${DIVE_PROMPT}${ctx.mode === 'facilitate' ? `\n${ROUND_PROMPT}\nAdd them to the same JSON object: "vague":[...], "converged":[...], "moves":[...], "revisedTest":{...} or null.` : ''}`
-    return [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(ctx) }]
+    // the slow-changing context first (the map, the people, the goals), then what is new this round: the same JSON
+    // object, in that key order, so a model that caches (claude.js) reads the unchanging start from its cache
+    const slowKeys = SLOW_KEYS.filter((k) => k in ctx), rest = Object.keys(ctx).filter((k) => !SLOW_KEYS.includes(k))
+    const content = JSON.stringify(Object.fromEntries([...slowKeys, ...rest].map((k) => [k, ctx[k]])))
+    const slow = JSON.stringify(Object.fromEntries(slowKeys.map((k) => [k, ctx[k]])))
+    const head = rest.length && slowKeys.length ? slow.slice(0, -1) + ',' : null // the text the full object starts with, up to its first new key
+    return [{ role: 'system', content: system }, { role: 'user', content, ...(head && content.startsWith(head) ? { cacheSplit: head.length } : {}) }]
+  }
+
+  /** What the cache saved, kept for the room's status (the weaver's view): every round's tokens, read, written or full price. */
+  countCache (usage) {
+    if (!usage) return
+    const c = this.cache ??= { since: new Date().toISOString(), calls: 0, read: 0, written: 0, uncached: 0, output: 0 }
+    c.calls++; c.read += usage.cache_read_input_tokens ?? 0; c.written += usage.cache_creation_input_tokens ?? 0; c.uncached += usage.input_tokens ?? 0; c.output += usage.output_tokens ?? 0
   }
 
   /** Keep only what refers to real entries, well-formed, within bounds. */
@@ -319,7 +335,8 @@ ${DIVE_PROMPT}${ctx.mode === 'facilitate' ? `\n${ROUND_PROMPT}\nAdd them to the 
       const messages = this.prompt(ctx)
       try {
         const pick = this.llm.route ? this.llm.route('round', { chars: messages[1].content.length, inputs: inputs.length, mode: ctx.mode, prefer: this.config.weaverModel }) : {}
-        const r = await this.llm.chat(messages, pick)
+        const r = await this.llm.chat(messages, { ...pick, cache: '1h' }) // rounds come every ten minutes or so: the unchanging start is cached for an hour
+        this.countCache(r.usage)
         model = { id: r.model, ok: true, ...(r.picked ? { picked: r.picked } : {}), ...(r.fallback ? { fallback: true } : {}), latencyMs: r.latencyMs, usage: r.usage, finishReason: r.finishReason, jsonMode: r.jsonMode, promptChars: messages[1].content.length }
         try { result = this.sanitize(parseJsonAnswer(r.content), ctx, fallback) } catch (err) { model = { ...model, ok: false, note: `answer was not usable (${err.message}); this round is the built-in tally` } }
       } catch (err) {
