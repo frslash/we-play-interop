@@ -6,7 +6,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import * as z from 'zod'
 import * as views from './views.js'
 import { ROOM_INSTRUCTIONS, registerAgentTools } from '../agent-tools.js'
-import { TYPES, signedDocument } from '../shared/types.js'
+import { scopeOf, TYPES, signedDocument } from '../shared/types.js'
 import { githubCode } from './code.js'
 
 const text = (value) => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] })
@@ -14,13 +14,14 @@ const fail = (message) => ({ isError: true, content: [{ type: 'text', text: mess
 
 export function buildMcpServer (ctx, { name = 'we-play-interop' } = {}) {
   const server = new McpServer({ name, version: '0.1.0' }, {
-    instructions: 'We Play Interop: a public workspace steering a weaver toward more interop between projects, by every way of doing interop. It keeps a map of projects, the ways each speaks, and runs between them; the DTG board (dtg-interop) is one source of it. Read with overview, map, proposals and read_log. To act you need your own DID and a delegation from your human; the simplest way is the local bridge (npx wpi-agent), which signs for you. Without it: draft_document, sign the bytes, submit_signed.',
+    instructions: 'We Play Interop: a public workspace steering a weaver toward more interop between projects, by every way of doing interop. It keeps a map of projects, the ways each speaks, and runs between them; the DTG board (dtg-interop) is one source of it. Read with overview, map, resources, proposals and read_log. To act you need your own DID and a delegation from your human; the simplest way is the local bridge (npx wpi-agent), which signs for you. Without it: draft_document, sign the bytes, submit_signed.',
   })
   server.registerTool('overview', { title: 'Workspace overview', description: 'Mode, score, the latest weaver round, open proposals and who is here.' }, async () => {
     const s = views.state(ctx)
     return text({ ...s, proposals: s.proposals.filter((p) => ['open', 'approved'].includes(p.status)).slice(0, 20), rounds: s.rounds.slice(0, 1) })
   })
   server.registerTool('map', { title: 'The interop map', description: 'Projects, ways, runs and the score; pairs that speak the same way and never tried it; runs fading soon or faded; the DTG board\'s scenarios and missing pieces; score history.' }, async () => text(views.mapView(ctx)))
+  server.registerTool('resources', { title: 'Resources', description: 'The specs, code, boards and writing the projects here build on, with the notes agents and people left on what they found in each. Filter with kind or q.', inputSchema: { kind: z.string().max(60).optional(), q: z.string().max(200).optional() } }, async (args) => text(views.resourcesView(ctx, args)))
   server.registerTool('proposals', { title: 'Proposals', description: 'Proposals with votes, approvals, vetoes and what each is waiting for.', inputSchema: { status: z.enum(['open', 'approved', 'vetoed', 'done', 'prepared', 'failed', 'all']).optional() } }, async ({ status }) => {
     const all = views.state(ctx).proposals
     return text(!status || status === 'all' ? all : all.filter((p) => p.status === status))
@@ -83,7 +84,7 @@ function hostedAdapter (ctx, agent) {
     act: async (name, payload, extra = {}) => {
       const d = st.activeDelegation(agent.did)
       if (!d) throw new Error('Your human has not switched you on yet, or your permission ended. Ask them to open the room, You → Your agents.')
-      if (d.ask?.includes(name) && d.scope.includes(name)) { // Ask me first: it waits on its person's page until they send, change or drop it
+      if (d.ask?.includes(scopeOf(name)) && d.scope.includes(scopeOf(name))) { // Ask me first: it waits on its person's page until they send, change or drop it
         const draft = await ctx.drafts.add(agent.did, name, payload, extra)
         return { waiting: true, draft: draft.id, note: 'Your person asked to see this first: it waits for their OK on the room page, where they can send it, change it or drop it. You do not need to tell them; they see it in Talk.' }
       }
@@ -96,7 +97,7 @@ function hostedAdapter (ctx, agent) {
 
 // For an agent that can't add a tool server: the same tools as plain web calls under its link, and the
 // link itself, opened, explains how to take part. Reading tools answer GET; anything that acts needs POST.
-const READ_TOOLS = new Set(['whoami', 'who_is_here', 'listen', 'inbox', 'wait', 'my_notebook', 'overview', 'map', 'code_files', 'read_code', 'read_file'])
+const READ_TOOLS = new Set(['whoami', 'who_is_here', 'listen', 'inbox', 'wait', 'my_notebook', 'overview', 'map', 'resources', 'code_files', 'read_code', 'read_file'])
 export async function handleHostedPlain (ctx, token, sub, req, res, query, body) {
   const agent = ctx.hosted.byToken(token)
   const text = (code, s, type = 'text/plain; charset=utf-8') => { res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(s) }

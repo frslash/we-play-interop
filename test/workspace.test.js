@@ -842,6 +842,42 @@ describe('the workspace, end to end', () => {
     assert.match(byFile.text, /\[page 1\]/)
     assert.equal((await fetch(`${base}/api/files/${'0'.repeat(64)}`)).status, 404)
   })
+  test('every agent reads the Resources and adds to them: a new source, and a note on one already listed', async () => {
+    const rpc = async (url, method, params, id = 1) => {
+      const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id, method, params }) })
+      return { status: r.status, body: await r.json() }
+    }
+    const call = async (url, name, args = {}) => (await rpc(url, 'tools/call', { name, arguments: args })).body.result
+    const made = await send(human, 'host', { label: 'Resource Reader' })
+    const { did, connector } = made.body.hosted
+    const url = connector.replace(/^https?:\/\/[^/]+/, base)
+    const tools = (await rpc(url, 'tools/list', {}, 2)).body.result.tools.map((t) => t.name)
+    for (const t of ['resources', 'add_resource']) assert.ok(tools.includes(t), t)
+    assert.match((await call(url, 'add_resource', { url: 'https://spec.example/a', title: 'A spec' })).content[0].text, /switched you on/) // no permission yet
+    await send(human, 'delegate', { delegate: did, scope: ['note'], label: 'Resource Reader' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() }) // speaking is enough
+    const listed = (await get('/api/resources')).resources
+    assert.ok(listed.length > 0, 'the list the room\'s code carries is there')
+    const first = listed[0]
+    const added = JSON.parse((await call(url, 'add_resource', { url: 'https://spec.example/a/', title: 'A spec for testing', kind: 'Protocols and specs', status: 'draft', about: 'What it is.' })).content[0].text)
+    assert.equal(added.accepted, true)
+    const noted = JSON.parse((await call(url, 'add_resource', { url: first.url + '#part', note: 'Its identity layer uses did:key, the same as ours.' })).content[0].text)
+    assert.equal(noted.accepted, true)
+    await send(other, 'resource', { url: 'https://spec.example/a', title: 'Someone else\'s title', note: 'Read it: section 3 matters.' }) // a person can add too; never over another's entry
+    const seen = JSON.parse((await call(url, 'resources', { q: 'spec.example' })).content[0].text)
+    assert.equal(seen.count, 1)
+    const mine = seen.resources[0]
+    assert.equal(mine.title, 'A spec for testing', 'one entry per address: a trailing slash is the same page, and the adder\'s title stands')
+    assert.equal(mine.status, 'draft'); assert.match(mine.by, /Resource Reader for /)
+    assert.equal(mine.notes.length, 1); assert.match(mine.notes[0].text, /section 3/)
+    const old = (await get('/api/resources')).resources.find((r) => r.url === first.url)
+    assert.equal(old.notes.length, 1, 'a note on a listed source lands on it, fragment or not')
+    assert.equal(old.notes[0].agent, 'Resource Reader')
+    assert.equal((await send(other, 'resource', { url: 'http://spec.example/b', title: 'Plain http' })).body.payload.code, 'malformedRequest')
+    assert.equal((await send(other, 'resource', { url: 'https://spec.example/c' })).body.payload.code, 'malformedRequest', 'a title or a note')
+    const anon = (await rpc(base + '/mcp', 'tools/call', { name: 'resources', arguments: { kind: 'Protocols and specs' } })).body.result
+    assert.ok(JSON.parse(anon.content[0].text).resources.every((r) => r.kind === 'Protocols and specs'), 'anyone can read them, filtered by kind')
+  })
+
   test('the small lane: a change to the page only needs no vote, just its tests and a quiet window', async () => {
     const prop = await send(other, 'propose', { kind: 'workspace-change', title: 'A softer orange', change: { pr: 66, sha: 'a'.repeat(40) } })
     const pr = ctx.log.state.proposals.get(prop.body.hash)

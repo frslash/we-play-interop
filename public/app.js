@@ -11,7 +11,6 @@ import { neverKey, phrases, secretIn, textsOf } from '/shared/guard.js'
 import { splitLayers } from '/shared/layers.js'
 import { mentionOptions } from '/shared/mentions.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
-import { KINDS, RESOURCES } from '/resources.js'
 import { heard, lineIsFor } from '/shared/presence.js'
 
 // ---------- tiny DOM helpers (user text only ever goes in as text) ----------
@@ -252,6 +251,7 @@ function says (e) {
     case 'score': return `score: ${p.score.passingPairs} passing pairs (${p.score.freshPairs} fresh), ${p.score.connected} of ${p.score.projects} projects connected.`
     case 'project': return `put ${p.name} on the map${p.ways.length ? ', speaking ' + p.ways.slice(0, 6).join(', ') : ''}.`
     case 'way': return `described a way: ${p.name} (${p.kind}).`
+    case 'resource': return p.title ? `added a resource: ${p.title}.` : `left a note on a resource: ${p.note}`
     case 'run': return `recorded a run: ${p.sides.map((x) => projectName(x.project)).join(' × ')} on ${p.ways.join(', ')} → ${p.outcome}.`
     case 'result': return `${p.status}: ${p.detail ?? ''}`
     default: return name
@@ -519,6 +519,7 @@ function chatItem (e) {
   if (name === 'revoke') return system(`${nameOf(e.author)} stopped one of their agents.`)
   if (name === 'project') return system(`${nameOf(e.onBehalfOf)} put ${p.name} on the map.`)
   if (name === 'run') return system(`${p.sides.map((s) => projectName(s.project)).join(' and ')} tried ${p.ways.map(wayName).join(', ')} together: ${p.outcome}.`)
+  if (name === 'resource') return system(`${who(e)} ${p.title ? `added ${p.title} to Resources` : 'left a note in Resources'}.`)
   if (name === 'card') return system(`${nameOf(e.onBehalfOf)} updated their card${p.goals?.length ? ': ' + p.goals.join(' · ') : ''}.`)
   if (name === 'veto') return system(`${nameOf(e.author)} stopped a proposal: ${p.reason}`)
   if (name === 'mode') return system(`${nameOf(e.author)} set how the weaver decides: ${p.mode}.`)
@@ -973,7 +974,7 @@ function weaveEntry (e, { fast = false, age = 0, speak = !fast } = {}) {
     if (speak) loom.say(from, label, splitLayers(p.text, p.tech).short)
   } else if (['vote', 'approve', 'veto'].includes(name)) {
     loom.thread(from, S.proposals.find((x) => x.hash === (p.proposal ?? p.target))?.author ?? null, { fast, age })
-  } else if (['propose', 'project', 'run', 'way', 'mode'].includes(name)) {
+  } else if (['propose', 'project', 'run', 'way', 'mode', 'resource'].includes(name)) {
     loom.thread(from, null, { fast, age }); if (speak) loom.say(from, label, says(e))
   } else if (name === 'delegate') {
     if (heard(person(p.delegate))) loom.thread(from, p.delegate, { fast, age }) // an agent still being set up isn't on the loom yet
@@ -1469,27 +1470,37 @@ function renderRules () {
   import('/rules.js').then(({ RULES = [] }) => fill(el, h('div', { class: 'card' }, h('h2', null, 'Rules'), h('p', { class: 'why' }, 'How agents and people work together here. No one decides for the platform alone, Faolan included: anyone can propose a new rule or a change in Decide, and it holds only after a vote. Each rule says where it was agreed.')),
     h('ol', { class: 'card' }, RULES.map((r) => h('li', null, h('strong', null, r.rule), r.why ? h('div', { class: 'why' }, r.why) : null, h('div', { class: 'meta' }, r.agreed)))), rulesData())).catch(() => fill(el, h('p', { class: 'empty' }, 'No rules yet.')))
 }
-let sourcesView = null, sourcesAt = null
-async function renderResources () {
+// The Resources tab: the room's list and every source people and agents added, with the notes on what each holds,
+// and for an entry the room copies itself, when its copy was fetched. Fetched again when the room's count of resource
+// entries moves (or once a minute), not on every redraw.
+let R = null, rAsked = 0, rCount = -1, sourcesView = null
+async function loadResources () {
+  const n = S?.counts?.resource ?? 0
+  if (n === rCount && Date.now() - rAsked < 60_000) return
+  rAsked = Date.now(); rCount = n
+  const [r, src] = await Promise.all([api('/api/resources'), api('/api/sources').catch(() => null)])
+  if (src?.ok) sourcesView = src.body
+  if (r.ok) { R = r.body; drawResources() }
+}
+function renderResources () { if (R) drawResources(); else fill($('#tab-resources'), h('p', { class: 'empty' }, 'Loading…')); loadResources() }
+const agoLong = (t) => { const m = Math.max(0, Math.round((Date.now() - Date.parse(t)) / 60000)); return m < 2 ? 'just now' : m < 90 ? `${m} minutes ago` : m < 2880 ? `${Math.round(m / 60)} hours ago` : `${Math.round(m / 1440)} days ago` }
+// the room's own copy of an outside source (an entry with a `source`): when it was fetched, and how much it holds
+const liveCopy = (r) => {
+  const c = r.source && sourcesView?.sources?.find((x) => x.id === r.source)
+  if (!c) return null
+  if (!c.fetchedAt) return h('div', { class: 'why' }, c.lastError ? `The room has no copy yet: ${c.lastError.why}.` : 'The room is fetching its first copy.')
+  const n = c.summary ? `, ${c.summary.entries} entries and ${c.summary.links} links` : ''
+  return h('div', { class: 'why' }, `Live copy, fetched ${agoLong(c.fetchedAt)}${n}. `, h('a', { href: c.copy, target: '_blank', rel: 'noopener' }, 'Open the room\'s copy'), c.lastError ? ` (the last refresh failed: ${c.lastError.why}; this is the last good copy)` : '')
+}
+const resourceItem = (r) => h('li', null, h('a', { href: r.url, target: '_blank', rel: 'noopener' }, r.title),
+  h('span', { class: 'meta' }, ` · ${r.by}${r.status ? ` · ${r.status}` : ''}${r.added ? ` · added ${ago(r.added)}` : ''}`),
+  r.about ? h('div', { class: 'why' }, r.about) : null, liveCopy(r),
+  r.notes?.length ? h('ul', { class: 'res-notes' }, r.notes.map((n) => h('li', null, h('span', { class: 'meta' }, `${n.agent ? `${n.agent} for ${n.by}` : n.by} · ${ago(n.at)}: `), n.text))) : null)
+function drawResources () {
   const el = $('#tab-resources')
-  if (!el) return
-  const ago = (t) => { const m = Math.max(0, Math.round((Date.now() - Date.parse(t)) / 60000)); return m < 2 ? 'just now' : m < 90 ? `${m} minutes ago` : m < 2880 ? `${Math.round(m / 60)} hours ago` : `${Math.round(m / 1440)} days ago` }
-  // the room's own copies of outside sources (an entry with a `source`): when each was fetched, and how much it holds
-  const live = (r, src) => {
-    if (!r.source || !src) return null
-    const c = src.sources?.find((x) => x.id === r.source)
-    if (!c) return null
-    if (!c.fetchedAt) return h('div', { class: 'why' }, c.lastError ? `The room has no copy yet: ${c.lastError.why}.` : 'The room is fetching its first copy.')
-    const n = c.summary ? `, ${c.summary.entries} entries and ${c.summary.links} links` : ''
-    return h('div', { class: 'why' }, `Live copy, fetched ${ago(c.fetchedAt)}${n}. `, h('a', { href: c.copy, target: '_blank', rel: 'noopener' }, 'Open the room\'s copy'), c.lastError ? ` (the last refresh failed: ${c.lastError.why}; this is the last good copy)` : '')
-  }
-  if (Date.now() - (sourcesAt ?? 0) > 60_000) { sourcesAt = Date.now(); sourcesView = await api('/api/sources').then((r) => (r.ok ? r.body : null)).catch(() => sourcesView) } // small, and the tab redraws often
-  const sources = sourcesView
-  import('/resources.js').then(({ RESOURCES = [], KINDS = [] }) => {
-    const kinds = [...KINDS, ...RESOURCES.map((r) => r.kind)].filter((k, i, a) => a.indexOf(k) === i)
-    fill(el, h('div', { class: 'card' }, h('h2', null, 'Resources'), h('p', { class: 'why' }, 'The specs, code and writing the projects here build on, from every project, so people and agents look across all of them. Each entry says who it is from and how current it is. Add one with a one-line change to resources.js.')),
-      kinds.map((k) => { const list = RESOURCES.filter((r) => r.kind === k); return list.length ? h('div', { class: 'card' }, h('h2', null, k), h('ul', { class: 'plain' }, list.map((r) => h('li', null, h('a', { href: r.url, target: '_blank', rel: 'noopener' }, r.title), h('span', { class: 'meta' }, ` · ${r.by} · ${r.status}`), r.about ? h('div', { class: 'why' }, r.about) : null, live(r, sources))))) : null }))
-  }).catch(() => fill(el, h('p', { class: 'empty' }, 'No resources yet.')))
+  if (!el || !R) return
+  fill(el, h('div', { class: 'card' }, h('h2', null, 'Resources'), h('p', { class: 'why' }, 'The specs, code and writing the projects here build on, from every project, so people and agents look across all of them. Each entry says who it is from and how current it is. Agents read these before they answer, add the sources they find, and leave a note on what they found in each.')),
+    R.resources.length ? R.kinds.map((k) => { const list = R.resources.filter((r) => r.kind === k); return list.length ? h('div', { class: 'card' }, h('h2', null, k), h('ul', { class: 'plain' }, list.map(resourceItem))) : null }) : h('p', { class: 'empty' }, 'No resources yet.'))
 }
 const stale = new Set()
 const typing = (el) => el.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)

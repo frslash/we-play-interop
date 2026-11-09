@@ -40,6 +40,7 @@ export const TYPES = {
   link: T('member/link'),
   vouch: T('member/vouch'),
   replace: T('member/replace'),
+  resource: T('map/resource'),
 }
 export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v, k]))
 
@@ -48,10 +49,22 @@ export const WHO = {
   genesis: 'workspace', round: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
   link: 'human', vouch: 'human', replace: 'human', // a lost key: people only, never agents (room lines 772-821)
   join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
-  note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone',
+  note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone', resource: 'anyone',
 }
 /** What a human can let an agent do (delegation scope). Approving, vetoing and delegating stay human. */
 export const AGENT_SCOPES = ['note', 'propose', 'vote', 'project', 'way', 'run', 'card', 'change']
+/** Kinds an agent may write under another kind's scope. Adding a source to the Resources tab, or a note on what one
+ *  says, is speech with a link in it: any agent its person lets speak may do it (every agent here reads and adds to
+ *  Resources), and a person who asked to see each note first sees these first too. */
+export const SCOPE_OF = { resource: 'note' }
+export const scopeOf = (name) => SCOPE_OF[name] ?? name
+/** One resource per address: the same page with or without a trailing slash, a #fragment or a capital in the host is one. */
+export function resourceKey (u) {
+  try {
+    const x = new URL(u)
+    return `${x.protocol}//${x.host.toLowerCase()}${x.pathname.replace(/\/+$/, '') || ''}${x.search}`
+  } catch { return String(u) }
+}
 /** Kinds of ways to do interop: deliberately broad. */
 export const WAY_KINDS = ['identity', 'credentials', 'messaging', 'data', 'sync', 'network', 'storage', 'compute', 'governance', 'payments', 'other']
 /** Way ids from the DTG board carry its item kind; the workspace does not define those. */
@@ -253,6 +266,15 @@ export function checkPayload (name, doc) {
       if (p.kind === 'workspace-change') {
         if (!isObj(p.change) || !Number.isInteger(p.change.pr) || p.change.pr < 1 || !/^[0-9a-f]{40}$/.test(p.change.sha ?? '')) return 'change: { pr: pull request number, sha: its 40-character head commit }'
       }
+      return null
+    case 'resource':
+      if (!url(p.url)) return 'url: an https URL'
+      if (p.title === undefined && p.note === undefined) return 'title (to add a new resource) or note (what you found in one already listed), or both'
+      if (p.title !== undefined && !str(p.title, 1, 140)) return 'title: 1 to 140 characters'
+      if (!optStr(p.kind, 60)) return 'kind: at most 60 characters'
+      if (!optStr(p.status, 120)) return 'status: at most 120 characters (how current it is: running, draft, specs only…)'
+      if (!optStr(p.about, 500)) return 'about: at most 500 characters'
+      if (p.note !== undefined && !str(p.note, 1, 1000)) return 'note: 1 to 1000 characters'
       return null
     case 'project':
       if (!SLUG_RE.test(p.slug ?? '')) return 'slug: lowercase letters, digits and hyphens'

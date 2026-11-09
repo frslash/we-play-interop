@@ -9,7 +9,7 @@ import { canonicalize } from '../shared/crypto.js'
 import { hashCore, verifyChain } from '../shared/chain.js'
 import { credentialRefuses, grantMismatch, verifyPermissionCredential } from '../shared/credential.js'
 import { sign, verifySignature } from '../shared/proof.js'
-import { AGENT_SCOPES, buildDocument, checkPayload, checkShape, NAME_OF, TYPES, WHO } from '../shared/types.js'
+import { AGENT_SCOPES, buildDocument, checkPayload, checkShape, NAME_OF, scopeOf, TYPES, WHO } from '../shared/types.js'
 import { insertEntry, loadEntries } from './db.js'
 import { State } from './state.js'
 
@@ -130,11 +130,11 @@ export class Log extends EventEmitter {
         if (no) throw new TaskError(no.code, no.message, { status: no.code === 'expired' ? 400 : 403 })
       }
       if (Date.parse(delegation.expiresAt) <= now) throw new TaskError('expired', 'that delegation has expired; ask your human for a new one')
-      if (!delegation.scope.includes(sandboxApprove ? 'vote' : name)) throw new TaskError('permissionDenied', `the delegation does not cover ${name}`, { status: 403 })
+      if (!delegation.scope.includes(sandboxApprove ? 'vote' : scopeOf(name))) throw new TaskError('permissionDenied', `the delegation does not cover ${name}`, { status: 403 })
       if (sandboxApprove && st.proposals.get(doc.payload.proposal)?.kind !== 'workspace-change') throw new TaskError('permissionDenied', 'agents approve only changes to the room\'s own code (workspace-change); other outside actions stay with people', { status: 403 })
       const target = sandboxApprove ? st.proposals.get(doc.payload.proposal) : null, handedBy = target?.byWeaver && target.sources?.length ? this.byHash.get(target.sources[0])?.onBehalfOf : null
       if (sandboxApprove && (target?.principal === doc.onBehalfOf || handedBy === doc.onBehalfOf)) throw new TaskError('permissionDenied', 'an agent never approves its own person\'s change: another person\'s agent has to', { status: 403 })
-      if ((delegation.ask?.includes(name) || delegation.credential?.askFirst.includes(name)) && !approved) throw new TaskError('permissionDenied', `your person asked to see each ${name} first, so it was not posted: tell them what you would like to say (or bring them in through the room's link, where it can wait for their OK)`, { status: 403 })
+      if ((delegation.ask?.includes(scopeOf(name)) || delegation.credential?.askFirst.includes(scopeOf(name))) && !approved) throw new TaskError('permissionDenied', `your person asked to see each ${name} first, so it was not posted: tell them what you would like to say (or bring them in through the room's link, where it can wait for their OK)`, { status: 403 })
       if (!st.isHuman(doc.onBehalfOf)) throw new TaskError('permissionDenied', 'onBehalfOf has not joined', { status: 403 })
     } else {
       if (st.isAgent(doc.issuer)) throw new TaskError('permissionDenied', 'this DID belongs to an agent: sign with onBehalfOf and delegation', { status: 403 })
