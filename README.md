@@ -148,6 +148,21 @@ The map holds **projects**, the **ways** each speaks, and **runs** between two p
 
 Every change in the numbers is written to the log as a signed `score:snapshot`, so any goal can be measured over time.
 
+### Pair cards on the front page
+
+The Watch tab opens with a short list of **pair cards**, one for each pair's folder in the [interopathon repository](https://github.com/Project-Weave-Tech/interopathon) (`src/server/pairs.js`, `GET /api/pairs`). The room reads that repository every 30 minutes: one listing of its files, then the README, `pair.json` and output file of each folder at the top. It only reads, and only from that repository.
+
+A folder is a pair when its README says a run (a line like `Date: 9 November 2026. Outcome: pass ...`) or when it has a `pair.json`. The card shows the two projects (from the README's title, "# A and B: ..."), a link to the folder, the README's first shell command, the last line of the file its "Full output:" link names, and the last run's date and pass or fail. A person per side and who ran it last come only from `pair.json`, which the pair's own people add to their folder:
+
+```json
+{ "sides": [{ "project": "RLTP", "person": "a name" }, { "project": "Consensual (Geb)", "person": "a name" }],
+  "command": "node conformance/dtg-vrc.mjs geb-vrcs.json",
+  "expected": "All credentials pass the plain DTG RelationshipCredential check (informative).",
+  "lastRun": { "date": "2026-11-09", "by": "a name", "outcome": "pass" } }
+```
+
+Every field is optional and wins over the README. What the folder does not say, the card says is "not in the folder yet"; nothing is guessed. `INTEROPATHON_REPO` sets another repository, and `INTEROPATHON_PAIRS` (comma separated, `rltp-geb` by default) the folders shown first; the rest follow, newest run first, up to 12.
+
 ### What winning looks like: the room decides
 
 A **goal** is a proposal of kind `goal`. Anyone can propose one, and optionally name a number on the map to watch and which way it should move. A goal is held while more people back it than oppose it, and nobody has vetoed it.

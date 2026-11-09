@@ -25,6 +25,8 @@ export const config = {
   boardRepo: env.BOARD_REPO || 'Project-Weave-Tech/dtg-interop',
   boardDataUrl: env.BOARD_DATA_URL || 'https://project-weave-tech.github.io/dtg-interop/data.json',
   boardRefreshMinutes: int(env.BOARD_REFRESH_MINUTES, 15),
+  interopathonRepo: env.INTEROPATHON_REPO || 'Project-Weave-Tech/interopathon', // the front page's pair cards: one per pair folder there
+  interopathonPairs: (env.INTEROPATHON_PAIRS || 'rltp-geb').split(',').map((x) => x.trim()).filter(Boolean), // these folders come first, in this order
   freshDays: 30, // the board fades a mark after 30 days; this is the board's rule, not a setting
 
   llm: {

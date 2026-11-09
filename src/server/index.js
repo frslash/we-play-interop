@@ -33,6 +33,7 @@ import { Media } from './media.js'
 import { Changes, MAX_PATCH } from './changes.js'
 import { Workshop } from './workshop.js'
 import { Sources } from './sources.js'
+import { Pairs } from './pairs.js'
 import { Cursors } from './cursors.js'
 import { AGREED } from './rules.js'
 import { ActivityPub } from './activitypub.js'
@@ -113,7 +114,7 @@ function workspaceIdentity (config) {
   return id
 }
 
-export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, apFetch, awayGatherMs, hostWelcomeMs = 3000, sources } = {}) {
+export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, apFetch, awayGatherMs, hostWelcomeMs = 3000, sources, pairs } = {}) {
   const identity = workspaceIdentity(config)
   const db = await openDb(config)
   const log = new Log({ db, identity, resolver, config })
@@ -141,6 +142,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.media = new Media({ dataDir: config.dataDir })
   ctx.cursors = new Cursors({ dataDir: config.dataDir })
   ctx.sources = new Sources({ dataDir: config.dataDir, ...sources }) // `sources` lets tests point it at a fake server; the app passes none
+  ctx.pairs = new Pairs({ repo: config.interopathonRepo, order: config.interopathonPairs, token: config.githubToken, ...pairs }) // `pairs` lets tests play GitHub locally
   ctx.visits = new Visits() // join links for one visit each, in memory
   ctx.join = new JoinRoute({ identity, config, resolver }) // the join desk at /didcomm, for the test community only
   await ctx.join.refresh(true)
@@ -333,6 +335,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     }
     if (path.startsWith('/api/files/')) { const r = await views.fileText(ctx, path.slice(11), q); return r ? send(res, 200, r) : send(res, 404, { error: 'no file in this room has that sha256, or it has no text (a photo). The path is /api/files/<the sha256 a message lists under files>' }) }
     if (path.startsWith('/api/photos/')) { const r = views.photo(ctx, path.slice(12)); return r ? send(res, 200, r) : send(res, 404, { error: 'no photo in this room has that sha256' }) }
+    if (path === '/api/pairs') return send(res, 200, ctx.pairs.view()) // the front page's pair cards, each from one interopathon folder
     if (path === '/api/sources') return send(res, 200, ctx.sources.view())
     if (path.startsWith('/api/sources/')) { // the cached copy, exactly as the source sent it
       const body = ctx.sources.body(decodeURIComponent(path.slice(13)))
@@ -489,9 +492,10 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     ctx.changes.start()
     ctx.workshop.start()
     ctx.sources.start()
+    ctx.pairs.start()
     timers.push(setInterval(() => closeVotes(ctx).catch((e) => console.error('closing votes:', e)), 30_000))
   }
-  ctx.stop = async () => { ctx.waits.stop(); timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.sources.stop(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { ctx.waits.stop(); timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.sources.stop(); ctx.pairs.stop(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }
