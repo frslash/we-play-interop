@@ -15,9 +15,9 @@ echo "\$0 \$* uid=\$(id -u) envhit=\$(tr '\0' '\n' < /proc/\$\$/environ | grep -
 f=\$(ls /dev/shm/t-v*-creds/* 2>/dev/null | head -1); stat -c '%a %u' "\$f" >> "$W/seen"; true
 S
 chmod +x "$W/bin/stub"; ln -s stub "$W/bin/vta"; ln -s stub "$W/bin/vtc"
-touch "$W/seen"; chmod 666 "$W/seen"; printf 'x' > "$W/vtc/setup.toml"; chmod 755 "$W" "$W/bin" "$W/vta" "$W/vtc"
+touch "$W/seen"; chmod 666 "$W/seen"; printf 'vtc_name = "We Play Interop community (TEST, test keys)"\nvtc_description = "A test community on test keys."\n' > "$W/vtc/setup.toml"; chmod 755 "$W" "$W/bin" "$W/vta" "$W/vtc"
 run() { # name var datadir credsdir
-  ( env -i PATH="$W/bin:/usr/bin:/bin" "$2=$FAKE" VTA_ADMIN_DID=did:key:zTEST \
+  ( env -i PATH="$W/bin:/usr/bin:/bin" "$2=$FAKE" VTA_ADMIN_DID=did:key:zTEST ROOM_ACCESS_LINE=$(printf '%064d' 0) \
       VTA_DATA_DIR="$W/vta" VTA_CREDS_DIR=/dev/shm/t-vta-creds VTC_DATA_DIR="$W/vtc" VTC_CREDS_DIR=/dev/shm/t-vtc-creds \
       sh "$HERE/$1/entrypoint.sh" ) > "$W/out-$1" 2>&1 || { echo "FAIL: $1 exited non-zero"; cat "$W/out-$1" | sed "s/$FAKE/<fake>/g"; exit 1; }
 }

@@ -24,7 +24,17 @@ server {
   location = /.well-known/did.jsonl         { limit_except GET { deny all; } proxy_pass http://$upstream; }
   location = /.well-known/did-witness.json  { limit_except GET { deny all; } proxy_pass http://$upstream; }
   location = /health                        { limit_except GET { deny all; } proxy_pass http://$upstream; }
-  location = /members/                      { limit_except GET { deny all; } proxy_pass http://$upstream; }
+  # The join page says, on top of whatever the VTC serves, that this is a test community on test keys.
+  location = /members/                      {
+    limit_except GET { deny all; }
+    # sub_filter needs an unzipped body. Setting one proxy_set_header here drops the inherited ones, so all three are repeated.
+    proxy_set_header Accept-Encoding "";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    sub_filter_once on;
+    sub_filter '</head>' '<style>body::before{content:"TEST community on test keys. It may be wiped. Do not rely on anything here.";display:block;padding:.6em 1em;background:#fde68a;color:#111;font:600 1rem/1.4 sans-serif;text-align:center}</style></head>';
+    proxy_pass http://$upstream;
+  }
   location ^~ /members/static/              { limit_except GET { deny all; } proxy_pass http://$upstream; }
   location = /v1/join-requests              { limit_except POST { deny all; } proxy_pass http://$upstream; }
   location / { access_log /dev/stdout refusal; return 404; }

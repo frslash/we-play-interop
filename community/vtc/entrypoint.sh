@@ -13,6 +13,16 @@ DATA="${VTC_DATA_DIR:-/var/lib/vtc}"
 CREDS="${VTC_CREDS_DIR:-/dev/shm/vtc-creds}"
 CONF="$DATA/setup.toml"
 
+# Step 10a6372f, checked first, before anything is touched: (1) no admin key is made before the room's log
+# names who can read this Railway project's secrets (ROOM_ACCESS_LINE = that signed line's hash, public);
+# (2) the community calls itself a test: its public name says TEST and its description says test keys.
+if [ ! -f "$DATA/.initialised" ]; then
+  printf '%s' "${ROOM_ACCESS_LINE:-}" | grep -Eqx '[0-9a-f]{64}' || { echo "ROOM_ACCESS_LINE is not set to the hash of the room's signed line naming who can read this project's secrets: no first admin before it" >&2; exit 78; }
+  [ -f "$CONF" ] || { echo "no $CONF: the first-run setup has not provided it" >&2; exit 78; }
+  grep -Eq '^vtc_name[[:space:]]*=[[:space:]]*"[^"]*TEST' "$CONF" || { echo "$CONF: vtc_name must say TEST (this is a test community)" >&2; exit 78; }
+  grep -Eq '^vtc_description[[:space:]]*=[[:space:]]*"[^"]*test keys' "$CONF" || { echo "$CONF: vtc_description must say it runs on test keys" >&2; exit 78; }
+fi
+
 chown 10001:10001 "$DATA" && chmod 0700 "$DATA"
 
 mkdir -p "$CREDS"

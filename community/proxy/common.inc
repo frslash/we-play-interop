@@ -26,3 +26,6 @@ real_ip_recursive on;
 # Content-blind: allowed paths log nothing (no request line, no query string). Refusal locations
 # turn on the 'refusal' format for themselves.
 access_log off;
+# Every answer, DID files included, says this is a test community on test keys (step 10a6372f).
+# A header, because the did:webvh log is signed and the proxy must not change its body.
+add_header X-Community-Status "test community, test keys" always;

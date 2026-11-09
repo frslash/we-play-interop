@@ -7,48 +7,43 @@ makes its first admin keys:
    project's secrets.
 2. The community's join page and DID document say it is a test community on test keys.
 
-## Why neither is in this pull request
+## What is built (in `community/`)
 
-- **The access list** is known only to whoever holds the Railway project's account. No
-  agent or builder can see it, and it must not be guessed. That person (or their agent)
-  posts it as an ordinary signed line in the room. No code change is needed for that:
-  every line in the log is already signed.
-- **The test marking** has nothing to change on `main` yet. `main` has no `community/`
-  folder: no boot script, no join page and no DID document. The services now exist as a
-  draft on the branch `claude/wpi-build-community-services` (the plan from pull request
-  #45), not merged. Anything put under `community/` deploys as soon as it reaches `main`,
-  so this pull request does not add a copy of it.
-
-## Where the marking goes on that branch
-
-- `community/vtc/entrypoint.sh` runs `vtc setup --from $DATA/setup.toml`, but does not
-  write that file: it waits for the first-run step, which is not scripted yet. The
-  `vtc_name` and `vtc_description` below belong in that file, so they land with the
-  first-run step (or the entrypoint writes them, as the VTA's entrypoint already writes
-  its own `setup.toml`).
-- `community/vta/entrypoint.sh` writes the VTA's `setup.toml` with
-  `admin_label = "room-test-admin"`. Nothing there names it a test in public.
-- A small guard fits there too: the VTC entrypoint refuses to run its first setup unless
-  `setup.toml` has a `vtc_name` containing `TEST`. Then no admin key is made under a
-  name that does not say test.
-
-## How to mark it, once the services exist
-
-Checked in OpenVTC at commit `c6964c4612131089e1add0f47575894e1bd8a565`:
-
-- `vtc-service/src/config.rs` has `vtc_name` and `vtc_description` (old names:
-  `community_name`, `community_description`). They are the community's public name and
-  description, served on its public profile and used when it introduces itself
-  (`trust_tasks/oob_tasks.rs`). Administrators can change them later through
-  `spec/vtc/community/profile/update/0.1`.
-- So the VTC's setup TOML should start with something like:
+- **No first admin before the access line.** On first start, `community/vta/entrypoint.sh`
+  and `community/vtc/entrypoint.sh` refuse to run (exit 78, before touching anything) unless
+  `ROOM_ACCESS_LINE` holds a 64-hex log hash. It is the hash of the room's signed line that
+  names who can read the project's secrets. It is public, not a secret. The account holder
+  sets it as a Railway variable after posting that line. Once the service is set up, the
+  check no longer runs.
+- **The VTC calls itself a test.** On first start the VTC entrypoint refuses a `setup.toml`
+  whose `vtc_name` does not say `TEST` or whose `vtc_description` does not say `test keys`.
+  Checked in OpenVTC at commit `c6964c4612131089e1add0f47575894e1bd8a565`:
+  `vtc-service/src/config.rs` has `vtc_name` and `vtc_description`, the community's public
+  name and description. The first-run step that writes this file should use:
 
   ```toml
   vtc_name = "We Play Interop community (TEST, test keys)"
   vtc_description = "A test community. Its keys are test keys and it may be wiped. Do not rely on anything here."
   ```
 
-- **Not checked:** whether the join page at `/members/?join` shows the description, and
-  how to put a test label into the DID document at `/.well-known/did.jsonl`. The VTA
-  mints that DID (did:webvh). Whether it can carry a label (for example a service entry
-  or `alsoKnownAs`) without breaking how other projects resolve it is still open.
+- **The VTA calls itself a test.** Its generated `setup.toml` now has
+  `vta_name = "We Play Interop VTA (TEST, test keys)"` (`vta_name` is the VTA's
+  human-readable name in `docs/02-vta/non-interactive-setup.md`).
+- **The join page says it.** The proxy adds a banner to `/members/` ("TEST community on
+  test keys…") with `sub_filter` before `</head>`, whatever the VTC serves.
+- **Every answer says it.** The proxy adds the header
+  `X-Community-Status: test community, test keys` to every response, DID files included.
+
+## What is still open
+
+- **The access line itself.** Only the Railway project's account holder knows who has
+  access. They post it as an ordinary signed line in the room (every line in the log is
+  already signed, so no code is needed), then set `ROOM_ACCESS_LINE` to its hash. No names
+  are written here.
+- **The DID document's own content.** The VTA's DID is a did:webvh log. That log is signed,
+  so the proxy must not change it. A header goes with it, but the document itself does not
+  say "test" yet. Not checked: whether `create_webvh` can add a label (a service entry or
+  `alsoKnownAs`) without breaking how other projects resolve it.
+- **Not run against the real services.** There is no Docker daemon in the cloud session.
+  Check on the first deploy: that the banner shows (the VTC's page must have a `</head>`
+  and its CSP must allow an inline `<style>`), and that `vta_name` is accepted.
