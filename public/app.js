@@ -11,6 +11,7 @@ import { splitLayers } from '/shared/layers.js'
 import { mentionOptions } from '/shared/mentions.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
 import { KINDS, RESOURCES } from '/resources.js'
+import { heard, lineIsFor } from '/shared/presence.js'
 
 // ---------- tiny DOM helpers (user text only ever goes in as text) ----------
 const $ = (s) => document.querySelector(s)
@@ -65,6 +66,37 @@ const person = (did) => S?.people.find((p) => p.did === did)
 const nameOf = (did) => (did === S?.workspace ? 'the weaver' : person(did)?.name ?? (S?.left?.[did] ? `${S.left[did]} (left)` : short(did)))
 const joined = () => me && person(me.did)?.kind === 'human'
 // the room check (a test person and agent walking the newcomer's path) stays out of the room's own view; the Log keeps it
+// A line is for you when it's addressed to you, names you, or answers a line of yours (room line 570: a person
+// without an agent, tagged in the room, had no way to see it was waiting for them).
+function forMe (e) {
+  if (!me || !joined()) return false
+  const d = e.document, parent = d.threadId ? feed.find((x) => x.document.id === d.threadId)?.author ?? null : null
+  return lineIsFor(e, { did: me.did, name: person(me.did)?.name }, parent)
+}
+const seenForMe = () => Number(store.get('wpi.forMeSeen') ?? -1)
+function markForMeSeen () { const top = feed.find(forMe)?.seq; if (top != null && top > seenForMe()) { store.set('wpi.forMeSeen', String(top)); drawForMeCount() } }
+function drawForMeCount () {
+  const b = document.querySelector('.tabs button[data-tab="talk"]'); if (!b) return
+  const n = feed.filter((e) => e.seq > seenForMe() && forMe(e)).length
+  b.querySelector('.for-me-count')?.remove()
+  if (n) b.append(h('span', { class: 'for-me-count', 'aria-label': `${n} for you` }, String(n)))
+}
+// a notification from this browser when a line is for you and you're not looking (only while the page is open)
+const notifyOn = () => store.get('wpi.notify') === '1' && 'Notification' in window && Notification.permission === 'granted'
+function notifyIfForMe (e) {
+  if (!notifyOn() || !forMe(e) || (!document.hidden && document.body.dataset.tab === 'talk')) return
+  const text = splitLayers(e.document.payload.text ?? e.document.payload.title ?? '').short.slice(0, 140)
+  try { const n = new Notification(`${nameOf(e.author)} in We Play Interop`, { body: text, tag: e.hash }); n.onclick = () => { window.focus(); go('talk'); n.close() } } catch {}
+}
+async function toggleNotify () {
+  if (notifyOn()) { store.set('wpi.notify', null); toast('No more notifications from this browser.'); return render() }
+  if (!('Notification' in window)) return toast('This browser can\'t show notifications.')
+  const ok = (await Notification.requestPermission()) === 'granted'
+  store.set('wpi.notify', ok ? '1' : null); toast(ok ? 'You\'ll get a notification here when a line is for you.' : 'Notifications are blocked for this site in your browser settings.'); render()
+}
+
+// an agent is in the room once it has been heard; before that it is being set up, on its person's card only
+const inRoom = (p) => !p.removed && !isCheck(p.did) && heard(p)
 const isCheck = (did) => Boolean(did && S?.check?.dids?.includes(did))
 const checkEntry = (e) => isCheck(e.author) || isCheck(e.onBehalfOf)
 const projectName = (slug) => B?.projects?.find((p) => p.slug === (B?.aliases?.[slug] ?? slug))?.name ?? slug // a project added twice keeps one name
@@ -147,7 +179,7 @@ function live () {
   es.addEventListener('entry', (ev) => {
     streamHeard = true
     const e = JSON.parse(ev.data)
-    if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); toWeave.push(e) }
+    if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); toWeave.push(e); notifyIfForMe(e) }
     feed = feed.slice(0, 150)
     clearTimeout(pending); pending = setTimeout(async () => { await refresh(); weaveQueued() }, 250)
   })
@@ -161,10 +193,11 @@ function go (tab) {
   document.body.dataset.tab = tab
   window.scrollTo({ top: 0 })
   if (tab === 'talk' && talk.list) requestAnimationFrame(() => { talk.list.scrollTop = talk.list.scrollHeight }) // the chat opens at the latest message
-  if (tab === 'talk') refreshNotes().catch(() => {})
+  if (tab === 'talk') { refreshNotes().catch(() => {}); markForMeSeen() }
   if (tab === 'map' && mapv.graph) requestAnimationFrame(() => renderMap()) // laid out once it can be seen
 }
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => go(b.dataset.tab)))
+document.addEventListener('visibilitychange', () => { if (!document.hidden && document.body.dataset.tab === 'talk') markForMeSeen() })
 // Plain or Technical, like a language switch: the same room, two ways of showing it.
 function setView (v) {
   document.body.dataset.view = v
@@ -248,7 +281,7 @@ function openSheet (...kids) {
 
 // ---------- header ----------
 function renderTop () {
-  const n = { human: S.people.filter((p) => p.kind === 'human' && !isCheck(p.did)).length, agent: S.people.filter((p) => p.kind === 'agent' && !isCheck(p.did)).length }
+  const n = { human: S.people.filter((p) => p.kind === 'human' && !isCheck(p.did)).length, agent: S.people.filter((p) => p.kind === 'agent' && inRoom(p)).length }
   $('#live').title = `${n.human} people · ${n.agent} agents`
   if (S.workspaceRepo) { const a = $('#repo'); a.href = `https://github.com/${S.workspaceRepo}`; a.hidden = false }
   const s = S.score
@@ -427,15 +460,16 @@ function chatItem (e) {
     const actions = h('span', { class: 'msg-actions' },
       h('button', { class: 'btn tiny', title: 'Reply to this', onclick: () => setReply(e) }, 'Reply'),
       h('button', { class: 'btn tiny', title: 'Copy this message', onclick: () => navigator.clipboard?.writeText(p.text ?? '').then(() => toast('Copied.'), () => toast('Select the text and copy it by hand.')) }, 'Copy'))
-    return h('div', { class: 'msg' + (e.author === me?.did ? ' mine' : '') + (agent ? ' agent' : '') },
+    const mineToAnswer = forMe(e)
+    return h('div', { class: 'msg' + (e.author === me?.did ? ' mine' : '') + (agent ? ' agent' : '') + (mineToAnswer ? ' for-me' : '') },
       h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${colorFor(e.author)}` }), nameOf(e.author), agent ? listenDot(e.author) : null, agent && saysIt(e.author) ? h('span', { class: 'for', title: 'The agent’s own word: the room cannot check it' }, ` · ${saysIt(e.author)}`) : null, agent && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
-        d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, ' ', time, actions),
+        d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, mineToAnswer ? h('span', { class: 'badge for-me' }, 'for you') : null, ' ', time, actions),
       parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${splitLayers(parent.document.payload.text ?? parent.document.payload.title ?? '').short.slice(0, 100)}`) : null,
       p.media?.length ? h('div', { class: 'photos' }, p.media.map((m) => h('a', { href: `/media/${m.sha256}`, target: '_blank', rel: 'noopener' }, h('img', { src: `/media/${m.sha256}`, loading: 'lazy', width: m.w, height: m.h, alt: 'a photo' })))) : null,
       p.files?.length ? h('div', { class: 'files' }, p.files.map((f) => h('a', { class: 'doc-chip', href: `/media/${f.sha256}?name=${encodeURIComponent(f.name)}`, download: f.name }, `📄 ${f.name} · ${sizeOf(f.bytes)}`))) : null,
       (p.media?.length && p.text === '(a photo)') || (p.files?.length && p.text === '(a file)') ? null : layered(e.hash, p.text, p.tech), techLine)
   }
-  if (name === 'propose') return system([`${nameOf(e.author)} proposed: `, h('strong', null, p.title), ' · ', h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); go('decide') } }, 'decide')])
+  if (name === 'propose') return system([forMe(e) ? h('span', { class: 'badge for-me' }, 'for you') : null, forMe(e) ? ' ' : null, `${nameOf(e.author)} proposed: `, h('strong', null, p.title), ' · ', h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); go('decide') } }, 'decide')])
   if (name === 'round') {
     const lines = [
       ...(p.connections ?? []).slice(0, 2).map((c) => `${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}`),
@@ -450,7 +484,11 @@ function chatItem (e) {
       tech(h('div', { class: 'tech-line' }, `round ${p.round} · ${p.mode} · ${p.model?.ok ? p.model.id : 'built-in tally'} · heard ${p.heard?.length ?? 0}`)))
   }
   if (name === 'join') return system(`${nameOf(e.author)} joined${p.projects?.length ? ' for ' + p.projects.map(projectName).join(', ') : ''}.`)
-  if (name === 'delegate') return system(`${nameOf(e.author)} brought ${p.label || 'an agent'} into the room.`)
+  if (name === 'delegate') { // starting an agent's setup isn't bringing it in: it's in the room once it first speaks
+    const a = person(p.delegate), label = a?.name ?? p.label ?? 'an agent'
+    if (!heard(a)) return system(`${nameOf(e.author)} is setting up an agent, ${label}. It comes into the room when it first speaks.`)
+    return system(Date.parse(a.firstSaid) < Date.parse(e.timestamp) ? `${nameOf(e.author)} updated what ${label} may do.` : `${nameOf(e.author)} brought ${label} into the room.`)
+  }
   if (name === 'revoke') return system(`${nameOf(e.author)} stopped one of their agents.`)
   if (name === 'project') return system(`${nameOf(e.onBehalfOf)} put ${p.name} on the map.`)
   if (name === 'run') return system(`${p.sides.map((s) => projectName(s.project)).join(' and ')} tried ${p.ways.map(wayName).join(', ')} together: ${p.outcome}.`)
@@ -658,6 +696,7 @@ function showNode (n) {
       c ? h('div', null, c.goals?.length ? h('p', null, h('strong', null, 'Goals: '), c.goals.join(' · ')) : null, c.workingOn ? h('p', null, h('strong', null, 'Working on: '), c.workingOn) : null, c.lookingFor ? h('p', null, h('strong', null, 'Looking for: '), c.lookingFor) : null) : h('p', { class: 'meta' }, 'No card yet.'),
       n.projects?.length ? h('p', { class: 'meta' }, `Part of ${n.projects.map(projectName).join(', ')}`) : null,
       n.agents?.length ? h('p', { class: 'meta' }, `Agents: ${n.agents.join(', ')}`) : null,
+      n.settingUp?.length ? h('p', { class: 'meta' }, `Being set up: ${n.settingUp.join(', ')} (in the room once it first speaks)`) : null,
       tech(h('p', null, h('code', null, n.id))),
       lines.length ? h('ul', { class: 'plain' }, lines) : null)
   }
@@ -844,6 +883,7 @@ function renderYou () {
     h('div', { class: 'card' }, h('h2', null, mine.name), h('p', { class: 'meta' }, mine.projects?.length ? `part of ${mine.projects.map(projectName).join(', ')} · ` : '', `joined ${ago(mine.since)}`), tech(h('p', null, h('code', null, me.did))),
       h('label', null, 'Projects you are part of (lets you record their runs)', projects),
       h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn small', onclick: async () => { const list = projects.value.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean).slice(0, 5); if (await post('join', { name: mine.name, ...(list.length ? { projects: list } : {}) })) forget('me.projects') } }, 'Save')),
+      h('div', { class: 'row' }, h('span', { class: 'meta grow' }, 'Lines for you (to you, naming you, or answering you) are marked “for you” in Talk.'), 'Notification' in window ? h('button', { class: 'btn small', onclick: toggleNotify }, notifyOn() ? 'Stop notifications' : 'Notify me here') : null),
       h('details', null, h('summary', null, 'Back up your key'), h('p', { class: 'why' }, 'This secret is what makes you you here. Anyone with it can act as you. Keep it somewhere safe; clearing this browser deletes it.'), h('pre', null, me.seedHex), h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(me.seedHex).then(() => toast('Copied.')) }, 'Copy')),
       h('details', null, h('summary', null, 'Leave the room'),
         h('p', { class: 'why' }, 'Leaving removes your agents and deletes everything private the room holds for you and them: their keys, their notebooks and drafts, their wake links. The room stops listing you and takes nothing more from you, and this browser forgets your key. What you said in the room stays in its public record as "(left)": that record is signed and copied by others, so nothing in it can be taken back. You can come back later by joining again.'),
@@ -895,7 +935,7 @@ function weaveEntry (e, { fast = false, age = 0, speak = !fast } = {}) {
   } else if (['propose', 'project', 'run', 'way', 'mode'].includes(name)) {
     loom.thread(from, null, { fast, age }); if (speak) loom.say(from, label, says(e))
   } else if (name === 'delegate') {
-    loom.thread(from, p.delegate, { fast, age })
+    if (heard(person(p.delegate))) loom.thread(from, p.delegate, { fast, age }) // an agent still being set up isn't on the loom yet
   } else if (name === 'join') {
     loom.pulse(from)
   } else if (name === 'round') {
@@ -942,9 +982,9 @@ function renderWatch () {
     fill(root, watch.welcome, watch.head, h('div', { class: 'watch-grid' }, watch.wrap, h('div', { class: 'card caps-card' }, h('h2', null, 'Happening now'), h('p', { class: 'meta caps-note' }, 'The last two minutes. Every line stays in Talk.'), watch.caps)), watch.about)
     loom = createLoom(watch.wrap, { onSelect: (p) => toast(p.kind === 'agent' ? `${p.name}, an agent of ${nameOf(p.principal)}${p.hosted ? ' (key held by the room)' : ''}` : `${p.name}${p.projects?.length ? ' · ' + p.projects.map(projectName).join(', ') : ''}`) })
   }
-  const humans = S.people.filter((p) => p.kind === 'human' && !isCheck(p.did)).length, agents = S.people.filter((p) => p.kind === 'agent' && !p.removed && !isCheck(p.did)).length
+  const humans = S.people.filter((p) => p.kind === 'human' && !isCheck(p.did)).length, agents = S.people.filter((p) => p.kind === 'agent' && inRoom(p)).length
   fill(watch.head, h('span', { class: 'here' }, `${humans} ${humans === 1 ? 'person' : 'people'} · ${agents} ${agents === 1 ? 'agent' : 'agents'} in the room`), comingIn().step === 'done' ? h('button', { class: 'btn small', onclick: () => { bring.again = true; openBring() } }, 'Bring another agent') : null)
-  if (loom.setPeople(S.people.filter((p) => !p.removed && !isCheck(p.did)), S.workspace) || (!watch.replayed && feed.length)) { watch.replayed = feed.length > 0; replay() }
+  if (loom.setPeople(S.people.filter(inRoom), S.workspace) || (!watch.replayed && feed.length)) { watch.replayed = feed.length > 0; replay() }
   renderCaps()
 }
 function renderCaps () {
@@ -1363,6 +1403,7 @@ const typing = (el) => el.contains(document.activeElement) && /^(INPUT|TEXTAREA|
 function render () {
   if (!S) return
   renderTop()
+  if (document.body.dataset.tab === 'talk' && !document.hidden) markForMeSeen(); else drawForMeCount()
   for (const [name, draw] of Object.entries(TABS)) {
     const el = $('#tab-' + name)
     if (!['talk', 'watch'].includes(name) && typing(el)) stale.add(name); else { stale.delete(name); draw() } // the chat and the loom redraw around the typing, not over it
