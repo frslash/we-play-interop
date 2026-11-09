@@ -17,6 +17,7 @@ export const JOINER_CREDENTIAL_MS = 24 * 3600e3 // short, and well under Railroa
 const MESSAGE_TYPES = ['wpi/join-request/1'] // anything else is refused; a credential offered back is never accepted
 const OOB_TYPE = 'https://didcomm.org/out-of-band/2.0/invitation'
 const NONCE_MS = 60e3
+const NONCE_CAP = 10000
 
 export class Refused extends Error {}
 const hash = (s) => toHex(sha256(utf8(s)))
@@ -36,13 +37,24 @@ export class JoinDesk {
   }
 
   /** The joiner asks for a fresh nonce to sign (P4.4). */
-  challenge () { const n = toHex(randomBytes(16)); this.nonces.set(n, this.now() + NONCE_MS); return n }
+  challenge () {
+    const t = this.now(); this.#sweep(t)
+    if (this.nonces.size >= NONCE_CAP) throw this.#refuse('challenge', 'too many open challenges')
+    const n = toHex(randomBytes(16)); this.nonces.set(n, t + NONCE_MS); return n
+  }
 
   /** A member makes an invite. The token is returned ONCE and stored only as a hash. */
-  invite (inviterDid) {
+  invite (presentation) {
     const t = this.now()
     this.#sweep(t)
-    if (!this.members.has(inviterDid) && !this.#seed.has(inviterDid)) throw this.#refuse('invite', 'only a member can invite')
+    // Security must-fix 2: a member's DID is public, so a bare DID proves nothing. Needs a signed presentation (op invite, fresh nonce).
+    const a = presentation
+    const exp = this.nonces.get(a?.nonce); this.nonces.delete(a?.nonce)
+    if (!exp || exp < t) throw this.#refuse('invite', 'nonce unknown, used or expired')
+    if (!a || a.room !== this.room.did || a.op !== 'invite' || a.proof?.proofPurpose !== 'authentication') throw this.#refuse('invite', 'not an invitation')
+    let ok = false; try { ok = verifyWith(a, a.holder) } catch {}
+    if (!ok || !this.members.has(a.holder)) throw this.#refuse('invite', 'only a member can invite')
+    const inviterDid = a.holder
     const open = [...this.invites.values()].filter((v) => !v.usedAt && !v.revoked && v.expiresAt > t).length
     if (open >= MAX_OPEN_INVITES_PER_ROOM) throw this.#refuse('invite', 'too many open invites')
     const token = toHex(randomBytes(16))
@@ -68,16 +80,16 @@ export class JoinDesk {
     for (const k of ['room', 'host', 'token', 'nonce', 'holder']) if (typeof msg[k] !== 'string' || !msg[k] || msg[k].length > 2048) throw this.#refuse('message', 'malformed')
     if (!msg.proof || typeof msg.proof !== 'object') throw this.#refuse('message', 'malformed')
 
-    this.redemptions = this.redemptions.filter((x) => t - x < 60e3)
-    if (this.redemptions.length >= MAX_REDEMPTIONS_PER_MINUTE) throw this.#refuse('join', 'too many redemptions')
-    this.redemptions.push(t)
-
     if (msg.room !== this.room.did) throw this.#refuse('join', 'invite is for another room')
     if (msg.host !== this.host) throw this.#refuse('join', 'wrong host')
     const inv = this.invites.get(hash(msg.token))
     // one answer for unknown, expired, used and revoked, so a probe learns nothing about which
     if (!inv || inv.room !== this.room.did || inv.revoked || inv.usedAt || inv.expiresAt <= t) throw this.#refuse('join', 'invite not valid')
     if (!this.members.has(inv.inviter)) throw this.#refuse('join', 'invite not valid')
+    // Security should-fix 4: only requests carrying a currently valid token count toward the per-room cap, so garbage can't lock joiners out
+    this.redemptions = this.redemptions.filter((x) => t - x < 60e3)
+    if (this.redemptions.length >= MAX_REDEMPTIONS_PER_MINUTE) throw this.#refuse('join', 'too many redemptions')
+    this.redemptions.push(t)
 
     // the joiner proves it owns the DID: a fresh nonce, signed with that DID's key (never a claim)
     const exp = this.nonces.get(msg.nonce); this.nonces.delete(msg.nonce)
@@ -116,6 +128,15 @@ export class JoinDesk {
     return issueCredential(this.room, { subject: p.did, role: 'member', scopes: ['notes:read', 'notes:write'], notBefore: new Date(t), ttlMs: JOINER_CREDENTIAL_MS })
   }
 
+  /** Security should-fix 5: removal revokes the member's open invites and pending requests; the gate drops their leaf. */
+  removeMember (did, { gate } = {}) {
+    this.members.delete(did); this.#seed.delete(did)
+    for (const v of this.invites.values()) if (v.inviter === did) v.revoked = true
+    for (const [id, p] of this.pending) if (p.did === did) this.pending.delete(id)
+    gate?.dropMember(did)
+    this.#log('remove', 'ok')
+  }
+
   #sweep (t) {
     for (const [h, v] of this.invites) if (v.expiresAt <= t - 60e3) this.invites.delete(h)
     for (const [n, e] of this.nonces) if (e < t) this.nonces.delete(n)
@@ -143,6 +164,11 @@ export function joinRequest (holder, { room, host, token, nonce }) {
   return sign(doc, { seed: holder.seed, verificationMethod: holder.verificationMethod, proofPurpose: 'authentication' })
 }
 
+/** A member's signed request to make an invite (op invite, over a fresh nonce from the desk). */
+export function invitation (member, { room, nonce }) {
+  return sign({ type: 'WpiInvitation', room, nonce, op: 'invite', holder: member.did }, { seed: member.seed, verificationMethod: member.verificationMethod, proofPurpose: 'authentication' })
+}
+
 /** A member's tap on a pending request. */
 export function approval (member, { room, nonce, request }) {
   const doc = { type: 'WpiApproval', room, nonce, op: 'approve_member', request, holder: member.did }
@@ -159,15 +185,16 @@ export function joinScreenWords ({ roomName, hostDomain }) {
  * binding is extension 0xf002; here the binding is a signature by the member's DID over the leaf's key.
  */
 export class LeafGate {
-  constructor ({ desk, epochKey }) { this.desk = desk; this.epochKey = epochKey; this.verified = new Set() }
+  constructor ({ desk, epochKey }) { this.desk = desk; this.epochKey = epochKey; this.verified = new Set(); this.leafOwner = new Map() }
   async register ({ did, leafKey, binding }) {
     try {
       const key = await this.desk.resolver.keyFor(did, binding?.proof?.verificationMethod, 'authentication')
       const ok = verifySignature(binding, key).ok && binding.did === did && binding.leaf === leafKey && binding.room === this.desk.room.did
-      if (ok && this.desk.members.has(did)) { this.verified.add(leafKey); return 'verified' }
+      if (ok && this.desk.members.has(did)) { this.verified.add(leafKey); this.leafOwner.set(leafKey, did); return 'verified' }
     } catch {}
     return 'unverified' // joins the group, never promoted by default
   }
+  dropMember (did) { for (const [leaf, d] of this.leafOwner) if (d === did) { this.verified.delete(leaf); this.leafOwner.delete(leaf) } this.epoch = (this.epoch ?? 0) + 1 }
   /** The epoch key is released to a verified leaf only. */
   keyFor (leafKey) { return this.verified.has(leafKey) ? this.epochKey : null }
 }
