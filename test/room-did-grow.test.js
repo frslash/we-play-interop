@@ -65,3 +65,17 @@ test('a host key can later be handed on, and bad input changes nothing', async (
   assert.equal(entries(other).length, 1)
   assert.deepEqual(await growRoomDid({ dataDir: mkdtempSync(join(tmpdir(), 'wpi-grow-')), publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, log: quiet }), { grown: false, reason: 'no log' })
 })
+
+test('planted fake: no seed (rehearsal, fresh or handed-over) appears in the log, the served body or any output line', async () => {
+  const { dir, seed } = await rehearsal()
+  const lines = []; const room = newIdentity()
+  await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, log: (l) => lines.push(l) })
+  const fresh = readFileSync(join(dir, 'update-key.txt'), 'utf8').trim()
+  const owner = newIdentity()
+  await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, updateKey: ed25519Multikey(owner.publicKey), log: (l) => lines.push(l) })
+  const logText = readFileSync(join(dir, 'did.jsonl'), 'utf8')
+  for (const secret of [seed.trim(), fresh, owner.seedHex, room.seedHex].filter(Boolean)) {
+    assert.ok(!logText.includes(secret)); assert.ok(!lines.some((l) => l.includes(secret)))
+  }
+  assert.equal(entries(dir).length, 3)
+})

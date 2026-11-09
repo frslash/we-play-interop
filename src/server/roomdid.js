@@ -132,6 +132,12 @@ export async function growRoomDid ({ dataDir, file = '', publicUrl, roomPublicKe
     const verifier = { verify: async (sig, msg, pub) => ed25519.verify(sig, msg, pub) }
     const r = await updateDID({ log: entries, signer, verifier, didDocument: wantDoc, updateKeys: nextKeys, updated: nextVersionTime(entries.at(-1).versionTime, now()) })
     const newText = r.log.map((e) => JSON.stringify(e)).join('\n') + '\n'
+    // Re-resolve what we are about to write BEFORE anything touches disk (and so before any key is deleted): the whole chain must
+    // verify, the update keys must be exactly what was asked, and the document must be the one wanted. Else change nothing.
+    const after = await resolveDIDFromLog(r.log)
+    const afterDoc = after.didDocument
+    const afterOk = sameJson(after.didDocumentMetadata.updateKeys ?? [], nextKeys) && ['verificationMethod', 'authentication', 'assertionMethod'].every((k) => sameJson(afterDoc[k], wantDoc[k]))
+    if (!afterOk) { log('room DID not grown: the new log did not resolve to what was asked'); return { grown: false, reason: 'new log did not verify' } }
     // the new key first (so a crash leaves a key that can still sign), then the log, then the key takes its usual name
     if (fresh) writeFileSync(join(dir, 'update-key.next.txt'), fresh.seedHex + '\n', { mode: 0o600 })
     writeFileSync(path + '.tmp', newText, { mode: 0o600 }); renameSync(path + '.tmp', path)
