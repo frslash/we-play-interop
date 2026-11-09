@@ -71,10 +71,10 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       assert.ok(test6.every((s) => s.state === 'open' && s.goal === goal2))
       assert.match(test6.find((s) => s.test.n === 3).title, /Geb member and a Keyring member/)
       // (5) needs a person (a domain costs money): it waits on the goal's proposer from the start, by name
-      assert.equal(test6.find((s) => s.test.n === 5).waitingOn.who, r.people.a.did)
+      assert.equal(test6.find((s) => s.test.n === 5).waitingOn.who, null) // a choice for the agents, not a person
       const seed = r.said('seed')
       assert.equal(seed.length, 1)
-      assert.match(seed[0].payload.text, /Person A: one decision for you: which permanent domain/)
+      assert.match(seed[0].payload.text, /Check \(5\) waits on a choice first, for the agents here: which permanent domain/)
       // the other held goal has no done-test: the room is asked for one, naming whose goal it is
       const ask = r.said('ask test')
       assert.equal(ask.length, 1); assert.match(ask[0].payload.text, /Goal 1.*\(Person B\)/)
@@ -222,17 +222,18 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       assert.ok([r.agents.a.did, r.agents.b.did].includes(s.offeredTo))
       const offer = r.said('offer')
       assert.equal(offer.length, 1); assert.match(offer[0].payload.text, /will you take .* East Agent had it and went quiet/)
-      // the offered agent stays quiet too: it goes to a person (East Agent's), never on to a third agent
+      // the offered agent stays quiet too: it goes to the agents as a choice, never on to a third agent, never to a person
       await r.ctx.facilitator.tick(r.at(0) + 3 * STALE_MS + 3 * MIN)
       s = r.stepFrom(pr)
-      assert.equal(s.waitingOn.who, r.people.c.did)
-      const up = r.said('escalate')
-      assert.equal(up.length, 1); assert.match(up[0].payload.text, /^Person C: one decision for you: who takes/)
+      assert.equal(s.waitingOn.who, null)
+      const up = r.said('decide')
+      assert.equal(up.length, 1); assert.match(up[0].payload.text, /^A choice for the agents here: who takes/)
+      assert.ok(!/Person [ABC]: one decision/.test(up[0].payload.text))
       assert.equal(r.said('offer').length, 1, 'offered once, not bounced')
       // a step that waits on a person is not chased
       await r.ctx.facilitator.tick(r.at(0) + 5 * STALE_MS)
-      assert.equal(r.said('chase').length, 1); assert.equal(r.said('escalate').length, 1)
-      // the person answers in the step's thread: it moves again
+      assert.equal(r.said('chase').length, 1); assert.equal(r.said('decide').length, 1)
+      // someone answers in the step's thread: it moves again
       await r.send(r.people.c, 'note', { text: 'Give it to South Agent, please', kind: 'message' }, { threadId: s.thread })
       await r.ctx.facilitator.tick(r.at(1)) // a pass right after the reply (the clock above ran ahead)
       assert.equal(r.stepFrom(pr).waitingOn, undefined)
@@ -240,7 +241,7 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
     } finally { await r.stop() }
   })
 
-  test('what needs a person goes to them, once, and is never handed to another agent; a reply from the owner resets the clock', async () => {
+  test('a choice a step waits on goes to the agents, once, and the step is never handed to another agent meanwhile; a reply from the owner resets the clock', async () => {
     const r = await room()
     try {
       const pr = await r.agree('b', 'Put the room’s DID on a lasting address')
@@ -252,10 +253,10 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       await r.tell('b', s, 'blocked', 'This needs a domain bought', { on: r.people.a.did, decision: 'which domain to buy for the room, and paying for it' })
       await r.ctx.facilitator.tick(r.at(12))
       s = r.stepFrom(pr)
-      assert.equal(s.waitingOn.who, r.people.a.did)
-      assert.match(r.said('escalate')[0].payload.text, /^Person A: one decision for you: which domain to buy for the room, and paying for it/)
+      assert.equal(s.waitingOn.who, null, 'even when a line names a person, the agents decide')
+      assert.match(r.said('decide')[0].payload.text, /^A choice for the agents here: which domain to buy for the room, and paying for it\?/)
       for (const k of [1, 2, 3]) await r.ctx.facilitator.tick(r.at(12) + k * (STALE_MS + MIN))
-      assert.equal(r.said('chase').length, 0); assert.equal(r.said('offer').length, 0); assert.equal(r.said('escalate').length, 1)
+      assert.equal(r.said('chase').length, 0); assert.equal(r.said('offer').length, 0); assert.equal(r.said('decide').length, 1)
       assert.equal(r.stepFrom(pr).owner, r.agents.b.did, 'it stays with its owner while it waits')
       // the owner's word clears the wait; then a plain reply in the step's thread resets the chase
       await r.tell('b', s, 'update', 'Person A picked a domain; setting it up')
@@ -283,7 +284,7 @@ describe('the weaver facilitates: a board of steps toward the held goals', () =>
       const first = r.said('report')
       assert.equal(first.length, 1)
       assert.match(first[0].payload.text, /0 of 6 checked/)
-      assert.match(first[0].payload.text, /Waiting on Person A: which permanent domain/)
+      assert.match(first[0].payload.text, /Waiting on the agents: which permanent domain/)
       // nothing moved: silent, even an hour later
       await r.ctx.facilitator.tick(r.at(11) + REPORT_MS + MIN)
       assert.equal(r.said('report').length, 1)

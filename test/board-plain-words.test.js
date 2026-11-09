@@ -13,6 +13,7 @@ import { config as baseConfig } from '../src/server/config.js'
 import { Facilitator, REFUSES } from '../src/server/facilitator.js'
 import { createApp } from '../src/server/index.js'
 import { createResolver } from '../src/server/resolver.js'
+import { concerns } from '../src/server/views.js'
 import { closeVotes } from '../src/server/votes.js'
 
 const BOARD = { generated: new Date().toISOString().slice(0, 10), projects: [], scenarios: [], runs: [] }
@@ -53,35 +54,37 @@ async function room () {
 }
 
 describe('the board hears plain words', () => {
-  test('the decision a step waits on, given anywhere by its person, clears the wait; after a restart too', async () => {
+  test('a choice a step waits on is the agents’ to make: an answer in its thread clears it (after a restart too), and older choices put to a person move to the agents', async () => {
     const r = await room()
     try {
       const g = await r.goal2()
       const five = () => r.ctx.facilitator.testOf(g).find((x) => x.test.n === 5)
-      assert.equal(five().waitingOn.who, r.people.a.did)
+      assert.equal(five().waitingOn.who, null, 'the agents decide, not a person')
       await r.send(r.people.b, 'note', { text: 'the permanent domain should be inwove.org', kind: 'message' })
       await r.ctx.facilitator.tick()
-      assert.ok(five().waitingOn, 'someone else’s opinion is not the decision')
-      await r.send(r.people.a, 'note', { text: 'great weather tonight', kind: 'message' })
-      await r.ctx.facilitator.tick()
-      assert.ok(five().waitingOn, 'a line that does not name what was asked is not the answer')
-      await r.send(r.people.a, 'note', { text: 'just moved the permanent domain to inwove.org', kind: 'message' })
+      assert.ok(five().waitingOn, 'talk elsewhere is not the answer')
+      await r.say('c', 'inwove.org: it is bought and already reaches the room.', { threadId: five().thread })
       await r.ctx.facilitator.tick()
       assert.equal(five().waitingOn, undefined); assert.equal(five().change, 'answered')
+      // an older step that still waits on a person: after a restart it goes to the agents, in one line that wakes them
+      const s3 = r.ctx.facilitator.testOf(g).find((x) => x.test.n === 3)
+      await r.ctx.facilitator.write(s3, { waitingOn: { who: r.people.a.did, decision: 'which group library to use' } }, 'waiting', null)
+      r.ctx.facilitator = new Facilitator({ ctx: r.ctx })
+      await r.ctx.facilitator.tick()
+      assert.equal(r.ctx.facilitator.testOf(g).find((x) => x.test.n === 3).waitingOn.who, null)
+      const line = r.ctx.log.entries.filter((e) => e.document.payload.facilitator?.what === 'decide').at(-1)
+      assert.match(line.document.payload.text, /The agents decide them now[\s\S]*which group library to use\?/)
+      assert.ok(!/Person A/.test(line.document.payload.text), 'names no person')
+      assert.equal(concerns(r.ctx, line, r.agents.b.did), 'ask', 'it wakes the agents')
+      assert.equal(concerns(r.ctx, line, r.people.a.did), null, 'and no person')
     } finally { await r.stop() }
-    // a decision the room heard before it knew how (an older room), then a restart
+    // an answer the room read past without knowing, then a restart
     const q = await room()
     try {
       const g = await q.goal2()
-      const f = q.ctx.facilitator
-      const answer = (await q.send(q.people.a, 'note', { text: 'decided: the permanent domain is inwove.org', kind: 'message' })).body
+      const f = q.ctx.facilitator, five = f.testOf(g).find((x) => x.test.n === 5)
+      const answer = (await q.say('b', 'decided: inwove.org', { threadId: five.thread })).body
       f.heard = answer.seq // as if an older board had read past it without knowing
-      const five = f.testOf(g).find((x) => x.test.n === 5) // and the step changed after the answer (claimed and given back), still waiting
-      await q.as('c', 'note', { text: 'mine', kind: 'message', step: { of: five.id, say: 'claim' } }, { threadId: five.thread }); await f.tick()
-      await q.as('c', 'note', { text: 'giving it back', kind: 'message', step: { of: five.id, say: 'release' } }, { threadId: five.thread }); await f.tick()
-      assert.ok(f.testOf(g).find((x) => x.test.n === 5).seq > answer.seq && f.testOf(g).find((x) => x.test.n === 5).waitingOn, 'it changed since, and still waits')
-      const s3 = f.testOf(g).find((x) => x.test.n === 3)
-      await q.say('b', 'taking the MLS check', { threadId: s3.thread }); await q.as('b', 'note', { text: 'claim', kind: 'message', step: { of: s3.id, say: 'claim' } }, { threadId: s3.thread })
       await f.tick()
       assert.ok(f.testOf(g).find((x) => x.test.n === 5).waitingOn, 'not heard yet')
       q.ctx.facilitator = new Facilitator({ ctx: q.ctx }) // the room restarts
