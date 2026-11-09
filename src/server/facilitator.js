@@ -26,8 +26,10 @@ import { partiesOf } from './votes.js'
 
 const clip = (s, n) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s }
 export const STALE_MS = 30 * 60_000 // about half an hour without a word from a step's owner, and it asks
-export const REPORT_MS = 60 * 60_000 // a report against the done-tests about once an hour
-export const REPORT_SOON_MS = 10 * 60_000 // sooner when a done-test's check moved, but not more often than this
+export const REPORT_SOON_MS = 10 * 60_000 // changes are gathered this long, so a burst reads as one report
+// what puts a step in the report: it changed state, was claimed or let go. A chase, an offer, a check asked or a choice put
+// to the room has its own line already, so it is not reported again.
+const MOVES = ['opened', 'claimed', 'result', 'checked', 'check failed', 'released', 'reopened', 'unblocked', 'handed', 'set aside', 'declined', 'replaced']
 export const ASIDE_MS = 3 * 86_400_000 // a step with no owner that nobody touched in three days is set aside: off the report, still on the board, back the moment someone claims it
 import { BUILD_MS } from './builder.js'
 const ASK_TEST_MS = 24 * 3600_000 // asking for a goal's done-test: at most once a day per goal
@@ -725,32 +727,51 @@ export class Facilitator {
   }
 
   // ---------- the report ----------
+  /**
+   * The board is the queue: the report posts only the items that moved since the last one (changed state, claimed,
+   * released, set aside), each once, and a goal's "k of n checked" only when one of its checks moved. An item the room
+   * already named in its own line since it moved (a chase, an offer, a check, a choice) is not said again. Changes are
+   * gathered for a little while (REPORT_SOON_MS) so a burst reads as one line; nothing moved, nothing is said.
+   */
+  movedSince (since) {
+    const st = this.st, moved = new Map() // step id -> seq of its latest move
+    for (const e of this.log.entries.slice(Math.max(0, since + 1))) {
+      if (NAME_OF[e.type] === 'step' && MOVES.includes(e.document.payload.change)) moved.set(e.document.payload.of ?? e.hash, e.seq)
+      else if (NAME_OF[e.type] === 'note' && e.author === st.workspace) {
+        const f = e.document.payload.facilitator
+        if (f && !f.report) for (const id of f.steps ?? []) if (moved.has(id) && moved.get(id) < e.seq) moved.delete(id) // already said, after it moved
+      }
+    }
+    return moved
+  }
+
   async report (now, did) {
     const st = this.st, last = st.lastReport, since = last?.seq ?? -1
-    const changed = this.log.entries.slice(Math.max(0, since + 1)).filter((e) => NAME_OF[e.type] === 'step')
-    if (!changed.length) return // nothing moved: say nothing
-    const age = now - (last ? Date.parse(last.at) : Date.parse(changed[0].timestamp)) // the first report waits a little after the board's first change
-    const testMoved = changed.some((e) => e.document.payload.test && ['claimed', 'result', 'checked', 'check failed', 'waiting', 'unblocked'].includes(e.document.payload.change))
-    if (!(age >= REPORT_MS || ((testMoved || !last) && age >= REPORT_SOON_MS))) return
-    const text = this.reportText(changed)
+    const moved = this.movedSince(since)
+    if (!moved.size) return // nothing moved, or every move was already said: say nothing
+    const first = Math.min(...moved.values())
+    const age = now - (last ? Date.parse(last.at) : Date.parse(this.log.entries[first].timestamp)) // gather a burst of changes into one line
+    if (age < REPORT_SOON_MS) return
+    const text = this.reportText(new Set(moved.keys()))
     if (!text) return
-    await this.speak(text, 'report', [], { report: true, through: this.log.head()?.seq ?? null })
+    await this.speak(text, 'report', [...moved.keys()], { report: true, through: this.log.head()?.seq ?? null })
     did.reported = true
   }
 
-  reportText (changed = []) {
-    const st = this.st, out = ['Where the goals stand, against their done-tests:']
+  /** The board in words: only the steps in `only` (the ones that moved), or the whole board when none is given. */
+  reportText (only = null) {
+    const out = [only ? 'What moved on the board:' : 'Where the goals stand, against their done-tests:']
     const line = (s) => `${this.label(s)}. ${this.where(s)}`
+    const shown = (s) => (only ? only.has(s.id) : !s.aside)
     for (const g of this.heldGoals()) {
       const test = this.testOf(g.hash)
-      if (!test.length) continue
-      out.push(`“${clip(g.title, 140)}”: ${test.filter((s) => s.state === 'checked').length} of ${test.length} checked.`, ...test.filter((s) => !s.aside).map((s) => '  ' + line(s)))
+      if (!test.length || !test.some(shown)) continue // a goal's status is said only when one of its checks moved
+      out.push(`“${clip(g.title, 140)}”: ${test.filter((s) => s.state === 'checked').length} of ${test.length} checked.`, ...test.filter(shown).map((s) => '  ' + line(s)))
     }
-    const others = this.steps().filter((s) => !s.test && !s.aside)
-    if (others.length) out.push('Other steps:', ...others.slice(0, 12).map((s) => '  ' + line(s)))
-    const n = (c) => changed.filter((e) => e.document.payload.change === c).length
-    out.push(`Since the last report: ${n('opened')} opened, ${n('claimed')} claimed, ${n('result')} result${n('result') === 1 ? '' : 's'} posted, ${n('checked')} checked${n('check failed') ? `, ${n('check failed')} sent back` : ''}.`)
-    return out.length > 2 ? out.join('\n').slice(0, 2000) : null
+    const others = [...this.steps(), ...(only ? this.st.stepsDone : [])].filter((s) => !s.test && shown(s))
+    if (others.length) out.push(only ? 'Steps:' : 'Other steps:', ...others.slice(0, 12).map((s) => '  ' + line(s)))
+    if (out.length < 2) return null
+    return out.join('\n').slice(0, 2000)
   }
 
   where (s) {
@@ -868,7 +889,7 @@ export class Facilitator {
         const w = st.doers.get(d), n = st.notFor.get(d), live = n && now - Date.parse(n.at) <= NOTE_FADE_MS
         return { did: d, name: st.nameOf(d), took: w?.took ?? 0, results: w?.results ?? 0, checks: w?.checks ?? 0, code: w?.code ?? { took: 0, results: 0, checks: 0 }, notFor: live ? n.kinds.map((k) => NOT_FOR[k].replace(/^to /, '')) : [], onlyFor: live ? n.onlyFor : null, until: live ? new Date(Date.parse(n.at) + NOTE_FADE_MS).toISOString() : null }
       }).sort((a, b) => (b.took + b.results + b.checks) - (a.took + a.results + a.checks)),
-      rules: { staleMinutes: STALE_MS / 60_000, reportMinutes: REPORT_MS / 60_000, asideDays: ASIDE_MS / 86_400_000 },
+      rules: { staleMinutes: STALE_MS / 60_000, reportMinutes: REPORT_SOON_MS / 60_000, asideDays: ASIDE_MS / 86_400_000 },
     }
   }
 }

@@ -11,6 +11,7 @@ import { neverKey, phrases, secretIn, textsOf } from '/shared/guard.js'
 import { splitLayers } from '/shared/layers.js'
 import { whyNot } from '/shared/steps.js'
 import { mentionOptions } from '/shared/mentions.js'
+import { silentRound } from '/shared/round.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
 import { heard, lineIsFor } from '/shared/presence.js'
 
@@ -1038,9 +1039,9 @@ function weaveEntry (e, { fast = false, age = 0, speak = !fast } = {}) {
   } else if (name === 'round') {
     loom.weaverPulse()
     for (const c of p.connections ?? []) loom.thread(c.between[0], c.between[1], { gold: true, fast, age })
-    if (speak) {
+    if (speak && !silentRound(p)) { // a round with nothing for anyone says nothing
       const c = p.connections?.[0]
-      loom.say(S.workspace, 'the weaver', c ? `${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}` : p.next?.[0]?.action ?? 'Listening.', { gold: true })
+      loom.say(S.workspace, 'the weaver', c ? `${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}` : p.next[0].action, { gold: true })
     }
   }
 }
@@ -1061,6 +1062,7 @@ function caption (e, age = 0) {
   const fade = `animation-delay:-${Math.round(age)}ms` // each line fades on the loom's clock, from when it was said
   const dot = h('span', { class: 'dot', style: `background:${e.author === S.workspace ? 'var(--gold)' : colorFor(e.author)}` })
   if (name === 'round') {
+    if (silentRound(d.payload)) return null // a silent round is a record, not a line
     const c = d.payload.connections?.[0]
     return h('li', { class: 'cap fading weaver', style: fade }, dot, h('span', null, h('strong', null, 'The weaver '), c ? `thinks ${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}` : `suggests: ${d.payload.next?.[0]?.action ?? 'keep talking'}`))
   }
