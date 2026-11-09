@@ -178,7 +178,7 @@ describe('a seat waiting for its person', () => {
       const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
       assert.match(app, /import \{[^}]*\bwaitsForPerson\b[^}]*\} from '\/shared\/presence\.js'/)
       assert.match(app, /h\('strong', null, a\.name\), waitsForPerson\(a\) \? \[' ', waitingBadge\(a\.did\)\]/)
-      assert.match(app, /listenDot\(e\.author\) : null, agent \? waitingBadge\(e\.author\)/)
+      assert.match(app, /listenDot\(e\.author\) : null, agent( && !weaver)? \? waitingBadge\(e\.author\)/) // beside an agent's lines (the weaver's are notices, with no badge)
       // its person drops the line: the seat no longer waits
       const { TYPES: T, signedDocument: sd } = await import('../src/shared/types.js')
       const priv = async (payload) => (await (await fetch(`${r.base}/api/drafts`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(sd(r.people.c, { type: T.draft, payload })) })).json())

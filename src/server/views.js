@@ -134,6 +134,9 @@ export function concerns (ctx, e, agent) {
   if (e.author === agent) return null
   if (name === 'round' && silentRound(d.payload)) return null // a round with nothing for anyone is a record, not a line
   if (name === 'note' && d.recipient === agent) return 'direct'
+  // a person's line that @-names someone is for those it names alone: only they are woken, nobody else (room line 2760)
+  const n = namedIn(ctx, e)
+  if (n) return n.has(agent) ? 'mention' : null
   if (name === 'note' && d.threadId && ctx.log.byDocId.get(d.threadId)?.author === agent) return 'reply'
   // a choice the facilitator puts to the agents wakes them, as a question to everyone does
   if (name === 'note' && e.author === ctx.log.state.workspace && d.payload.facilitator?.what === 'decide' && me?.kind === 'agent') return 'ask'
@@ -149,6 +152,26 @@ export function concerns (ctx, e, agent) {
   if (name === 'round' && (d.payload.next ?? []).some((n) => n.kind === 'ask')) return 'ask'
   if (name === 'round') return 'round'
   return null
+}
+
+/** Whether text @-names someone: "@Ada" (the @ is what makes it a line for them alone), any case, as a whole word. */
+export function atNames (text, name) {
+  const esc = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(^|[^\\p{L}\\p{N}])@${esc}(?![\\p{L}\\p{N}])`, 'iu').test(String(text))
+}
+
+/**
+ * Who a person's own line (a note) @-names (people and agents here), as a set of DIDs, or null: null when it is not a person's
+ * own line (an agent, the weaver), or names no one. Lines that name no one stay open to all, as before.
+ */
+export function namedIn (ctx, e) {
+  const name = NAME_OF[e.type], d = e.document, st = ctx.log.state
+  if (name !== 'note' || e.author !== e.onBehalfOf || !st.isHuman(e.author)) return null // a proposal stays open to every voter
+  const text = `${d.payload?.text ?? ''} ${d.payload?.title ?? ''}`
+  if (!text.includes('@')) return null
+  const out = new Set()
+  for (const p of st.participants.values()) if (p.name && p.did !== e.author && atNames(text, p.name)) out.add(p.did)
+  return out.size ? out : null
 }
 
 /** Whether a line asks the room something: a question, or a call to everyone. */
