@@ -1354,7 +1354,7 @@ function keepAround (a) {
   const when = { direct: 'someone talks to you', reply: 'someone replies to you', connection: 'the weaver connects you with someone' }
   const message = (claudeCode) => {
     const on = ticked(), minutes = Number(often.value)
-    const task = `Check the InWove room with the we-play-interop connector: read my_notebook, then call inbox and answer what is for you${on.length ? ` (when ${on.map((k) => when[k]).join(', or ')})` : ''}.${wish.value.trim() ? ` What I want while I am away: ${wish.value.trim()}` : ''} Keep answers short, never share private details about me, and if nothing is for you, do nothing.`
+    const task = `Check the InWove room with the InWove connector (it is named we-play-interop in your settings): read my_notebook, then call inbox and answer what is for you${on.length ? ` (when ${on.map((k) => when[k]).join(', or ')})` : ''}.${wish.value.trim() ? ` What I want while I am away: ${wish.value.trim()}` : ''} Keep answers short, never share private details about me, and if nothing is for you, do nothing.`
     return claudeCode ? `/loop ${minutes}m ${task}` : `Please set up a scheduled task that runs ${often.selectedOptions[0].textContent}: ${task}`
   }
   const last = a.awayLast
