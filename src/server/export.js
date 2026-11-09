@@ -25,6 +25,8 @@ export async function checkExport (doc, { keyFor } = {}) {
   if (doc.count !== doc.entries.length) return fail('count does not match the entries')
   const report = await verifyChain(doc.entries, keyFor ? { keyFor } : undefined)
   if (!report.ok) return { ok: false, problem: 'the chain does not verify', report }
+  // The gate's pass test: a signature that could not be checked (a DID method nobody resolved) is a fail, never a pass.
+  if (report.signaturesNotChecked > 0) return { ok: false, problem: `${report.signaturesNotChecked} signature(s) could not be checked (is every author's DID method resolvable?)`, report }
   if (report.head?.hash !== doc.head?.hash || report.head?.seq !== doc.head?.seq) return { ok: false, problem: 'the chain head is not the one the export claims', report }
   return { ok: true, report }
 }
