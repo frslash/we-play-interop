@@ -8,7 +8,7 @@
 // Without after, a wait starts where the agent was last woken (kept across the room's restarts), so the
 // lines said while it was busy, or while the room was updating itself, still reach it.
 import { DEFAULT_WAKE_ON, NAME_OF, WAKE_ON } from '../shared/types.js'
-import { concerns } from './views.js'
+import { concerns, namedIn } from './views.js'
 import { silentRound } from '../shared/round.js'
 
 const MAX_SECONDS = 90 // tunnels and proxies cut idle connections near 100 s; the agent simply calls again
@@ -71,8 +71,10 @@ export class Waits {
     const wakeOn = asked.length ? asked : waker?.hooks.get(me)?.on ?? DEFAULT_ON
     const matches = (e) => {
       if (e.author === me || e.document.payload?.auto || (this.ctx.check?.dids().includes(e.author) && e.document.recipient !== me)) return null
-      const why = concerns(this.ctx, e, me) ?? (wakeOn.includes('any') && ['note', 'propose', 'round', 'project', 'run', 'vote'].includes(NAME_OF[e.type]) && !(NAME_OF[e.type] === 'round' && silentRound(e.document.payload)) ? 'any' : null)
-      return why && (wakeOn.includes(why) || ALWAYS.has(why)) ? why : null // a person's question to the room, and a new vote, reach everyone listening
+      const named = namedIn(this.ctx, e) // a person's line that @-names someone reaches only those it names
+      if (named && !named.has(me) && e.document.recipient !== me) return null
+      const why = concerns(this.ctx, e, me) ?? (!named && wakeOn.includes('any') && ['note', 'propose', 'round', 'project', 'run', 'vote'].includes(NAME_OF[e.type]) && !(NAME_OF[e.type] === 'round' && silentRound(e.document.payload)) ? 'any' : null)
+      return why && (wakeOn.includes(why) || ALWAYS.has(why) || named) ? why : null // a person's question to the room, and a new vote, reach everyone listening
     }
     if (st.participants.get(me)?.kind !== 'agent' || !st.activeDelegation(me)) return Promise.resolve({ woke: false, reason: 'not an agent with a live permission', head: head() })
     this.seen.set(me, Date.now())
