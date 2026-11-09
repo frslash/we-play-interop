@@ -134,6 +134,23 @@ describe('the builder builds what the board hands it, from a sandbox with only t
     } finally { await r.stop() }
   })
 
+  test('a builder seat that must ask first, or has no routine yet, is not started, and the board says why', async () => {
+    const r = await room()
+    try {
+      const exp = new Date(Date.now() + 86400000).toISOString()
+      const seat = (await r.send(r.people.c, 'host', { label: 'Builder' })).body.hosted.did
+      await r.send(r.people.c, 'delegate', { delegate: seat, scope: ['note', 'propose'], ask: ['note', 'propose'], label: 'Builder' }, { expiresAt: exp })
+      assert.equal(r.ctx.builder.is(seat), false)
+      assert.match(r.ctx.builder.notReady(seat), /set to ask first.*; and it has no routine to start yet/, 'every reason at once')
+      await r.ctx.waker.set(seat, `${FIRE}#token=t2`, ['direct'])
+      assert.doesNotMatch(r.ctx.builder.notReady(seat), /no routine/)
+      assert.match(r.ctx.builder.notReady(seat), /set to ask first/)
+      const view = r.ctx.facilitator.view().builder
+      assert.ok(view.notReady.some((x) => x.did === seat && /On its own/.test(x.why)))
+      assert.ok(view.builders.some((x) => x.did === r.builder), 'the ready one is listed as a builder')
+    } finally { await r.stop() }
+  })
+
   test('a builder is never offered steps the room did not name it for', async () => {
     const r = await room()
     try {

@@ -29,10 +29,20 @@ export class Builder {
   get st () { return this.ctx.log.state }
 
   /** A builder: a hosted agent (the room holds its key) named "… builder", with a live permission and a routine as its wake link. */
-  is (did) {
-    const p = this.st.participants.get(did), hook = this.ctx.waker?.hooks.get(did)
-    if (!p || p.kind !== 'agent' || p.removed || !/\bbuilder$/i.test(p.name ?? '') || !this.st.activeDelegation(did) || !this.ctx.hosted?.identityOf(did)) return false
-    try { const u = new URL(hook?.url ?? ''); u.hash = ''; return ROUTINE.test(u.href) } catch { return false }
+  is (did) { return this.notReady(did) === null }
+
+  /** Why a seat named "… builder" can't build yet, in plain words (null: it can). Its person reads it on the board. */
+  notReady (did) {
+    const p = this.st.participants.get(did), d = this.st.activeDelegation(did)
+    if (!p || p.kind !== 'agent' || p.removed || !/\bbuilder$/i.test(p.name ?? '')) return 'not a builder'
+    if (!d) return 'its permission ended or was stopped'
+    if (!this.ctx.hosted?.identityOf(did)) return 'the room does not hold its key (make it with Bring your agent)'
+    const why = [] // every reason at once, so its person fixes them in one go
+    if (!['note', 'propose'].every((k) => d.scope.includes(k))) why.push('its permission must let it talk and propose')
+    if (['note', 'propose'].some((k) => d.ask?.includes(k) || d.credential?.askFirst?.includes(k))) why.push('it is set to ask first, so it can’t take a step or propose its pull request on its own: set it to On its own')
+    let u; try { u = new URL(this.ctx.waker?.hooks.get(did)?.url ?? ''); u.hash = '' } catch { u = null }
+    if (!u || !ROUTINE.test(u.href)) why.push('it has no routine to start yet: paste the routine’s API trigger address and token under Have it answer by itself')
+    return why.length ? why.join('; and ') : null
   }
 
   /** The builder a text names, if any ("Owner: Person A's builder"). */
@@ -112,6 +122,9 @@ export class Builder {
     return done
   }
 
-  view () { return { builders: [...this.st.participants.values()].filter((p) => this.is(p.did)).map((p) => ({ did: p.did, name: p.name })), fired: this.fired.slice(-10), lastError: this.lastError } }
+  view () {
+    const seats = [...this.st.participants.values()].filter((p) => p.kind === 'agent' && !p.removed && /\bbuilder$/i.test(p.name ?? ''))
+    return { builders: seats.filter((p) => this.is(p.did)).map((p) => ({ did: p.did, name: p.name })), notReady: seats.filter((p) => !this.is(p.did)).map((p) => ({ did: p.did, name: p.name, why: this.notReady(p.did) })), fired: this.fired.slice(-10), lastError: this.lastError }
+  }
 }
 
