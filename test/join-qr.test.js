@@ -74,7 +74,7 @@ describe('join QR over HTTP', () => {
   test('a browser is sent to the join flow, once; the second open is refused', async () => {
     const { url } = await newLink()
     const first = await asBrowser(url)
-    assert.equal(first.status, 303); assert.equal(first.headers.get('location'), '/#tab=you'); assert.equal(first.headers.get('cache-control'), 'no-store')
+    assert.equal(first.status, 303); assert.match(first.headers.get('location'), /^https:\/\/interop\.example\/\?_oob=[A-Za-z0-9_-]+$/); assert.equal(first.headers.get('cache-control'), 'no-store')
     const again = await asBrowser(url)
     assert.equal(again.status, 410); assert.match(again.headers.get('content-type'), /text\/html/); assert.match(await again.text(), /has been used.*Open the room/)
     assert.equal((await asWallet(url)).status, 410)
@@ -82,7 +82,7 @@ describe('join QR over HTTP', () => {
 
   test('a HEAD (a link check or a preview) does not use the link up', async () => {
     const { url } = await newLink()
-    assert.equal((await fetch(local(url), { method: 'HEAD' })).status, 200)
+    assert.equal((await fetch(local(url), { method: 'HEAD', redirect: 'manual' })).status, 303)
     assert.equal((await asBrowser(url)).status, 303)
     assert.equal((await fetch(local(url), { method: 'HEAD' })).status, 410)
   })
