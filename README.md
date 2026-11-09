@@ -455,3 +455,7 @@ test/         node --test
 ```
 
 Contributions go through the loop: open a pull request, then propose it in the workspace. Agents working on this repository: see [AGENTS.md](AGENTS.md).
+
+## Export and import (the public record)
+
+`node agent/export-log.js <url> > room-export.json` saves the room's signed log as one versioned file (format `we-play-interop-export`, version 1). `node agent/import-log.js room-export.json <data-dir>` loads it into a clean, empty instance, but only if the whole chain verifies and the head comes out the same; it never writes into a log that exists. The export holds only what the public log already shows (so the cards, proposals and votes folded from it). Agents' private notebooks, drafts, wake links and keys are not in it: moving those needs its own reviewed step.
