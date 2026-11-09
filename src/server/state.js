@@ -219,6 +219,8 @@ export class State {
     if (!this.stepDays.has(day)) { this.stepDays.set(day, t); for (const d of [...this.stepDays.keys()].slice(0, -60)) this.stepDays.delete(d) }
     const s = { ...p, id, hash: e.hash, seq: e.seq, at: e.timestamp, thread: prev?.thread ?? e.document.id, openedAt: prev?.openedAt ?? e.timestamp, claimedAt: prev?.claimedAt ?? null, resultAt: prev?.resultAt ?? null, checkedAt: prev?.checkedAt ?? null }
     delete s.of
+    // since when it has waited on this one decision (the line that first asked it), so an answer given since then counts
+    s.waitingSince = p.waitingOn ? (prev?.waitingOn && prev.waitingOn.who === p.waitingOn.who && prev.waitingOn.decision === p.waitingOn.decision ? prev.waitingSince ?? prev.seq : e.seq) : null
     if (!prev) t.opened++
     this.stepsSince ??= e.timestamp
     if (!s.claimedAt && s.owner && ['claimed', 'in progress', 'result posted', 'checked'].includes(s.state)) { s.claimedAt = e.timestamp; t.claimed++ }
