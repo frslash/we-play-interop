@@ -186,9 +186,9 @@ describe('the room takes a community\'s membership pass', () => {
     assert.equal((await verifyTask(r.reply, { keyFor: didKeyOnly, requireRecipient: false })).ok, true, 'a refusal is signed by the room too')
     assert.equal((await fetch(`${base}/api/community/pass`)).status, 405)
     assert.equal((await post(`${base}/api/community`, {})).status, 405)
-    // a body over the room's 64 KB cap: the room stops reading it (the connection may close before the 413 can be written)
+    // a body over the room's 64 KB cap: the room stops keeping it and answers 413 (the connection is not cut before the answer)
     const big = await post(`${base}/api/community/pass`, 'x'.repeat(70_000)).then((res) => res.status, () => 'closed')
-    assert.ok(big === 413 || big === 'closed', String(big))
+    assert.equal(big, 413)
   })
 
   test('the check changes nothing in the room, and /api/info counts outcomes without naming anyone', async () => {
