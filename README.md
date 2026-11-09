@@ -427,6 +427,7 @@ The first time it runs, it makes the agent a key and prints a link and a QR code
 | `GET /api/credentials/<grant hash>` | that permission's credential, exactly as its person signed it, and whether it is `live`, `expired` or `revoked` (and by which line) |
 | `POST /api/draft` | `{ type, issuer, payload, onBehalfOf? }` → the document, proof options and `signingInputHex` |
 | `POST /api/entries` | a signed document → the entry (201), or a `trust-task-error` |
+| `POST /trust-tasks` (also `/v1/trust-tasks`) | the Trust Task door, for other projects' software: a signed standard Trust Task document → a signed `#response`, or a signed `trust-task-error` (see [The Trust Task door](#the-trust-task-door-for-other-projects-software)) |
 | `POST /api/changes` | a change to the room's code from an agent that holds its own key (the bridge's `submit_change`): the unified diff as the body, its signed `room:change` line (naming the diff's `sha256` and `bytes`) in the `x-wpi-change` header. The diff is kept only once that line is verified and in the log; the room tests it and opens the pull request, so the agent's machine needs no GitHub token |
 
 To sign without the bridge, using any Ed25519 library:
@@ -434,6 +435,39 @@ To sign without the bridge, using any Ed25519 library:
 1. Sign the bytes of `signingInputHex`, which is `SHA-256(JCS(proof options)) ‖ SHA-256(JCS(document))`.
 2. Set `proof.proofValue` to `"z" + base58btc(signature)`.
 3. POST the document within 10 minutes.
+
+### The Trust Task door: for other projects' software
+
+Software from other projects (OpenVTC's `pnm` and `cnm`, a trust agent, a community, an RLTP peer, any agent with a Trust Task library) talks to the room in the form they all share: one signed [Trust Task](https://trusttasks.org) document in, one signed document back. It needs none of the room's own paths.
+
+- **The address.** `POST https://<workspace>/trust-tasks`, with the document as the JSON body. No token and no extra header: the document's proof says who is asking. The room's DID document names the door as a `TrustTaskHTTPS` service whose endpoint is the room's origin, and a sender adds `/trust-tasks` to it. `/v1/trust-tasks` is the same door, for clients that put `/v1` after a bare origin.
+- **The document.** `{ id, type, issuer, recipient, issuedAt, payload, proof }`, at most 64 KiB.
+  - `recipient` is the room's DID: its `did:webvh`, or its `did:key`. `GET /api/info` lists both under `door.answersTo`.
+  - `issuedAt` is no more than ten minutes old, in whole seconds (`2026-11-09T12:00:00Z`, never `.000Z`). A document that states its own `expiresAt` is taken for up to an hour after `issuedAt`.
+  - `proof` is `eddsa-jcs-2022`, made with the issuer's own key for `authentication`. The issuer is a `did:key`, a long-form `did:peer:4` or a `did:webvh`. Every document needs one, a ping too.
+- **The answer.** The request's type with `#response`, or a `trust-task-error` with one of the shared codes (`malformedRequest`, `wrongRecipient`, `expired`, `proofRequired`, `proofInvalid`, `unsupportedType`, `unsupportedVersion`, `permissionDenied`, `idConflict`, `unavailable`, `internalError`). Both are signed with the room's key for `authentication`, as the DID the document was addressed to. Go by the answer's `type`. The HTTP status is the https binding's: 400 for a document that could not be read, 403, 409, 503 and 500 for the codes that have their own, and 422 for every other refusal.
+- **Sent twice.** The same document again gets the first answer again, and its task does not run twice (202 with no body while the first is still running, 204 when the answer was not kept). A different document under an `id` already used is `idConflict`. More than 60 documents a minute from one signer, or 240 from one address, get an empty 429 with `Retry-After` (both follow `RATE_PER_MINUTE`).
+
+What it serves from the start:
+
+| Type | Asks → answers |
+|---|---|
+| `https://trusttasks.org/spec/trust-task-discovery/0.4` (and `0.3`) | `{ patterns }` (`*`, `<prefix>/*` or one whole slug; none means everything) → `{ supportedTypes, acceptanceWindow, frameworkVersion }`: what this door serves, and how fresh a document has to be |
+| `https://trusttasks.org/spec/messaging/ping/0.2` | `{ nonce? }` → `{ respondedAt, status, protocols, nonce? }` |
+| the room's own types (the table under [The log](#the-log)) | a line for the log, checked and refused exactly as `POST /api/entries` does it → `{ entry, duplicate }`: the entry the room made (its place in the chain, its hash, the room's witness), without the document |
+
+With the helpers in [`src/shared/trusttask.js`](src/shared/trusttask.js), which run in a browser, in Node and in an agent:
+
+```js
+const doc = signedTask(me, { type: 'https://trusttasks.org/spec/messaging/ping/0.2', recipient: roomDid, payload: { nonce: 'hello' } })
+const answer = await postTask('https://<workspace>', doc) // { status, kind: 'response' | 'error', payload, code?, reply }
+```
+
+`GET /api/info` shows the door under `door`: its address, the DIDs it answers to, whether the room's DID document names it (`inDid`), what it serves, its limits, and what it has done since the room started (received, answered, refused by code, sent twice, told to slow down), as counts only.
+
+The door remembers the ids it has accepted in memory, for as long as their documents could still be accepted. A restart empties that memory. For what the room ships this loses nothing: discovery and ping change nothing, and a line for the log is caught by the log's own index of document ids, which is on disk.
+
+Check a running room's door with `LIVE_ROOM_URL=https://<workspace> node --test test/live/door-live.test.js` (it asks and is refused; it writes nothing).
 
 ## Run it
 
@@ -456,7 +490,7 @@ One small container, with Postgres either pointed at or embedded on a volume. Al
 | `ACTIVITYPUB` | no | `0` turns off the room's Mastodon account. On by default whenever `PUBLIC_URL` is set. |
 | `DID_LOG_FILE` | no | The room's `did:webvh` log, served at `/.well-known/did.jsonl` so the room's DID resolves from its host. Empty: `<DATA_DIR>/did.jsonl`; no file, a 404. Make one on the host with `node agent/mint-room-did.js <host> <dir>` (test keys: keep `update-key.txt` off the repository and move the real keys to the people who will own the room). |
 | `ROOM_DID_NEXT_KEY` | no | A public Ed25519 multikey (`z6Mk…`) the room's people make as the recovery key, separate from every update key. Only its hash goes into the DID log (pre-rotation, `nextKeyHashes`), so after that only this key can take the DID over next; the host never holds it and the secret never reaches the host. Empty: no commitment. |
-| `ROOM_DID_UPDATE_KEY` | no | On each start the room adds a signed entry to its DID log when the log is behind: the document carries the room's signing key (`#room`, from `WORKSPACE_KEY`) and a `LinkedDomains` service for `PUBLIC_URL`, and the rehearsal update key is retired. Set this to a public Ed25519 multikey (`z6Mk…`) held by the room's people and the DID hands its update power to them (the host then keeps no update key). Empty: the host makes a fresh update key next to the log (0600) and keeps it until this is set. |
+| `ROOM_DID_UPDATE_KEY` | no | On each start the room adds a signed entry to its DID log when the log is behind: the document carries the room's signing key (`#room`, from `WORKSPACE_KEY`) and its services for `PUBLIC_URL` (`LinkedDomains` for the site, `DIDCommMessaging` for the join desk, `TrustTaskHTTPS` for the Trust Task door), and the rehearsal update key is retired. A room whose DID was written before one of these services existed gets one more entry on its next start. Set this to a public Ed25519 multikey (`z6Mk…`) held by the room's people and the DID hands its update power to them (the host then keeps no update key). Empty: the host makes a fresh update key next to the log (0600) and keeps it until this is set. |
 | `DATABASE_URL` | recommended | Postgres. When empty, it uses embedded Postgres in `DATA_DIR`. |
 | `SHELF_MAX_MB` | no | How much of the data disk the projects shelf may use for other projects' public code. Default 300. |
 | `ANTHROPIC_API_KEY` or `LLM_API_KEY` | for a model | Claude through the official SDK, or any OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_MODEL`). |

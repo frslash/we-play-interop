@@ -7,7 +7,7 @@ import { fromBase58btc, multibase } from '../src/shared/crypto.js'
 import { newIdentity } from '../src/shared/did.js'
 import { createResolver } from '../src/server/resolver.js'
 import {
-  ACCEPT_MS, ERROR_TYPE, MAX_DOCUMENT_BYTES, SKEW_MS, checkTask, classify, instant, isError, multihashOf, parseType, postTask, refusalTo, responseTo, sameDid, sameDigest,
+  ACCEPT_MS, ERROR_TYPE, MAX_DOCUMENT_BYTES, MAX_EXPIRY_MS, SKEW_MS, acceptedUntil, checkTask, classify, instant, isError, multihashOf, parseType, postTask, refusalTo, responseTo, sameDid, sameDigest,
   seedFromPrivateMultibase, serviceEndpoint, signedTask, signerOf, statusFor, taskDocument, typeUri, verifyTask,
 } from '../src/shared/trusttask.js'
 
@@ -53,13 +53,25 @@ test('each way a document can be wrong gets the code every Trust Task consumer s
   assert.equal(await code(mk()), 'ok')
   assert.equal(await code(mk({ issuedAt: at(-ACCEPT_MS - SKEW_MS - 2000) })), 'expired') // older than ten minutes and the slack
   assert.equal(await code(mk({ issuedAt: at(-ACCEPT_MS) })), 'ok') // ten minutes old still passes
-  assert.equal(await code(mk({ issuedAt: at(SKEW_MS + 2000) })), 'expired') // from the future
+  assert.equal(await code(mk({ issuedAt: at(SKEW_MS + 2000) })), 'malformedRequest') // from the future: never good, so not "expired" (waiting will not fix it)
+  assert.equal(await code(mk({ issuedAt: at(SKEW_MS - 2000) })), 'ok') // a clock a little ahead is the ordinary case
   assert.equal(await code(mk({ issuedAt: at(-3600_000), expiresAt: at(3600_000) })), 'ok') // it states its own expiry
   assert.equal(await code(mk({ issuedAt: at(-3600_000), expiresAt: at(-120_000) })), 'expired')
-  assert.equal(await code(mk({ expiresAt: at(31 * 24 * 3600_000) })), 'expired') // thirty days at most
+  assert.equal(await code(mk({ expiresAt: at(0) })), 'malformedRequest') // an expiry at its own issuedAt: no moment it was good
+  assert.equal(await code(mk({ issuedAt: at(-60_000), expiresAt: at(-90_000) })), 'malformedRequest')
+  assert.equal(await code(mk({ expiresAt: at(31 * 24 * 3600_000) })), 'ok') // an expiry past thirty days counts as thirty days, it is not refused
+  assert.equal(await code(mk({ issuedAt: at(-MAX_EXPIRY_MS - SKEW_MS - 2000), expiresAt: at(24 * 3600_000) })), 'expired') // thirty days after it was written, whatever it says
+  assert.equal(await code(mk({ issuedAt: at(-2 * 3600_000), expiresAt: at(3600_000) }), { horizonMs: 3600_000 }), 'expired') // a consumer may honour a stated expiry for less
+  assert.equal(await code(mk({ issuedAt: '2026-13-45T25:61:61Z' })), 'malformedRequest') // the shape of a time, and no time at all: it must not pass as forever fresh
+  assert.equal(await code(mk({ expiresAt: '2026-02-31T00:00:00+99:00' })), 'malformedRequest')
   assert.equal(await code(mk({ recipient: other.did })), 'wrongRecipient')
-  assert.equal(await code(mk({ recipient: undefined })), 'wrongRecipient') // it must name who it is for
+  assert.equal(await code(mk({ recipient: undefined })), 'malformedRequest') // it must name who it is for; one that names nobody was never good
   assert.equal(await code(mk({ recipient: undefined }), { requireRecipient: false }), 'ok')
+  assert.equal(await code(mk({ recipient: other.did }), { me: [service.did, other.did] }), 'ok') // a service that answers to more than one DID
+  assert.equal(await code(mk({ recipient: person.did }), { me: [service.did, other.did] }), 'wrongRecipient')
+  assert.equal(acceptedUntil({ issuedAt: at(0) }), now + ACCEPT_MS + SKEW_MS) // also how long the record of an accepted id is kept
+  assert.equal(acceptedUntil({ issuedAt: at(0), expiresAt: at(3600_000) }), now + 3600_000 + SKEW_MS)
+  assert.equal(acceptedUntil({ issuedAt: at(0), expiresAt: at(90 * 24 * 3600_000) }), now + MAX_EXPIRY_MS + SKEW_MS)
   const { proof, ...unsigned } = mk()
   assert.equal(await code(unsigned), 'proofRequired')
   assert.equal(await code({ ...mk(), payload: { changed: true } }), 'proofInvalid')
@@ -83,6 +95,26 @@ test('an answer is the request\'s type with #response; a refusal is a trust-task
   const unread = refusalTo(null, { code: 'malformedRequest', message: 'not JSON' }, service.did)
   assert.equal(unread.recipient, undefined); assert.equal(unread.threadId, undefined)
   assert.equal(statusFor('permissionDenied'), 403); assert.equal(statusFor('idConflict'), 409); assert.equal(statusFor('auth/oob/redeem:pending'), 422); assert.equal(statusFor('taskFailed'), 422)
+})
+
+test('a refusal has the members of the registry\'s error and no others, and always says whether to try again', () => {
+  const req = signedTask(person, { type: JOIN, recipient: service.did })
+  const members = ['code', 'retryable', 'inResponseTo', 'message', 'retryAfter', 'details'] // trust-task-error 0.3 to 0.6, as RLTP's reader holds an error to them (lib/src/adapters/vti-mediator.ts)
+  const no = refusalTo(req, { code: 'permissionDenied', message: 'join first' }, service.did).payload
+  assert.deepEqual(no, { code: 'permissionDenied', retryable: false, message: 'join first', inResponseTo: { typeUri: JOIN, id: req.id } })
+  const later = refusalTo(req, { code: 'unavailable', message: 'busy', retryAfter: '2026-11-09T12:01:00Z', details: { why: 'restarting' } }, service.did).payload
+  assert.equal(later.retryable, true); assert.equal(later.retryAfter, '2026-11-09T12:01:00Z')
+  assert.ok(Object.keys(later).every((k) => members.includes(k)))
+  assert.equal(refusalTo(req, { code: 'vtc/x:busy', message: 'm', retryable: true }, service.did).payload.retryable, true) // a task's own code is not retryable unless it says so
+  assert.equal(refusalTo(req, { code: 'vtc/x:busy', message: 'm' }, service.did).payload.retryable, false)
+  assert.equal([...refusalTo(req, { code: 'taskFailed', message: 'é'.repeat(3000) }, service.did).payload.message].length, 1024)
+  const unread = refusalTo({ id: 'x'.repeat(500), type: 7, threadId: { a: 1 } }, { code: 'malformedRequest', message: 'no' }, service.did) // nothing unchecked is copied into the answer
+  assert.equal(unread.threadId, undefined); assert.equal(unread.payload.inResponseTo, undefined)
+})
+
+test('the status that goes with a refusal over https is the binding\'s table: 400, 403, 409, 503, 500, and 422 for the rest', () => {
+  assert.deepEqual(['malformedRequest', 'permissionDenied', 'idConflict', 'unavailable', 'internalError'].map(statusFor), [400, 403, 409, 503, 500])
+  for (const c of ['unsupportedType', 'unsupportedVersion', 'expired', 'proofRequired', 'proofInvalid', 'wrongRecipient', 'identityMismatch', 'cancelled', 'taskFailed', 'indeterminate', 'rooms:versionConflict']) assert.equal(statusFor(c), 422, c)
 })
 
 test('postTask sends to <base>/trust-tasks with no token, and goes by the answer\'s type', async () => {

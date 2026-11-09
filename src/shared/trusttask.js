@@ -31,8 +31,18 @@ export const MAX_DOCUMENT_BYTES = 64 * 1024
 
 /** The refusal codes every Trust Task consumer shares (a task may add its own as "<family>:<local>"). */
 export const CODES = ['malformedRequest', 'unsupportedType', 'unsupportedVersion', 'unsupportedExtension', 'expired', 'proofRequired', 'proofInvalid', 'permissionDenied', 'wrongRecipient', 'identityMismatch', 'idConflict', 'cancelled', 'taskFailed', 'unavailable', 'indeterminate', 'internalError']
-/** The HTTP status that goes with a refusal over https. */
-export const statusFor = (code) => ({ malformedRequest: 400, unsupportedType: 404, unsupportedVersion: 404, unsupportedExtension: 400, expired: 400, proofRequired: 401, proofInvalid: 401, permissionDenied: 403, wrongRecipient: 400, identityMismatch: 401, idConflict: 409, cancelled: 409, unavailable: 503, indeterminate: 503, internalError: 500 }[String(code).includes(':') ? 'taskFailed' : code] ?? 422)
+/**
+ * The HTTP status that goes with a refusal over https (the https binding's table, section 4): a document that could
+ * not be read is 400, "you may not" 403, another document under a used id 409, "try again later" 503, the service's
+ * own fault 500. Every other refusal (a wrong recipient, a stale or unsigned document, an unknown type, a task's own
+ * "<family>:<local>" code) is one flat 422, so a status line tells a prober nothing the signed code would not.
+ * Read from OpenVTC's own tests of its door (vta-service/tests/it/trust_task_admin.rs, auth_flow.rs,
+ * vtc-service/tests/it/join_requests.rs, relationships.rs) and the starter kit's mirror of the table
+ * (templates/inbox-verifier/src/server.ts). The code in the document is what counts; the status is a courtesy.
+ */
+export const statusFor = (code) => ({ malformedRequest: 400, permissionDenied: 403, idConflict: 409, unavailable: 503, internalError: 500 }[String(code)] ?? 422)
+/** What a refusal's `retryable` says when its maker does not: only "try again later" is worth trying again unchanged. */
+export const retryableByDefault = (code) => ['unavailable', 'indeterminate', 'internalError'].includes(code)
 
 const TYPE_RE = /^https:\/\/trusttasks\.org\/spec\/([a-z0-9][a-z0-9-]*(?:\/[a-z0-9][a-z0-9-]*)*)\/(\d+\.\d+)(#response)?$/
 const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/
@@ -91,11 +101,25 @@ export const signedTask = (identity, fields, opts) => signTask(taskDocument({ is
 const no = (code, message, details) => ({ ok: false, code, message, ...(details ? { details } : {}) })
 
 /**
- * Everything about a received document that needs no key: its shape, that it is fresh, that it has not run out, and
- * that it is addressed to `me`. Returns { ok: true } or { ok: false, code, message, details? } with a shared code.
- * `bytes` is the size of the document as it arrived (checked first, before anything is believed).
+ * The last moment a consumer still accepts a document (ms): ten minutes and the slack after it was written, or its
+ * own `expiresAt` and the slack when it states one. A stated expiry further out than the horizon counts as the
+ * horizon (OpenVTC applies it so, it does not refuse: vti-common/src/trust_task/acceptance.rs). It is also how long
+ * the record of an accepted id must be kept: a record dropped sooner lets a replay run twice.
  */
-export function checkTask (doc, { me, now = Date.now(), bytes, maxBytes = MAX_DOCUMENT_BYTES, requireRecipient = true } = {}) {
+export function acceptedUntil (doc, { horizonMs = MAX_EXPIRY_MS } = {}) {
+  const at = Date.parse(doc.issuedAt)
+  return (doc.expiresAt === undefined ? at + ACCEPT_MS : Math.min(Date.parse(doc.expiresAt), at + horizonMs)) + SKEW_MS
+}
+
+/**
+ * Everything about a received document that needs no key: its shape, that it is fresh, that it has not run out, and
+ * that it is addressed to `me` (one DID, or a list when a service answers to more than one). Returns { ok: true } or
+ * { ok: false, code, message, details? } with a shared code. `bytes` is the size of the document as it arrived
+ * (checked first, before anything is believed). The codes are the ones OpenVTC's door gives (its own tests pin
+ * them): `expired` only for a document that was once good; one that never was (no issuedAt, written in the future,
+ * an expiry at or before its own issuedAt, no recipient) is `malformedRequest`, because waiting will not fix it.
+ */
+export function checkTask (doc, { me, now = Date.now(), bytes, maxBytes = MAX_DOCUMENT_BYTES, requireRecipient = true, horizonMs = MAX_EXPIRY_MS } = {}) {
   if (bytes !== undefined && bytes > maxBytes) return no('malformedRequest', `the document is ${bytes} bytes; at most ${maxBytes} are accepted`, { maxBytes })
   if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return no('malformedRequest', 'a Trust Task document is a JSON object')
   if (typeof doc.id !== 'string' || !doc.id || doc.id.length > 200) return no('malformedRequest', 'id: a URI naming this document (for example urn:uuid:…)')
@@ -104,15 +128,16 @@ export function checkTask (doc, { me, now = Date.now(), bytes, maxBytes = MAX_DO
   if (!doc.payload || typeof doc.payload !== 'object' || Array.isArray(doc.payload)) return no('malformedRequest', 'payload: a JSON object')
   if (typeof doc.issuedAt !== 'string' || !RFC3339.test(doc.issuedAt)) return no('malformedRequest', 'issuedAt: when it was written, as an RFC 3339 time (it is required)')
   const at = Date.parse(doc.issuedAt)
-  if (at > now + SKEW_MS) return no('expired', 'issuedAt is in the future: check the clock')
+  if (!Number.isFinite(at)) return no('malformedRequest', 'issuedAt: not a real time') // month 13 has the right shape and no meaning; left in, it would never read as old
+  if (at > now + SKEW_MS) return no('malformedRequest', 'issuedAt is in the future: check the clock and write it again')
   if (doc.expiresAt !== undefined) {
-    if (typeof doc.expiresAt !== 'string' || !RFC3339.test(doc.expiresAt)) return no('malformedRequest', 'expiresAt: an RFC 3339 time')
-    const until = Date.parse(doc.expiresAt)
-    if (until + SKEW_MS < now) return no('expired', 'this document has run out (expiresAt has passed)')
-    if (until - at > MAX_EXPIRY_MS) return no('expired', 'a document may be good for thirty days at most')
-  } else if (now - at > ACCEPT_MS + SKEW_MS) return no('expired', 'this document is older than ten minutes: write a fresh one')
-  if (me) {
-    if (doc.recipient === undefined || doc.recipient === null) { if (requireRecipient) return no('wrongRecipient', `recipient: the DID this document is for (${me})`) } else if (!sameDid(doc.recipient, me)) return no('wrongRecipient', `this document is addressed to ${String(doc.recipient).slice(0, 200)}, not to ${me}`)
+    if (typeof doc.expiresAt !== 'string' || !RFC3339.test(doc.expiresAt) || !Number.isFinite(Date.parse(doc.expiresAt))) return no('malformedRequest', 'expiresAt: an RFC 3339 time')
+    if (Date.parse(doc.expiresAt) <= at) return no('malformedRequest', 'expiresAt is not after issuedAt: this document was never good')
+    if (now > acceptedUntil(doc, { horizonMs })) return no('expired', 'this document has run out (its expiresAt has passed, or it is older than a stated expiry is honoured for)')
+  } else if (now > acceptedUntil(doc)) return no('expired', 'this document is older than ten minutes: write a fresh one')
+  const mine = me ? [].concat(me) : []
+  if (mine.length) {
+    if (doc.recipient === undefined || doc.recipient === null) { if (requireRecipient) return no('malformedRequest', `recipient: the DID this document is for (${mine[0]})`) } else if (!mine.some((d) => sameDid(doc.recipient, d))) return no('wrongRecipient', `this document is addressed to ${String(doc.recipient).slice(0, 200)}, not to ${mine[0]}`)
   }
   return { ok: true }
 }
@@ -123,8 +148,8 @@ export function checkTask (doc, { me, now = Date.now(), bytes, maxBytes = MAX_DO
  * refusal. The proof's key must belong to the document's issuer (Trust Tasks §4.7); `purpose` names the purposes
  * accepted here (a request: authentication; an attestation: assertionMethod).
  */
-export async function verifyTask (doc, { keyFor, me, now, bytes, maxBytes, requireRecipient, purposes = ['authentication', 'assertionMethod'] } = {}) {
-  const basic = checkTask(doc, { me, now, bytes, maxBytes, requireRecipient })
+export async function verifyTask (doc, { keyFor, me, now, bytes, maxBytes, requireRecipient, horizonMs, purposes = ['authentication', 'assertionMethod'] } = {}) {
+  const basic = checkTask(doc, { me, now, bytes, maxBytes, requireRecipient, horizonMs })
   if (!basic.ok) return basic
   const p = doc.proof
   if (!p || typeof p !== 'object' || Array.isArray(p)) return no('proofRequired', 'this document is not signed (proof is missing)')
@@ -138,14 +163,27 @@ export async function verifyTask (doc, { keyFor, me, now, bytes, maxBytes, requi
   return sig.ok ? { ok: true, signer } : no('proofInvalid', 'the signature does not verify')
 }
 
+/** A short string, or nothing: what a reply may copy from a document it has not (or not fully) checked. */
+const short = (v, max) => (typeof v === 'string' && v && v.length <= max ? v : undefined)
+/** The thread a reply belongs to: the request's own thread, else the request itself. */
+const threadOf = (request) => short(request?.threadId, 200) ?? short(request?.id, 200)
+
 /** The reply to a request: its type with "#response", addressed back to whoever asked, in the request's thread. */
 export function responseTo (request, payload, issuer) {
-  return taskDocument({ type: `${request.type}#response`, issuer, recipient: request.issuer, threadId: request.threadId ?? request.id, payload })
+  return taskDocument({ type: `${request.type}#response`, issuer, recipient: request.issuer, threadId: threadOf(request), payload })
 }
-/** A refusal document for a request (or for something that could not be read at all: then it names no recipient). */
-export function refusalTo (request, { code, message, details }, issuer) {
-  const d = details && typeof details === 'object' && Object.keys(details).length <= 16 && canonicalize(details).length <= 4096 ? details : undefined // a refusal stays small
-  return taskDocument({ type: ERROR_TYPE, issuer, ...(typeof request?.issuer === 'string' && DID.test(request.issuer) ? { recipient: request.issuer } : {}), ...(typeof request?.id === 'string' ? { threadId: request.threadId ?? request.id } : {}), payload: { code, message, ...(d ? { details: d } : {}) } })
+/**
+ * A refusal document for a request (or for something that could not be read at all: then it names no recipient).
+ * Its payload has the members of the registry's trust-task-error and no others: `code` and `retryable` always
+ * (a reader that follows the schema, RLTP's for one, drops an error without a boolean `retryable`), `message` (at
+ * most 1024 characters), and when there is something to say `retryAfter` (an RFC 3339 time), `details` (small) and
+ * `inResponseTo` (the type and id of the document refused).
+ */
+export function refusalTo (request, { code, message, details, retryable = retryableByDefault(code), retryAfter }, issuer) {
+  const d = details && typeof details === 'object' && !Array.isArray(details) && Object.keys(details).length <= 16 && canonicalize(details).length <= 4096 ? details : undefined // a refusal stays small
+  const answers = short(request?.id, 200) && short(request?.type, 300) ? { typeUri: request.type, id: request.id } : null
+  const payload = { code, retryable: Boolean(retryable), message: [...String(message ?? '')].slice(0, 1024).join(''), ...(retryAfter ? { retryAfter } : {}), ...(d ? { details: d } : {}), ...(answers ? { inResponseTo: answers } : {}) }
+  return taskDocument({ type: ERROR_TYPE, issuer, ...(typeof request?.issuer === 'string' && DID.test(request.issuer) ? { recipient: request.issuer } : {}), ...(threadOf(request) ? { threadId: threadOf(request) } : {}), payload })
 }
 
 /** What an answer is: { kind: 'response' | 'error' | 'next-step' | 'other', payload, code? }. Go by its type, never by the HTTP status. */

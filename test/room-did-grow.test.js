@@ -3,9 +3,12 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { resolveDIDFromLog } from 'didwebvh-ts'
-import { ensureRoomDid, growRoomDid, handleRoomDid } from '../src/server/roomdid.js'
-import { newIdentity, ed25519Multikey } from '../src/shared/did.js'
+import { prepareDataForSigning, resolveDIDFromLog, updateDID } from 'didwebvh-ts'
+import { writeFileSync } from 'node:fs'
+import { ensureRoomDid, growRoomDid, handleRoomDid, roomDidDocument, roomDidStatus } from '../src/server/roomdid.js'
+import { ed25519, multibase } from '../src/shared/crypto.js'
+import { newIdentity, ed25519Multikey, identityFromSeedHex } from '../src/shared/did.js'
+import { serviceEndpoint } from '../src/shared/trusttask.js'
 
 const entries = (dir) => readFileSync(join(dir, 'did.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
 const quiet = () => {}
@@ -108,4 +111,64 @@ test('the recovery key must be a real multikey and differ from the update key', 
   const same = ed25519Multikey(newIdentity().publicKey)
   assert.deepEqual(await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, updateKey: same, nextKey: same, log: quiet }), { grown: false, reason: 'next key must differ from the update key' })
   assert.equal(entries(dir).length, 1)
+})
+
+/** One more entry in the log with exactly this document, signed with the update key the host holds (as an earlier version of this code would have left it). */
+async function writeEntry (dir, didDocument, updateKeys) {
+  const log = entries(dir), id = identityFromSeedHex(readFileSync(join(dir, 'update-key.txt'), 'utf8')), mk = ed25519Multikey(id.publicKey)
+  const signer = { getVerificationMethodId: () => `did:key:${mk}#${mk}`, async sign ({ document, proof }) { return { proofValue: multibase(ed25519.sign(await prepareDataForSigning(document, proof), id.seed)) } } }
+  const r = await updateDID({ log, signer, verifier: { verify: async (sig, msg, pub) => ed25519.verify(sig, msg, pub) }, didDocument, updateKeys: updateKeys ?? [mk], updated: new Date(Date.parse(log.at(-1).versionTime) + 1000).toISOString().replace(/\.\d+Z$/, 'Z') })
+  writeFileSync(join(dir, 'did.jsonl'), r.log.map((e) => JSON.stringify(e)).join('\n') + '\n')
+}
+/** The room's DID document as the code before the door wrote it: the room key, the site and the DIDComm inbox. */
+function withoutDoor (did, room) {
+  const doc = roomDidDocument({ did, roomPublicKey: room.publicKey, publicUrl: 'https://inwove.org' })
+  return { ...doc, service: doc.service.filter((s) => s.type !== 'TrustTaskHTTPS') }
+}
+const ours = (doc) => doc.service.filter((s) => /#(room-site|didcomm|trust-tasks)$/.test(s.id)).map((s) => s.type) // did:webvh adds its own #files and #whois
+
+test('the DID names the room\'s Trust Task door: TrustTaskHTTPS, its endpoint the origin, so the door is <origin>/trust-tasks', async () => {
+  const { dir } = await rehearsal(); const room = newIdentity()
+  assert.equal((await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org/', roomPublicKey: room.publicKey, log: quiet })).grown, true)
+  const doc = (await resolveDIDFromLog(entries(dir))).didDocument
+  const door = doc.service.find((s) => s.type === 'TrustTaskHTTPS')
+  assert.deepEqual(door, { id: `${doc.id}#trust-tasks`, type: 'TrustTaskHTTPS', serviceEndpoint: 'https://inwove.org' }) // the base, never the full address: a sender adds /trust-tasks itself
+  assert.equal(serviceEndpoint(doc, 'TrustTaskHTTPS'), 'https://inwove.org')
+  assert.deepEqual(ours(doc), ['LinkedDomains', 'DIDCommMessaging', 'TrustTaskHTTPS']) // the services it had stay
+  assert.ok(doc.service.some((s) => s.type === 'LinkedDomains' && s.serviceEndpoint === 'https://inwove.org/'))
+  assert.deepEqual(doc.service.find((s) => s.type === 'DIDCommMessaging').serviceEndpoint, { uri: 'https://inwove.org/didcomm', accept: ['didcomm/v2'] })
+  assert.deepEqual(await roomDidStatus({ dataDir: dir }), { did: doc.id, didcomm: 'https://inwove.org/didcomm', trustTasks: 'https://inwove.org', roomKey: ed25519Multikey(room.publicKey) })
+})
+
+test('a DID grown before the room had a door gets one more entry on the next start, for the service alone', async () => {
+  const { dir } = await rehearsal(); const room = newIdentity()
+  await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, log: quiet })
+  const did = (await resolveDIDFromLog(entries(dir))).didDocument.id
+  await writeEntry(dir, withoutDoor(did, room))
+  assert.equal(entries(dir).length, 3)
+  assert.deepEqual(ours((await resolveDIDFromLog(entries(dir))).didDocument), ['LinkedDomains', 'DIDCommMessaging'])
+  assert.equal((await roomDidStatus({ dataDir: dir })).trustTasks, null)
+  const keysBefore = (await resolveDIDFromLog(entries(dir))).didDocumentMetadata.updateKeys, seedBefore = readFileSync(join(dir, 'update-key.txt'), 'utf8')
+  // the next start
+  const r = await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, log: quiet })
+  assert.equal(r.grown, true); assert.match(r.versionId, /^4-/)
+  const out = await resolveDIDFromLog(entries(dir)) // the whole chain and every proof still check
+  assert.equal(entries(dir).length, 4)
+  assert.deepEqual(ours(out.didDocument), ['LinkedDomains', 'DIDCommMessaging', 'TrustTaskHTTPS'])
+  assert.deepEqual(out.didDocumentMetadata.updateKeys, keysBefore); assert.equal(readFileSync(join(dir, 'update-key.txt'), 'utf8'), seedBefore) // nothing else changed: the same update key, still held
+  // and the start after that changes nothing
+  assert.deepEqual(await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, log: quiet }), { grown: false, reason: 'up to date' })
+  assert.equal(entries(dir).length, 4)
+})
+
+test('when the room\'s people hold the update key, the host cannot add the door to the DID by itself, and says so', async () => {
+  const { dir } = await rehearsal(); const room = newIdentity(), owner = ed25519Multikey(newIdentity().publicKey)
+  await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, log: quiet })
+  const did = (await resolveDIDFromLog(entries(dir))).didDocument.id
+  await writeEntry(dir, withoutDoor(did, room), [owner]) // handed over before the room had a door
+  const before = readFileSync(join(dir, 'did.jsonl'), 'utf8'), lines = []
+  assert.deepEqual(await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, updateKey: owner, log: (l) => lines.push(l) }), { grown: false, reason: 'no update key here' })
+  assert.match(lines[0], /holds none of its update keys/)
+  assert.equal(readFileSync(join(dir, 'did.jsonl'), 'utf8'), before) // their signature is needed for that entry
+  assert.equal((await roomDidStatus({ dataDir: dir })).trustTasks, null) // and /api/info's door.inDid stays false until then
 })
