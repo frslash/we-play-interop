@@ -7,6 +7,7 @@
 //   democracy  the vote decides: the next action is the most-supported proposal
 //   weave      the one action that holds the most intentions in the room
 import { MEASURES, NAME_OF, WAY_RE } from '../shared/types.js'
+import { conflictSides, DIVE_PROMPT, diveContext, runDives, sanitizeDives } from './dives.js'
 import { parseJsonAnswer } from './llm.js'
 
 const clip = (s, n) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s }
@@ -90,6 +91,7 @@ export class Weaver {
       newInputs: inputs.map((e) => gist(e, st)),
       openProposals: open.filter((pr) => pr.kind !== 'goal').map((pr) => ({ hash: pr.hash, kind: pr.kind, title: pr.title, body: clip(pr.body, 400), run: pr.run, by: st.nameOf(pr.principal), byWeaver: pr.byWeaver, tally: st.tally(pr), approvals: pr.approvals.size, status: st.statusOf(pr) })),
       intentions: intentions.map((e) => ({ entry: e.hash, who: st.nameOf(e.onBehalfOf), text: clip(e.document.payload.text, 300) })),
+      deepDives: diveContext(this.log),
       people: [...st.participants.values()].filter((p) => p.kind === 'human' && !this.skip().includes(p.did)).map((p) => ({ name: p.name, projects: p.projects })),
       inRoom: [...st.participants.values()].filter((p) => p.kind !== 'workspace' && !this.skip().includes(p.did)).map((p) => ({ did: p.did, name: p.name, kind: p.kind, ...(p.principal ? { actsFor: st.nameOf(p.principal) } : { projects: p.projects, ...(p.card ? { card: { goals: p.card.goals, workingOn: p.card.workingOn, lookingFor: p.card.lookingFor } } : {}) }) })),
       map: {
@@ -221,7 +223,8 @@ Answer with one JSON object only:
  "intentions":[{"who":"<did of a person>","toward":"<project slug or did>","wants":"<what they want, in a few words>"}],
  "tensions":[{"between":["<did>","<did>"],"about":"<what they disagree on, in a few words>"}],
  "next":[{"action":"<one sentence>","why":"<one or two sentences>","kind":"ask|goal|run|issue|other","measure":"<for a goal, optional: one of ${MEASURES.join(', ')}>","direction":"up|down","proposal":"<hash of an existing open proposal, or null>","holds":["<hashes of intentions it serves>"],"run":{"sides":["<project slug>","<project slug>"],"ways":["<way id>"]},"issue":{"title":"<title>","body":"<body>"}}]}
-Use only hashes that appear in the input. Prefer an existing proposal over a new one. "ask" is a question to the room (it does not become a proposal); "goal" proposes what winning looks like; "run" is an invitation to a pair of projects on the map to try ways together; "issue" is an issue on the DTG board's repository; "other" is anything else, including inviting a project onto the map and ideas to improve this workspace. Plain words, no marketing language.`
+Use only hashes that appear in the input. Prefer an existing proposal over a new one. "ask" is a question to the room (it does not become a proposal); "goal" proposes what winning looks like; "run" is an invitation to a pair of projects on the map to try ways together; "issue" is an issue on the DTG board's repository; "other" is anything else, including inviting a project onto the map and ideas to improve this workspace. Plain words, no marketing language.
+${DIVE_PROMPT}`
     return [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(ctx) }]
   }
 
@@ -250,7 +253,8 @@ Use only hashes that appear in the input. Prefer an existing proposal over a new
       heard: list(out.heard, (h) => (known(h?.entry) ? { entry: h.entry, gist: clip(h.gist, 200) } : null), 60),
       threads: list(out.threads, (t) => (t?.title ? { title: clip(t.title, 120), summary: clip(t.summary, 400), entries: hashes(t.entries) } : null), 12),
       agreements: list(out.agreements, (a) => (a?.point ? { point: clip(a.point, 300), entries: hashes(a.entries) } : null), 12),
-      conflicts: list(out.conflicts, (c) => (c?.point ? { point: clip(c.point, 300), entries: hashes(c.entries) } : null), 12),
+      conflicts: list(out.conflicts, (c) => (c?.point ? { point: clip(c.point, 300), entries: hashes(c.entries), ...conflictSides(this.log.state, c, this.skip()) } : null), 12),
+      dives: sanitizeDives(this.log.state, out.dives),
       next: next.length ? next : fallback.next,
       intentions: (() => {
         const st = this.log.state, slugs = new Set((ctx.map.projects ?? []).map((p) => p.slug))
@@ -316,13 +320,15 @@ Use only hashes that appear in the input. Prefer an existing proposal over a new
     const cap = ctx.mode === 'anarchy' ? MAX_NEW_PROPOSALS : 1 // weave and democracy: one step at a time
     result.next = [...result.next.filter((x) => x.kind === 'ask'), ...result.next.filter((x) => x.kind !== 'ask').slice(0, cap)]
     const lastSeq = inputs.at(-1)?.seq ?? st.seq
-    if (!result.next.length && !result.connections?.length && !result.intentions?.length && !result.tensions?.length) {
+    const n = st.roundCount + 1
+    // closer looks where agents disagree, judged and opened every round, model or not; while one is open, the round speaks
+    result.dives = await runDives(this, { round: n, judged: result.dives ?? [], conflicts: result.conflicts ?? [] }).catch((err) => { this.lastError = `closer looks: ${err.message}`; console.error('closer looks:', err); return [] })
+    if (!result.next.length && !result.connections?.length && !result.intentions?.length && !result.tensions?.length && !result.dives.length) {
       this.heardUpTo = lastSeq // heard it all; nothing new to say, so say nothing
       this.lastSilent = { at: new Date().toISOString(), model }
       return null
     }
     // new directions become proposals of their own, so people can vote, approve or veto them
-    const n = st.roundCount + 1
     let added = 0
     for (const step of result.next) {
       if (step.proposal || step.kind === 'ask' || added >= (ctx.mode === 'anarchy' ? MAX_NEW_PROPOSALS : 2)) continue

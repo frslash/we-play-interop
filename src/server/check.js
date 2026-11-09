@@ -6,6 +6,7 @@
 // step has been broken. It writes like anyone else (a line to its agent and the agent's answer, each run);
 // the page leaves the check out of Talk, Watch and the counts, and the Log keeps it all.
 import { hkdfSync } from 'node:crypto'
+import { signPermissionCredential } from '../shared/credential.js'
 import { newIdentity } from '../shared/did.js'
 import { AGENT_SCOPES, TYPES, signedDocument } from '../shared/types.js'
 
@@ -116,8 +117,9 @@ export class RoomCheck {
           await this.put('agent', this.sealer.seal(JSON.stringify(this.agent)))
         }
         if (!d || Date.parse(d.expiresAt) - Date.now() < RENEW_MS) {
-          const now = new Date()
-          await send(this.me, 'delegate', { delegate: this.agent.did, scope: AGENT_SCOPES, label: 'Room check agent' }, { issuedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 90 * 86400000).toISOString() })
+          const now = new Date(), issuedAt = now.toISOString(), expiresAt = new Date(now.getTime() + 90 * 86400000).toISOString()
+          const credential = signPermissionCredential(this.me, { agent: this.agent.did, room: st.workspace, scope: AGENT_SCOPES, validFrom: issuedAt, validUntil: expiresAt }) // as the page signs it
+          await send(this.me, 'delegate', { delegate: this.agent.did, scope: AGENT_SCOPES, label: 'Room check agent', credential }, { issuedAt, expiresAt })
           return 'gave it a fresh permission'
         }
       })

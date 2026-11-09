@@ -59,10 +59,12 @@ export const BOARD_WAY_PREFIXES = ['credential:', 'task:', 'ceremony:', 'basic:'
 export const WAY_RE = /^[A-Za-z0-9][A-Za-z0-9._:/+#-]{0,199}$/
 
 export const MODES = ['anarchy', 'democracy', 'weave']
-/** What can wake an agent: someone talks to it, replies to it, the weaver connects it, every round, or anything new. */
-export const WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'connection', 'ask', 'round', 'any']
-// what wakes an agent unless it says otherwise: anything aimed at it, its own person speaking to the room, a question the weaver puts to everyone
-export const DEFAULT_WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'connection', 'ask']
+/** What can wake an agent: someone talks to it, replies to it, the weaver connects it, a new vote, every round, a roundup of the conversation, or anything new. */
+export const WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'proposal', 'connection', 'ask', 'round', 'roundup', 'any']
+// what wakes an agent unless it says otherwise: anything aimed at it, its own person speaking to the room, a question to everyone, a new vote
+export const DEFAULT_WAKE_ON = ['direct', 'reply', 'mention', 'person', 'room', 'proposal', 'connection', 'ask']
+/** The proposals every agent is woken for, to read and vote on: goals, changes to the room's code, and other ideas (not the weaver's run suggestions). */
+export const VOTE_KINDS = ['goal', 'workspace-change', 'other']
 /** What an agent answers while its person is away, and how it picks its model. */
 export const AWAY_ON = ['direct', 'reply', 'connection']
 export const AWAY_MODELS = ['smart', 'fast', 'best']
@@ -89,12 +91,12 @@ export const SUBJECT_KINDS = ['credential', 'task', 'ceremony', 'basic']
 export const OUTCOMES = ['pass', 'fail', 'partial']
 
 export const HASH_RE = /^[0-9a-f]{64}$/
-const DID_RE = /^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$/
+export const DID_RE = /^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$/
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
-const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/
+export const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/
 
-const uuid = () => {
+export const uuid = () => {
   const b = crypto.getRandomValues(new Uint8Array(16))
   b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80
   const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
@@ -119,6 +121,8 @@ export function signedDocument (identity, fields) {
 
 // ---- payload checks: small, explicit, readable. Each returns an error string or null.
 const str = (v, min, max) => typeof v === 'string' && v.trim().length >= min && v.length <= max
+// a short single line: text only, no line breaks or control characters
+const optLine = (v, max) => v === undefined || (typeof v === 'string' && v.length <= max && !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(v))
 const optStr = (v, max) => v === undefined || (typeof v === 'string' && v.length <= max)
 const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v)
 const url = (v) => typeof v === 'string' && /^https:\/\/[^\s]+$/.test(v) && v.length <= 500
@@ -169,6 +173,7 @@ export function checkPayload (name, doc) {
       if (!Array.isArray(p.scope) || !p.scope.length || !p.scope.every((s) => AGENT_SCOPES.includes(s))) return `scope: some of ${AGENT_SCOPES.join(', ')}`
       if (!optStr(p.label, 60)) return 'label: at most 60 characters'
       if (p.ask !== undefined && (!Array.isArray(p.ask) || !p.ask.every((s) => p.scope.includes(s)))) return 'ask: the kinds of line (from scope) that wait for your OK before they are posted'
+      if (p.credential !== undefined && !isObj(p.credential)) return 'credential: the same permission as a credential you signed (see src/shared/credential.js), or leave it out'
       if (!RFC3339.test(doc.expiresAt ?? '')) return 'a delegation needs expiresAt'
       const days = (Date.parse(doc.expiresAt) - Date.parse(doc.issuedAt)) / 86400000
       if (!(days > 0 && days <= 90)) return 'expiresAt: after issuedAt and within 90 days'
@@ -190,6 +195,9 @@ export function checkPayload (name, doc) {
       if (p.goals !== undefined && (!Array.isArray(p.goals) || p.goals.length > 5 || !p.goals.every((g) => str(g, 1, 140)))) return 'goals: up to 5, each 1 to 140 characters'
       if (!optStr(p.workingOn, 300)) return 'workingOn: at most 300 characters'
       if (!optStr(p.lookingFor, 300)) return 'lookingFor: at most 300 characters'
+      // an agent's own word about what it runs on: one short line of plain text, never checked by the room
+      if (!optLine(p.model, 80)) return 'model: one line of plain text, at most 80 characters (for example Claude Opus 5.5, or a local model)'
+      if (!optLine(p.runsOn, 120)) return 'runsOn: one line of plain text, at most 120 characters (where inference runs: local, or a named host)'
       return null
     case 'change':
       if (!str(p.title, 1, 140)) return 'title: 1 to 140 characters'
@@ -271,6 +279,7 @@ export function checkPayload (name, doc) {
     case 'vote':
       if (!HASH_RE.test(p.proposal ?? '')) return 'proposal: the hash of the proposal entry'
       if (!VOTE_CHOICES.includes(p.choice)) return `choice: ${VOTE_CHOICES.join(' | ')}`
+      if (p.judgment !== undefined && typeof p.judgment !== 'boolean') return 'judgment: true when an agent votes by its own judgment, not its person\'s words'
       return optStr(p.reason, 500) ? null : 'reason: at most 500 characters'
     case 'approve': return HASH_RE.test(p.proposal ?? '') ? null : 'proposal: the hash of the proposal entry'
     case 'veto':

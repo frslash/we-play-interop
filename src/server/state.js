@@ -1,13 +1,23 @@
 // The workspace's current state, folded from the log entry by entry.
 // Nothing here is stored on its own: restart, replay the log, same state.
+import { checkPermissionCredential, claimsOf, grantMismatch } from '../shared/credential.js'
 import { NAME_OF } from '../shared/types.js'
+
+// What a grant's credential says: its signature was verified when the grant was appended (log.js).
+// null for a grant without one, and for one that is not well formed (never a crash on replay).
+function credentialOf (doc, room) {
+  const c = doc.payload.credential
+  if (!c || checkPermissionCredential(c)) return null
+  const claims = claimsOf(c)
+  return grantMismatch(claims, doc, room) ? null : claims
+}
 
 export class State {
   constructor () {
     this.workspace = null // the workspace DID (author of the genesis)
     this.genesis = null
     this.participants = new Map() // did -> { did, kind, name, projects, about, since, principal? }
-    this.delegations = new Map() // entry hash -> { hash, issuer, delegate, scope, label, expiresAt, revoked, seq }
+    this.delegations = new Map() // entry hash -> { hash, issuer, delegate, scope, label, expiresAt, revoked, endedBy, seq, credential }
     this.proposals = new Map() // entry hash -> proposal (see addProposal)
     this.mode = { mode: 'weave', by: null, seq: null }
     this.rounds = [] // the last 20 rounds
@@ -22,6 +32,7 @@ export class State {
     this.mapRuns = [] // runs recorded in the workspace
     this.hosted = new Set() // agent DIDs whose key the workspace holds (shown to everyone)
     this.away = new Map() // agent DID -> what it answers while its person is away (public: everyone can see an agent answers on its own)
+    this.dives = new Map() // opening entry hash -> a closer look the weaver opened where agents disagree (see dive)
     this.counts = {}
     this.seq = -1
   }
@@ -56,19 +67,25 @@ export class State {
         break
       }
       case 'delegate': {
-        this.delegations.set(e.hash, { hash: e.hash, issuer: e.author, delegate: p.delegate, scope: p.scope, ask: p.ask ?? [], label: p.label ?? '', expiresAt: doc.expiresAt, revoked: false, seq: e.seq })
+        this.delegations.set(e.hash, { hash: e.hash, issuer: e.author, delegate: p.delegate, scope: p.scope, ask: p.ask ?? [], label: p.label ?? '', expiresAt: doc.expiresAt, revoked: false, endedBy: null, seq: e.seq, credential: credentialOf(doc, this.workspace) })
         const prev = this.participants.get(p.delegate)
         this.participants.set(p.delegate, { ...prev, did: p.delegate, kind: 'agent', name: p.label || `agent of ${this.nameOf(e.author)}`, principal: e.author, hosted: this.hosted.has(p.delegate), since: prev?.since ?? e.timestamp })
         break
       }
-      case 'card': { const who = this.participants.get(e.onBehalfOf); if (who) who.card = { goals: p.goals ?? [], workingOn: p.workingOn ?? '', lookingFor: p.lookingFor ?? '', by: e.author, at: e.timestamp }; break }
+      case 'card': {
+        const who = this.participants.get(e.onBehalfOf); if (who) who.card = { goals: p.goals ?? [], workingOn: p.workingOn ?? '', lookingFor: p.lookingFor ?? '', by: e.author, at: e.timestamp }
+        // what an agent says it runs on is its own word, kept on the agent that signed it (never on its person); an update that leaves a field out keeps the old one
+        const self = this.participants.get(e.author)
+        if (self?.kind === 'agent' && (p.model !== undefined || p.runsOn !== undefined)) self.runsOnSaid = { model: (p.model ?? self.runsOnSaid?.model ?? '').trim(), runsOn: (p.runsOn ?? self.runsOnSaid?.runsOn ?? '').trim(), at: e.timestamp }
+        break
+      }
       case 'wake': { const a = this.participants.get(p.agent); if (a) a.wake = p.urlHash ? { on: p.on, since: e.timestamp } : null; break }
       case 'away': this.away.set(p.agent, { enabled: p.enabled, on: p.on, perHour: p.perHour, model: p.model, since: e.timestamp }); break
       case 'leave': {
         const who = this.participants.get(e.author)
         if (who) { who.left = e.timestamp }
         for (const p of this.participants.values()) if (p.kind === 'agent' && p.principal === e.author) { p.removed = true; p.removedAt = e.timestamp }
-        for (const d of this.delegations.values()) if (d.issuer === e.author) d.revoked = true
+        for (const d of this.delegations.values()) if (d.issuer === e.author && !d.revoked) { d.revoked = true; d.endedBy = e.hash }
         break
       }
       case 'link': this.links.set(e.hash, { hash: e.hash, from: e.author, old: p.old, why: p.why ?? '', at: e.timestamp, vouches: new Map(), replacedAt: null }); break
@@ -90,11 +107,12 @@ export class State {
         // the record stays (it is permanent); the agent is stopped and no longer listed
         const a = this.participants.get(p.agent)
         if (a) { a.removed = true; a.removedAt = e.timestamp }
-        for (const d of this.delegations.values()) if (d.delegate === p.agent) d.revoked = true
+        for (const d of this.delegations.values()) if (d.delegate === p.agent && !d.revoked) { d.revoked = true; d.endedBy = e.hash }
         break
       }
       case 'hosted': { this.hosted.add(p.agent); const a = this.participants.get(p.agent); if (a) a.hosted = true; break }
-      case 'revoke': { const d = this.delegations.get(p.delegation); if (d && d.issuer === e.author) d.revoked = true; break }
+      case 'revoke': { const d = this.delegations.get(p.delegation); if (d && d.issuer === e.author && !d.revoked) { d.revoked = true; d.endedBy = e.hash }; break }
+      case 'note': if (e.author === this.workspace && p.dive) this.dive(e); break
       case 'propose': this.addProposal(e); break
       case 'vote': {
         const pr = this.proposals.get(p.proposal)
@@ -102,7 +120,8 @@ export class State {
         const mine = pr.votes.get(e.onBehalfOf)
         // an agent's vote never overrides its human's own vote
         if (mine && mine.by === e.onBehalfOf && e.author !== e.onBehalfOf) break
-        pr.votes.set(e.onBehalfOf, { choice: p.choice, by: e.author, reason: p.reason ?? '', seq: e.seq, at: e.timestamp })
+        // judgment: an agent says this vote is its own call, not its person's words (only an agent's vote can carry it)
+        pr.votes.set(e.onBehalfOf, { choice: p.choice, by: e.author, reason: p.reason ?? '', judgment: p.judgment === true && e.author !== e.onBehalfOf, seq: e.seq, at: e.timestamp })
         break
       }
       case 'approve': {
@@ -155,6 +174,13 @@ export class State {
       kind: p.kind, title: p.title, body: p.body ?? '', run: p.run, change: p.change, sources: p.sources, measure: p.measure, direction: p.direction, threadId: e.document.threadId,
       votes: new Map(), approvals: new Map(), lastApprovalAt: null, vetoes: [], results: [], outcome: null,
     })
+  }
+
+  /** A closer look (dives.js) opens with one line of the weaver's and ends with another in its thread; both carry its record. */
+  dive (e) {
+    const d = e.document.payload.dive
+    if (d.of) { const open = this.dives.get(d.of); if (open && !open.outcome) Object.assign(open, { outcome: d.outcome, by: d.by, endedAt: e.timestamp, endedSeq: e.seq, ended: e.hash }); return }
+    this.dives.set(e.hash, { hash: e.hash, seq: e.seq, at: e.timestamp, thread: e.document.id, key: d.key, question: d.question, proposal: d.proposal ?? null, sides: d.sides, round: d.round, from: d.from, outcome: null })
   }
 
   tally (pr) {
