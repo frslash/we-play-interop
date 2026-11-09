@@ -8,8 +8,10 @@ import { AGENT_SCOPES, DEFAULT_WAKE_ON, MODES, NAME_OF, TYPES, WAKE_ON, signedDo
 import { createGraph } from '/graph.js'
 import { neverKey, phrases, secretIn, textsOf } from '/shared/guard.js'
 import { splitLayers } from '/shared/layers.js'
+import { mentionOptions } from '/shared/mentions.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
 import { KINDS, RESOURCES } from '/resources.js'
+import { heard, lineIsFor } from '/shared/presence.js'
 
 // ---------- tiny DOM helpers (user text only ever goes in as text) ----------
 const $ = (s) => document.querySelector(s)
@@ -64,9 +66,40 @@ const person = (did) => S?.people.find((p) => p.did === did)
 const nameOf = (did) => (did === S?.workspace ? 'the weaver' : person(did)?.name ?? (S?.left?.[did] ? `${S.left[did]} (left)` : short(did)))
 const joined = () => me && person(me.did)?.kind === 'human'
 // the room check (a test person and agent walking the newcomer's path) stays out of the room's own view; the Log keeps it
+// A line is for you when it's addressed to you, names you, or answers a line of yours (room line 570: a person
+// without an agent, tagged in the room, had no way to see it was waiting for them).
+function forMe (e) {
+  if (!me || !joined()) return false
+  const d = e.document, parent = d.threadId ? feed.find((x) => x.document.id === d.threadId)?.author ?? null : null
+  return lineIsFor(e, { did: me.did, name: person(me.did)?.name }, parent)
+}
+const seenForMe = () => Number(store.get('wpi.forMeSeen') ?? -1)
+function markForMeSeen () { const top = feed.find(forMe)?.seq; if (top != null && top > seenForMe()) { store.set('wpi.forMeSeen', String(top)); drawForMeCount() } }
+function drawForMeCount () {
+  const b = document.querySelector('.tabs button[data-tab="talk"]'); if (!b) return
+  const n = feed.filter((e) => e.seq > seenForMe() && forMe(e)).length
+  b.querySelector('.for-me-count')?.remove()
+  if (n) b.append(h('span', { class: 'for-me-count', 'aria-label': `${n} for you` }, String(n)))
+}
+// a notification from this browser when a line is for you and you're not looking (only while the page is open)
+const notifyOn = () => store.get('wpi.notify') === '1' && 'Notification' in window && Notification.permission === 'granted'
+function notifyIfForMe (e) {
+  if (!notifyOn() || !forMe(e) || (!document.hidden && document.body.dataset.tab === 'talk')) return
+  const text = splitLayers(e.document.payload.text ?? e.document.payload.title ?? '').short.slice(0, 140)
+  try { const n = new Notification(`${nameOf(e.author)} in We Play Interop`, { body: text, tag: e.hash }); n.onclick = () => { window.focus(); go('talk'); n.close() } } catch {}
+}
+async function toggleNotify () {
+  if (notifyOn()) { store.set('wpi.notify', null); toast('No more notifications from this browser.'); return render() }
+  if (!('Notification' in window)) return toast('This browser can\'t show notifications.')
+  const ok = (await Notification.requestPermission()) === 'granted'
+  store.set('wpi.notify', ok ? '1' : null); toast(ok ? 'You\'ll get a notification here when a line is for you.' : 'Notifications are blocked for this site in your browser settings.'); render()
+}
+
+// an agent is in the room once it has been heard; before that it is being set up, on its person's card only
+const inRoom = (p) => !p.removed && !isCheck(p.did) && heard(p)
 const isCheck = (did) => Boolean(did && S?.check?.dids?.includes(did))
 const checkEntry = (e) => isCheck(e.author) || isCheck(e.onBehalfOf)
-const projectName = (slug) => B?.projects?.find((p) => p.slug === slug)?.name ?? slug
+const projectName = (slug) => B?.projects?.find((p) => p.slug === (B?.aliases?.[slug] ?? slug))?.name ?? slug // a project added twice keeps one name
 
 let serverOffset = 0 // the room's clock minus this one's, from each answer's Date header, so a line's age is the room's
 const ageOf = (e) => Math.max(0, Date.now() + serverOffset - Date.parse(e.timestamp))
@@ -146,7 +179,7 @@ function live () {
   es.addEventListener('entry', (ev) => {
     streamHeard = true
     const e = JSON.parse(ev.data)
-    if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); toWeave.push(e) }
+    if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); toWeave.push(e); notifyIfForMe(e) }
     feed = feed.slice(0, 150)
     clearTimeout(pending); pending = setTimeout(async () => { await refresh(); weaveQueued() }, 250)
   })
@@ -160,10 +193,11 @@ function go (tab) {
   document.body.dataset.tab = tab
   window.scrollTo({ top: 0 })
   if (tab === 'talk' && talk.list) requestAnimationFrame(() => { talk.list.scrollTop = talk.list.scrollHeight }) // the chat opens at the latest message
-  if (tab === 'talk') refreshNotes().catch(() => {})
+  if (tab === 'talk') { refreshNotes().catch(() => {}); markForMeSeen() }
   if (tab === 'map' && mapv.graph) requestAnimationFrame(() => renderMap()) // laid out once it can be seen
 }
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => go(b.dataset.tab)))
+document.addEventListener('visibilitychange', () => { if (!document.hidden && document.body.dataset.tab === 'talk') markForMeSeen() })
 // Plain or Technical, like a language switch: the same room, two ways of showing it.
 function setView (v) {
   document.body.dataset.view = v
@@ -199,7 +233,7 @@ function says (e) {
     case 'note': return p.kind === 'message' ? p.text : `${p.kind}: ${p.text}`
     case 'card': return `updated their card${p.goals?.length ? ': ' + p.goals.join(' · ') : ''}`
     case 'propose': return p.kind === 'goal' ? `proposed a goal: ${p.title}` : `proposed (${p.kind}): ${p.title}`
-    case 'vote': return `${{ for: 'said yes to', against: 'said no to', abstain: 'abstained on' }[p.choice]} "${pr(p.proposal)}"${p.reason ? ': ' + p.reason : ''}`
+    case 'vote': return `${{ for: 'said yes to', against: 'said no to', abstain: 'abstained on' }[p.choice]} "${pr(p.proposal)}"${p.reason ? ': ' + p.reason : ''}${p.judgment ? ' (its own judgment, not its person’s words)' : ''}`
     case 'approve': return `approved "${pr(p.proposal)}"`
     case 'veto': return `vetoed "${pr(p.target)}": ${p.reason}`
     case 'mode': return `set the mode to ${p.mode}${p.reason ? ': ' + p.reason : ''}`
@@ -247,7 +281,7 @@ function openSheet (...kids) {
 
 // ---------- header ----------
 function renderTop () {
-  const n = { human: S.people.filter((p) => p.kind === 'human' && !isCheck(p.did)).length, agent: S.people.filter((p) => p.kind === 'agent' && !isCheck(p.did)).length }
+  const n = { human: S.people.filter((p) => p.kind === 'human' && !isCheck(p.did)).length, agent: S.people.filter((p) => p.kind === 'agent' && inRoom(p)).length }
   $('#live').title = `${n.human} people · ${n.agent} agents`
   if (S.workspaceRepo) { const a = $('#repo'); a.href = `https://github.com/${S.workspaceRepo}`; a.hidden = false }
   const s = S.score
@@ -269,6 +303,8 @@ const tile = (n, label) => h('div', { class: 'tile', role: 'button', tabindex: 0
 const talk = { to: 'room', replyTo: null, notes: [], readUpTo: null, notesFor: null }
 // how an agent can be reached right now (the room says, in /api/state)
 const LISTEN = { waiting: 'listening now', 'wake link': 'listening: the room wakes it', 'room answers': 'the room answers for it' }
+// what an agent says it runs on: its own word, never checked by the room
+const saysIt = (did) => { const m = person(did)?.runsOnSaid; return m && (m.model || m.runsOn) ? `says it runs on ${[m.model, m.runsOn && `(${m.runsOn})`].filter(Boolean).join(' ')}` : null }
 const listeningOf = (did) => person(did)?.listening ?? null
 function listenDot (did) {
   const how = listeningOf(did)
@@ -424,15 +460,16 @@ function chatItem (e) {
     const actions = h('span', { class: 'msg-actions' },
       h('button', { class: 'btn tiny', title: 'Reply to this', onclick: () => setReply(e) }, 'Reply'),
       h('button', { class: 'btn tiny', title: 'Copy this message', onclick: () => navigator.clipboard?.writeText(p.text ?? '').then(() => toast('Copied.'), () => toast('Select the text and copy it by hand.')) }, 'Copy'))
-    return h('div', { class: 'msg' + (e.author === me?.did ? ' mine' : '') + (agent ? ' agent' : '') },
-      h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${colorFor(e.author)}` }), nameOf(e.author), agent ? listenDot(e.author) : null, agent && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
-        d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, ' ', time, actions),
+    const mineToAnswer = forMe(e)
+    return h('div', { class: 'msg' + (e.author === me?.did ? ' mine' : '') + (agent ? ' agent' : '') + (mineToAnswer ? ' for-me' : '') },
+      h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${colorFor(e.author)}` }), nameOf(e.author), agent ? listenDot(e.author) : null, agent && saysIt(e.author) ? h('span', { class: 'for', title: 'The agent’s own word: the room cannot check it' }, ` · ${saysIt(e.author)}`) : null, agent && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
+        d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, mineToAnswer ? h('span', { class: 'badge for-me' }, 'for you') : null, ' ', time, actions),
       parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${splitLayers(parent.document.payload.text ?? parent.document.payload.title ?? '').short.slice(0, 100)}`) : null,
       p.media?.length ? h('div', { class: 'photos' }, p.media.map((m) => h('a', { href: `/media/${m.sha256}`, target: '_blank', rel: 'noopener' }, h('img', { src: `/media/${m.sha256}`, loading: 'lazy', width: m.w, height: m.h, alt: 'a photo' })))) : null,
       p.files?.length ? h('div', { class: 'files' }, p.files.map((f) => h('a', { class: 'doc-chip', href: `/media/${f.sha256}?name=${encodeURIComponent(f.name)}`, download: f.name }, `📄 ${f.name} · ${sizeOf(f.bytes)}`))) : null,
       (p.media?.length && p.text === '(a photo)') || (p.files?.length && p.text === '(a file)') ? null : layered(e.hash, p.text, p.tech), techLine)
   }
-  if (name === 'propose') return system([`${nameOf(e.author)} proposed: `, h('strong', null, p.title), ' · ', h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); go('decide') } }, 'decide')])
+  if (name === 'propose') return system([forMe(e) ? h('span', { class: 'badge for-me' }, 'for you') : null, forMe(e) ? ' ' : null, `${nameOf(e.author)} proposed: `, h('strong', null, p.title), ' · ', h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); go('decide') } }, 'decide')])
   if (name === 'round') {
     const lines = [
       ...(p.connections ?? []).slice(0, 2).map((c) => `${nameOf(c.between[0])} and ${nameOf(c.between[1])} should talk: ${c.why}`),
@@ -447,7 +484,11 @@ function chatItem (e) {
       tech(h('div', { class: 'tech-line' }, `round ${p.round} · ${p.mode} · ${p.model?.ok ? p.model.id : 'built-in tally'} · heard ${p.heard?.length ?? 0}`)))
   }
   if (name === 'join') return system(`${nameOf(e.author)} joined${p.projects?.length ? ' for ' + p.projects.map(projectName).join(', ') : ''}.`)
-  if (name === 'delegate') return system(`${nameOf(e.author)} brought ${p.label || 'an agent'} into the room.`)
+  if (name === 'delegate') { // starting an agent's setup isn't bringing it in: it's in the room once it first speaks
+    const a = person(p.delegate), label = a?.name ?? p.label ?? 'an agent'
+    if (!heard(a)) return system(`${nameOf(e.author)} is setting up an agent, ${label}. It comes into the room when it first speaks.`)
+    return system(Date.parse(a.firstSaid) < Date.parse(e.timestamp) ? `${nameOf(e.author)} updated what ${label} may do.` : `${nameOf(e.author)} brought ${label} into the room.`)
+  }
   if (name === 'revoke') return system(`${nameOf(e.author)} stopped one of their agents.`)
   if (name === 'project') return system(`${nameOf(e.onBehalfOf)} put ${p.name} on the map.`)
   if (name === 'run') return system(`${p.sides.map((s) => projectName(s.project)).join(' and ')} tried ${p.ways.map(wayName).join(', ')} together: ${p.outcome}.`)
@@ -488,11 +529,30 @@ function renderTalk (scrollDown) {
     talk.toggle = h('div', { class: 'seg small' })
     talk.input = keep(h('textarea', { rows: 1, maxlength: 2000, placeholder: 'Say something…' }), 'chat.text')
     talk.input.addEventListener('input', autoGrow)
-    // @mentions: type @ and a few letters to pick a person or agent; the room wakes whoever is named
-    talk.mentions = h('div', { class: 'row', hidden: true })
-    const mentionFor = () => { const m = /(^|\s)@([^@\n]{0,30})$/.exec(talk.input.value.slice(0, talk.input.selectionStart)); return m ? m[2].toLowerCase() : null }
-    const pickMention = (name) => { const end = talk.input.selectionStart, before = talk.input.value.slice(0, end).replace(/@([^@\n]{0,30})$/, '@' + name + ' '); talk.input.value = before + talk.input.value.slice(end); talk.input.focus(); talk.input.setSelectionRange(before.length, before.length); talk.input.dispatchEvent(new Event('input')) }
-    talk.input.addEventListener('input', () => { const q = mentionFor(), names = q == null ? [] : (S?.people ?? []).filter((p) => p.name && !isCheck(p.did) && p.name.toLowerCase().startsWith(q)).map((p) => p.name).slice(0, 6); talk.mentions.hidden = !names.length; fill(talk.mentions, names.map((n) => h('button', { class: 'btn tiny', type: 'button', onclick: () => pickMention(n) }, '@' + n))) })
+    // @mentions: type @ and a few letters, and a small list opens above the box: people first, each with their
+    // agents under them, so "@F" finds a person and their agent. Tap a row, or use the arrows and Enter.
+    // The room wakes whoever a line names.
+    talk.mentions = h('div', { class: 'mention-list', role: 'listbox', id: 'mention-list', 'aria-label': 'People and agents to name', hidden: true })
+    talk.mention = { rows: [], at: 0 }
+    const mentionFor = () => { const m = /(^|\s)@([^@\n]{0,30})$/.exec(talk.input.value.slice(0, talk.input.selectionStart)); return m ? m[2] : null }
+    const closeMentions = () => { talk.mentions.hidden = true; talk.mention.rows = []; talk.input.removeAttribute('aria-activedescendant') }
+    const pickMention = (name) => { const end = talk.input.selectionStart, before = talk.input.value.slice(0, end).replace(/@([^@\n]{0,30})$/, '@' + name + ' '); talk.input.value = before + talk.input.value.slice(end); closeMentions(); talk.input.focus(); talk.input.setSelectionRange(before.length, before.length); talk.input.dispatchEvent(new Event('change')); autoGrow() } // change keeps the draft, without reopening the list
+    const drawMentions = () => {
+      const { rows, at } = talk.mention
+      fill(talk.mentions, rows.map((r, i) => h('button', { type: 'button', role: 'option', id: `mention-${i}`, class: `mention${r.under ? ' under' : ''}${i === at ? ' active' : ''}`, 'aria-selected': String(i === at), onmousedown: (ev) => ev.preventDefault(), onclick: () => pickMention(r.name) }, r.label)))
+      talk.mentions.hidden = !rows.length
+      if (rows.length) talk.input.setAttribute('aria-activedescendant', `mention-${at}`); else talk.input.removeAttribute('aria-activedescendant')
+    }
+    talk.input.setAttribute('aria-controls', 'mention-list')
+    talk.input.addEventListener('input', () => { const q = mentionFor(); talk.mention = { rows: q == null ? [] : mentionOptions(S?.people, q, { skip: isCheck }), at: 0 }; drawMentions() })
+    talk.input.addEventListener('blur', () => setTimeout(closeMentions, 150))
+    talk.input.addEventListener('keydown', (ev) => { // while the list is open, the arrows move in it and Enter or Tab picks
+      const m = talk.mention
+      if (talk.mentions.hidden || !m.rows.length) return
+      if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); m.at = (m.at + (ev.key === 'ArrowDown' ? 1 : m.rows.length - 1)) % m.rows.length; drawMentions() }
+      else if (ev.key === 'Enter' || ev.key === 'Tab') { ev.preventDefault(); ev.stopImmediatePropagation(); pickMention(m.rows[m.at].name) }
+      else if (ev.key === 'Escape') { ev.preventDefault(); closeMentions() }
+    })
     talk.input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && matchMedia('(min-width: 760px)').matches) { ev.preventDefault(); sendChat() } })
     talk.picker = h('input', { type: 'file', accept: 'image/*,.pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv', multiple: true, hidden: true, onchange: (ev) => addPhotos([...ev.target.files]).finally(() => { ev.target.value = '' }) })
     talk.tray = h('div', { class: 'photo-tray', hidden: true })
@@ -636,6 +696,7 @@ function showNode (n) {
       c ? h('div', null, c.goals?.length ? h('p', null, h('strong', null, 'Goals: '), c.goals.join(' · ')) : null, c.workingOn ? h('p', null, h('strong', null, 'Working on: '), c.workingOn) : null, c.lookingFor ? h('p', null, h('strong', null, 'Looking for: '), c.lookingFor) : null) : h('p', { class: 'meta' }, 'No card yet.'),
       n.projects?.length ? h('p', { class: 'meta' }, `Part of ${n.projects.map(projectName).join(', ')}`) : null,
       n.agents?.length ? h('p', { class: 'meta' }, `Agents: ${n.agents.join(', ')}`) : null,
+      n.settingUp?.length ? h('p', { class: 'meta' }, `Being set up: ${n.settingUp.join(', ')} (in the room once it first speaks)`) : null,
       tech(h('p', null, h('code', null, n.id))),
       lines.length ? h('ul', { class: 'plain' }, lines) : null)
   }
@@ -718,10 +779,16 @@ function modeChoice (a) {
     const t = new Date(), until = a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString()
     await post('delegate', { delegate: a.did, scope: AGENT_SCOPES, ask: ASK_OF[m], label: a.name }, { issuedAt: t.toISOString(), expiresAt: until })
   }
+  const setVoting = async (ev) => {
+    const ask = (a.ask ?? []).filter((x) => x !== 'vote'); if (!ev.target.checked) ask.push('vote')
+    const t = new Date()
+    await post('delegate', { delegate: a.did, scope: a.scope?.length ? a.scope : AGENT_SCOPES, ask, label: a.name }, { issuedAt: t.toISOString(), expiresAt: a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString() })
+  }
   const regrant = async () => { const t = new Date(); await post('delegate', { delegate: a.did, scope: AGENT_SCOPES, ask: a.ask ?? [], label: a.name }, { issuedAt: t.toISOString(), expiresAt: a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString() }) }
   const missing = AGENT_SCOPES.filter((x) => !(a.scope ?? []).includes(x))
   return h('div', { class: 'mode' },
     missing.includes('change') ? h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'It can’t hand the room changes to its code yet: its permission is from before that existed.'), h('button', { class: 'btn small primary', onclick: regrant }, 'Let it hand in code changes')) : null,
+    h('label', { class: 'row', title: 'When off, its votes wait for your OK, like any line it asks you about.' }, h('input', { type: 'checkbox', checked: !(a.ask ?? []).includes('vote'), disabled: !(a.scope ?? []).includes('vote'), onchange: setVoting }), h('span', { class: 'grow meta' }, 'It votes for you by its own judgment (it says when it does; your own vote always outweighs it)')),
     h('div', { class: 'seg small' }, Object.entries(MODES_OF).map(([k, [label]]) => h('button', { class: now === k ? 'on' : '', title: MODES_OF[k][1], onclick: () => set(k) }, label))),
     h('p', { class: 'meta' }, MODES_OF[now][1], a.until ? ` It may act for you until ${new Date(a.until).toLocaleDateString([], { day: 'numeric', month: 'short' })}.` : '', a.hosted ? '' : ' (It holds its own key, so lines that need your OK are refused and it asks you instead.)'))
 }
@@ -747,6 +814,33 @@ function cardPanel (mine) {
         if (await post('card', { goals: g, workingOn: working.value.trim(), lookingFor: looking.value.trim() })) forget('card.goals', 'card.working', 'card.looking')
       } }, 'Save')))
 }
+// ---------- join on your phone: a short link for this visit only, as a QR code ----------
+// The room makes the link (POST /api/visit); it opens once and runs out after ten minutes. A phone camera
+// opens it into this page's join flow; a wallet reads the room's DID and a DIDComm invitation behind it.
+const visit = { url: null, until: 0, asking: null, timer: null, img: null, failed: 0 }
+const visitFresh = () => visit.url && visit.until - (Date.now() + serverOffset) > 30_000
+function askVisit (again) {
+  if ((visitFresh() && !again) || visit.asking || Date.now() - visit.failed < 60_000) return // refused: wait a minute, not every redraw
+  visit.asking = api('/api/visit', { method: 'POST' }).then((r) => {
+    if (!r.ok) { visit.failed = Date.now(); return }
+    visit.url = r.body.url; visit.until = Date.parse(r.body.expiresAt)
+    if (visit.img?.isConnected) visit.img.src = `/api/qr.svg?text=${encodeURIComponent(visit.url)}`
+    clearTimeout(visit.timer) // a fresh code shortly before this one runs out, while the page is still showing it
+    visit.timer = setTimeout(() => { if (visit.img?.isConnected && !joined()) askVisit(true) }, Math.max(5_000, visit.until - (Date.now() + serverOffset) - 30_000))
+  }).catch(() => {}).finally(() => { visit.asking = null })
+}
+function phoneCard () {
+  if (window.matchMedia?.('(hover: none) and (pointer: coarse)').matches) return null // already on a phone: nothing to scan
+  visit.img = h('img', { class: 'qr small', alt: 'QR code: scan it to join on your phone', src: visitFresh() ? `/api/qr.svg?text=${encodeURIComponent(visit.url)}` : null })
+  askVisit()
+  const did = S.workspace
+  return h('div', { class: 'card join-qr' },
+    h('p', { class: 'why' }, 'Scan to join on your phone.'), visit.img,
+    h('div', { class: 'row' }, h('span', { class: 'meta grow' }, 'For this visit only.'), h('button', { class: 'btn tiny', onclick: () => askVisit(true) }, 'New code')),
+    fold('join-did', null, h('summary', null, 'Show the plain DID code'),
+      h('p', { class: 'why' }, 'For a wallet that reads the room’s DID itself. The same for everyone, and it does not run out.'),
+      h('img', { class: 'qr small', src: `/api/qr.svg?text=${encodeURIComponent(did)}`, alt: 'QR code of the room’s DID' }), h('p', null, h('code', null, did))))
+}
 function renderYou () {
   const el = $('#tab-you')
   const origin = S.publicUrl || location.origin // the address others can reach (PUBLIC_URL), not necessarily this one
@@ -767,7 +861,7 @@ function renderYou () {
         h('label', null, 'Name', name),
         h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: join }, 'Join')),
         h('details', null, h('summary', null, 'I already have a key'), h('label', null, 'Your key', seedIn), h('button', { class: 'btn', onclick: () => { try { me = identityFromSeedHex(seedIn.value); store.set('wpi.seed', me.seedHex); toast('Key loaded.'); refresh() } catch (err) { toast(err.message) } } }, 'Use this key'))),
-      invite)
+      phoneCard())
   }
   const mine = person(me.did)
   const myAgents = S.people.filter((p) => p.kind === 'agent' && p.principal === me.did && !p.removed)
@@ -789,6 +883,7 @@ function renderYou () {
     h('div', { class: 'card' }, h('h2', null, mine.name), h('p', { class: 'meta' }, mine.projects?.length ? `part of ${mine.projects.map(projectName).join(', ')} · ` : '', `joined ${ago(mine.since)}`), tech(h('p', null, h('code', null, me.did))),
       h('label', null, 'Projects you are part of (lets you record their runs)', projects),
       h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn small', onclick: async () => { const list = projects.value.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean).slice(0, 5); if (await post('join', { name: mine.name, ...(list.length ? { projects: list } : {}) })) forget('me.projects') } }, 'Save')),
+      h('div', { class: 'row' }, h('span', { class: 'meta grow' }, 'Lines for you (to you, naming you, or answering you) are marked “for you” in Talk.'), 'Notification' in window ? h('button', { class: 'btn small', onclick: toggleNotify }, notifyOn() ? 'Stop notifications' : 'Notify me here') : null),
       h('details', null, h('summary', null, 'Back up your key'), h('p', { class: 'why' }, 'This secret is what makes you you here. Anyone with it can act as you. Keep it somewhere safe; clearing this browser deletes it.'), h('pre', null, me.seedHex), h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(me.seedHex).then(() => toast('Copied.')) }, 'Copy')),
       h('details', null, h('summary', null, 'Leave the room'),
         h('p', { class: 'why' }, 'Leaving removes your agents and deletes everything private the room holds for you and them: their keys, their notebooks and drafts, their wake links. The room stops listing you and takes nothing more from you, and this browser forgets your key. What you said in the room stays in its public record as "(left)": that record is signed and copied by others, so nothing in it can be taken back. You can come back later by joining again.'),
@@ -802,7 +897,7 @@ function renderYou () {
       h('p', { class: 'why' }, 'Your agent acts only with the permission you signed: what it may do, until when. Approving, vetoing and bringing agents stay with you.'),
       myAgents.length ? myAgents.map((a) => h('div', { class: 'agent-row' },
         a.delegation ? modeChoice(a) : null,
-        h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), h('br'), h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'holds its own key'), tech(' ', h('code', null, short(a.did))), a.delegation ? h('br') : null, a.delegation ? h('span', { class: 'meta' }, listenDot(a.did), ' ', a.listening ? LISTEN[a.listening] : 'not listening right now: see “Keep it around” to have it answer') : null),
+        h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), h('br'), saysIt(a.did) ? h('span', { class: 'meta', title: 'The agent’s own word: the room cannot check it' }, saysIt(a.did), h('br')) : null, h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'holds its own key'), tech(' ', h('code', null, short(a.did))), a.delegation ? h('br') : null, a.delegation ? h('span', { class: 'meta' }, listenDot(a.did), ' ', a.listening ? LISTEN[a.listening] : 'not listening right now: see “Keep it around” to have it answer') : null),
           a.hosted && savedLinks()[a.did] ? h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(savedLinks()[a.did]).then(() => toast('Link copied.')) }, 'Copy link') : null,
           a.delegation ? h('button', { class: 'btn small danger', onclick: () => post('revoke', { delegation: a.delegation }) }, 'Stop') : h('span', { class: 'badge warn' }, 'stopped'),
           h('button', { class: 'btn small danger', title: 'Deletes its key, notebook and wake link; the record of what it said stays', onclick: () => { if (confirm(`Remove ${a.name}? Its key, notebook and wake link are deleted and its link stops working for good. What it already said stays in the record.`)) post('remove', { agent: a.did }) } }, 'Remove')),
@@ -840,7 +935,7 @@ function weaveEntry (e, { fast = false, age = 0, speak = !fast } = {}) {
   } else if (['propose', 'project', 'run', 'way', 'mode'].includes(name)) {
     loom.thread(from, null, { fast, age }); if (speak) loom.say(from, label, says(e))
   } else if (name === 'delegate') {
-    loom.thread(from, p.delegate, { fast, age })
+    if (heard(person(p.delegate))) loom.thread(from, p.delegate, { fast, age }) // an agent still being set up isn't on the loom yet
   } else if (name === 'join') {
     loom.pulse(from)
   } else if (name === 'round') {
@@ -887,9 +982,9 @@ function renderWatch () {
     fill(root, watch.welcome, watch.head, h('div', { class: 'watch-grid' }, watch.wrap, h('div', { class: 'card caps-card' }, h('h2', null, 'Happening now'), h('p', { class: 'meta caps-note' }, 'The last two minutes. Every line stays in Talk.'), watch.caps)), watch.about)
     loom = createLoom(watch.wrap, { onSelect: (p) => toast(p.kind === 'agent' ? `${p.name}, an agent of ${nameOf(p.principal)}${p.hosted ? ' (key held by the room)' : ''}` : `${p.name}${p.projects?.length ? ' · ' + p.projects.map(projectName).join(', ') : ''}`) })
   }
-  const humans = S.people.filter((p) => p.kind === 'human' && !isCheck(p.did)).length, agents = S.people.filter((p) => p.kind === 'agent' && !p.removed && !isCheck(p.did)).length
+  const humans = S.people.filter((p) => p.kind === 'human' && !isCheck(p.did)).length, agents = S.people.filter((p) => p.kind === 'agent' && inRoom(p)).length
   fill(watch.head, h('span', { class: 'here' }, `${humans} ${humans === 1 ? 'person' : 'people'} · ${agents} ${agents === 1 ? 'agent' : 'agents'} in the room`), comingIn().step === 'done' ? h('button', { class: 'btn small', onclick: () => { bring.again = true; openBring() } }, 'Bring another agent') : null)
-  if (loom.setPeople(S.people.filter((p) => !p.removed && !isCheck(p.did)), S.workspace) || (!watch.replayed && feed.length)) { watch.replayed = feed.length > 0; replay() }
+  if (loom.setPeople(S.people.filter(inRoom), S.workspace) || (!watch.replayed && feed.length)) { watch.replayed = feed.length > 0; replay() }
   renderCaps()
 }
 function renderCaps () {
@@ -903,7 +998,7 @@ function renderCaps () {
 setInterval(() => { if (document.body.dataset.tab === 'watch') renderCaps() }, 10_000) // lines that have faded leave the list
 
 // ---------- Keep your agent around: check-ins and wake-ups ----------
-const WAKE_LABEL = { room: 'a person asks the room something', direct: 'someone talks to it', reply: 'someone replies to it', mention: 'someone names it', person: 'you speak to the room', connection: 'the weaver connects it with someone', ask: 'the weaver asks the room something', round: 'every weaver round', any: 'anything new in the room' }
+const WAKE_LABEL = { room: 'a person asks the room something', proposal: 'a new proposal opens for a vote', roundup: 'a roundup: once the room has talked and paused (for agents that wait)', direct: 'someone talks to it', reply: 'someone replies to it', mention: 'someone names it', person: 'you speak to the room', connection: 'the weaver connects it with someone', ask: 'the weaver asks the room something', round: 'every weaver round', any: 'anything new in the room' }
 function keepAround (a) {
   const copy = (text, what) => navigator.clipboard?.writeText(text).then(() => toast(`${what} copied. Paste it into Claude.`), () => toast('Select and copy it by hand.'))
   const aw = a.away ?? { enabled: false, on: ['direct', 'reply', 'connection'], perHour: 6, model: 'smart' }
@@ -1294,13 +1389,26 @@ function renderRules () {
   import('/rules.js').then(({ RULES = [] }) => fill(el, h('div', { class: 'card' }, h('h2', null, 'Rules'), h('p', { class: 'why' }, 'How agents and people work together here. No one decides for the platform alone, Faolan included: anyone can propose a new rule or a change in Decide, and it holds only after a vote. Each rule says where it was agreed.')),
     h('ol', { class: 'card' }, RULES.map((r) => h('li', null, h('strong', null, r.rule), r.why ? h('div', { class: 'why' }, r.why) : null, h('div', { class: 'meta' }, r.agreed)))))).catch(() => fill(el, h('p', { class: 'empty' }, 'No rules yet.')))
 }
-function renderResources () {
+let sourcesView = null, sourcesAt = null
+async function renderResources () {
   const el = $('#tab-resources')
   if (!el) return
+  const ago = (t) => { const m = Math.max(0, Math.round((Date.now() - Date.parse(t)) / 60000)); return m < 2 ? 'just now' : m < 90 ? `${m} minutes ago` : m < 2880 ? `${Math.round(m / 60)} hours ago` : `${Math.round(m / 1440)} days ago` }
+  // the room's own copies of outside sources (an entry with a `source`): when each was fetched, and how much it holds
+  const live = (r, src) => {
+    if (!r.source || !src) return null
+    const c = src.sources?.find((x) => x.id === r.source)
+    if (!c) return null
+    if (!c.fetchedAt) return h('div', { class: 'why' }, c.lastError ? `The room has no copy yet: ${c.lastError.why}.` : 'The room is fetching its first copy.')
+    const n = c.summary ? `, ${c.summary.entries} entries and ${c.summary.links} links` : ''
+    return h('div', { class: 'why' }, `Live copy, fetched ${ago(c.fetchedAt)}${n}. `, h('a', { href: c.copy, target: '_blank', rel: 'noopener' }, 'Open the room\'s copy'), c.lastError ? ` (the last refresh failed: ${c.lastError.why}; this is the last good copy)` : '')
+  }
+  if (Date.now() - (sourcesAt ?? 0) > 60_000) { sourcesAt = Date.now(); sourcesView = await api('/api/sources').then((r) => (r.ok ? r.body : null)).catch(() => sourcesView) } // small, and the tab redraws often
+  const sources = sourcesView
   import('/resources.js').then(({ RESOURCES = [], KINDS = [] }) => {
     const kinds = [...KINDS, ...RESOURCES.map((r) => r.kind)].filter((k, i, a) => a.indexOf(k) === i)
     fill(el, h('div', { class: 'card' }, h('h2', null, 'Resources'), h('p', { class: 'why' }, 'The specs, code and writing the projects here build on, from every project, so people and agents look across all of them. Each entry says who it is from and how current it is. Add one with a one-line change to resources.js.')),
-      kinds.map((k) => { const list = RESOURCES.filter((r) => r.kind === k); return list.length ? h('div', { class: 'card' }, h('h2', null, k), h('ul', { class: 'plain' }, list.map((r) => h('li', null, h('a', { href: r.url, target: '_blank', rel: 'noopener' }, r.title), h('span', { class: 'meta' }, ` · ${r.by} · ${r.status}`), r.about ? h('div', { class: 'why' }, r.about) : null)))) : null }))
+      kinds.map((k) => { const list = RESOURCES.filter((r) => r.kind === k); return list.length ? h('div', { class: 'card' }, h('h2', null, k), h('ul', { class: 'plain' }, list.map((r) => h('li', null, h('a', { href: r.url, target: '_blank', rel: 'noopener' }, r.title), h('span', { class: 'meta' }, ` · ${r.by} · ${r.status}`), r.about ? h('div', { class: 'why' }, r.about) : null, live(r, sources))))) : null }))
   }).catch(() => fill(el, h('p', { class: 'empty' }, 'No resources yet.')))
 }
 const stale = new Set()
@@ -1308,6 +1416,7 @@ const typing = (el) => el.contains(document.activeElement) && /^(INPUT|TEXTAREA|
 function render () {
   if (!S) return
   renderTop()
+  if (document.body.dataset.tab === 'talk' && !document.hidden) markForMeSeen(); else drawForMeCount()
   for (const [name, draw] of Object.entries(TABS)) {
     const el = $('#tab-' + name)
     if (!['talk', 'watch'].includes(name) && typing(el)) stale.add(name); else { stale.delete(name); draw() } // the chat and the loom redraw around the typing, not over it

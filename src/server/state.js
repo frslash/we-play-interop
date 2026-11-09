@@ -61,7 +61,13 @@ export class State {
         this.participants.set(p.delegate, { ...prev, did: p.delegate, kind: 'agent', name: p.label || `agent of ${this.nameOf(e.author)}`, principal: e.author, hosted: this.hosted.has(p.delegate), since: prev?.since ?? e.timestamp })
         break
       }
-      case 'card': { const who = this.participants.get(e.onBehalfOf); if (who) who.card = { goals: p.goals ?? [], workingOn: p.workingOn ?? '', lookingFor: p.lookingFor ?? '', by: e.author, at: e.timestamp }; break }
+      case 'card': {
+        const who = this.participants.get(e.onBehalfOf); if (who) who.card = { goals: p.goals ?? [], workingOn: p.workingOn ?? '', lookingFor: p.lookingFor ?? '', by: e.author, at: e.timestamp }
+        // what an agent says it runs on is its own word, kept on the agent that signed it (never on its person); an update that leaves a field out keeps the old one
+        const self = this.participants.get(e.author)
+        if (self?.kind === 'agent' && (p.model !== undefined || p.runsOn !== undefined)) self.runsOnSaid = { model: (p.model ?? self.runsOnSaid?.model ?? '').trim(), runsOn: (p.runsOn ?? self.runsOnSaid?.runsOn ?? '').trim(), at: e.timestamp }
+        break
+      }
       case 'wake': { const a = this.participants.get(p.agent); if (a) a.wake = p.urlHash ? { on: p.on, since: e.timestamp } : null; break }
       case 'away': this.away.set(p.agent, { enabled: p.enabled, on: p.on, perHour: p.perHour, model: p.model, since: e.timestamp }); break
       case 'leave': {
@@ -88,7 +94,8 @@ export class State {
         const mine = pr.votes.get(e.onBehalfOf)
         // an agent's vote never overrides its human's own vote
         if (mine && mine.by === e.onBehalfOf && e.author !== e.onBehalfOf) break
-        pr.votes.set(e.onBehalfOf, { choice: p.choice, by: e.author, reason: p.reason ?? '', seq: e.seq, at: e.timestamp })
+        // judgment: an agent says this vote is its own call, not its person's words (only an agent's vote can carry it)
+        pr.votes.set(e.onBehalfOf, { choice: p.choice, by: e.author, reason: p.reason ?? '', judgment: p.judgment === true && e.author !== e.onBehalfOf, seq: e.seq, at: e.timestamp })
         break
       }
       case 'approve': {
