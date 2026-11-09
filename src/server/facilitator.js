@@ -28,6 +28,15 @@ const clip = (s, n) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return
 export const STALE_MS = 30 * 60_000 // about half an hour without a word from a step's owner, and it asks
 export const REPORT_MS = 60 * 60_000 // a report against the done-tests about once an hour
 export const REPORT_SOON_MS = 10 * 60_000 // sooner when a done-test's check moved, but not more often than this
+// The board reads GitHub's verdict on its steps' pull requests this often: merged or closed work leaves the board on its
+// own, so nobody is chased or asked about something already finished (11-09: 32 steps, 21 waiting for a check, many on
+// pull requests that had merged or closed hours before)
+export const SETTLE_EVERY_MS = 10 * 60_000
+/** The pull requests a text asks to have closed: the numbers right after "close", "closes" or "closing". */
+export const closesAsked = (text) => [...new Set([...String(text ?? '').matchAll(/\bclos(?:e|es|ing)\s+((?:(?:pull requests?\s+)?#\d+(?:\s*(?:,|and|&)\s*)?)+)/gi)].flatMap((m) => [...m[1].matchAll(/#(\d+)/g)].map((x) => Number(x[1]))))]
+/** Whether closing is the step's job: its title starts with "Close …" or "<someone>, as …, closes …", not "fixes … and closes …". */
+export const closingStep = (title) => /^\s*(?:[^,.;:]{1,80},\s*(?:as [^,.;:]{1,80},\s*)?)?clos(?:e|es|ing)\s+(?:pull requests?\s+)?#\d/i.test(String(title ?? ''))
+const builderBranch = (s) => `claude/builder-${s.id.slice(0, 12)}` // as builder.js names a step's branch
 export const ASIDE_MS = 3 * 86_400_000 // a step with no owner that nobody touched in three days is set aside: off the report, still on the board, back the moment someone claims it
 import { BUILD_MS } from './builder.js'
 const ASK_TEST_MS = 24 * 3600_000 // asking for a goal's done-test: at most once a day per goal
@@ -180,7 +189,7 @@ export const decided = (s) => (s?.decision && s.decision.stateKey === stateKey(s
 export const isParked = (s) => Boolean(decided(s)?.parked)
 const sameAsk = (a, b) => String(a ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '') === String(b ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '')
 const median = (xs) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2 }
-const FIELDS = ['goal', 'title', 'done', 'owner', 'state', 'from', 'sources', 'test', 'needs', 'waitingOn', 'offeredTo', 'previousOwner', 'chases', 'chasedAt', 'lastWordAt', 'result', 'evidence', 'checkedBy', 'checkAsked', 'checkAskedAt', 'agreedAt', 'words', 'aside', 'replaced', 'checkDeclined', 'decision', 'reopens', 'stuck', 'decided', 'blockedAt', 'askedAt', 'askedKey']
+const FIELDS = ['goal', 'title', 'done', 'owner', 'state', 'from', 'sources', 'test', 'needs', 'waitingOn', 'offeredTo', 'previousOwner', 'chases', 'chasedAt', 'lastWordAt', 'result', 'evidence', 'checkedBy', 'checkAsked', 'checkAskedAt', 'agreedAt', 'words', 'aside', 'replaced', 'checkDeclined', 'decision', 'reopens', 'stuck', 'decided', 'blockedAt', 'askedAt', 'askedKey', 'settled']
 
 export const ROUND_PROMPT = `Facilitate mode: you drive the held goals to done; you do not propose new directions. The board ("board") holds the steps in work: each has a goal, what done looks like, an owner and a state (${STEP_STATES.join(', ')}). The code keeps the board, the timers and the chasing; you only judge two things and write their words:
 "vague": lines in newInputs that claim progress, a result or a plan for a step or a goal but leave out the exact thing someone would need to check it or act on it: the method, a spec link, a test value, the file or the command. Give {"entry":"<hash from newInputs>","missing":"method|spec link|test value|file|command","ask":"<one short, friendly question that asks for exactly that>"}. Only real gaps, at most two; never small talk, greetings or lines that already give the thing.
@@ -217,11 +226,12 @@ export class Facilitator {
   async tick (now = Date.now()) {
     if (this.busy) return null
     this.busy = true
-    const did = { heard: 0, opened: [], chased: [], offered: [], escalated: [], checkAsked: [], aside: [], built: [], reported: false }
+    const did = { heard: 0, opened: [], chased: [], offered: [], escalated: [], checkAsked: [], aside: [], built: [], settled: [], reported: false }
     try {
       await this.hear(now, did)
       if (this.on) {
         this.startedAt ??= Date.now() // the board closes agreements from here on (and from its first line, after a restart)
+        await this.settle(now, did)
         await this.seed(now, did)
         await this.closeAgreements(now, did)
         await this.askForTests(now, did)
@@ -664,6 +674,49 @@ export class Facilitator {
     await this.speak(nudges.length === 1 ? line(nudges[0]) : ['A few steps have gone quiet:', ...nudges.map(line)].join('\n'), 'chase', nudges, nudges.length === 1 ? { thread: nudges[0].thread } : {})
   }
 
+  /** The pull request links in a step's evidence that point at this room's own repository. */
+  ownPulls (s) {
+    const repo = this.ctx.config.workspaceRepo
+    if (!repo) return []
+    const re = new RegExp(`github\\.com/${repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/pull/(\\d+)`, 'i')
+    return [...new Set((s.evidence ?? []).map((x) => re.exec(x?.url ?? '')?.[1]).filter(Boolean).map(Number))]
+  }
+
+  /**
+   * Steps GitHub has already settled leave the board on their own, every ten minutes:
+   *  - a step whose own pull request merged is done (the room's approvals, or a person's, were its check);
+   *  - a step that asked for pull requests to be closed is done once they are (unless it also carries open code);
+   *  - a step whose own pull requests were all closed without merging is set aside.
+   * "Its own": the pull requests in its result, and the one on its builder's branch.
+   */
+  async settle (now, did) {
+    const gh = this.ctx.executor?.gh, repo = this.ctx.config.workspaceRepo
+    if (!gh || !repo || now - (this.settledAt ?? 0) < SETTLE_EVERY_MS) return
+    const live = this.steps().filter((s) => !s.aside && s.state !== 'checked')
+    if (!live.length) return
+    this.settledAt = now
+    let pulls
+    try {
+      const [open, closed] = await Promise.all([gh('GET', `/repos/${repo}/pulls?state=open&per_page=100`), gh('GET', `/repos/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100`)])
+      const of = (p, isOpen) => [p.number, { open: isOpen, merged: !isOpen && Boolean(p.merged_at), ref: p.head?.ref ?? '', blocked: /^blocked\b/i.test(p.title ?? '') }]
+      pulls = new Map([...(closed ?? []).filter((p) => p.state === 'closed').map((p) => of(p, false)), ...(open ?? []).map((p) => of(p, true))]) // which list it came from says open or closed
+    } catch (err) { this.settleError = clip(err.message, 200); return }
+    this.settleError = null
+    const list = (ns) => ns.map((n) => `#${n}`).join(', ')
+    for (const s of live) {
+      const mine = [...new Set([...this.ownPulls(s), ...[...pulls].filter(([, p]) => p.ref === builderBranch(s)).map(([n]) => n)])].filter((n) => pulls.has(n))
+      const merged = mine.find((n) => pulls.get(n).merged)
+      const asked = closingStep(s.title) ? closesAsked(`${s.title} ${s.done}`) : [], openCode = mine.some((n) => pulls.get(n).open && !pulls.get(n).blocked)
+      let changes = null
+      if (merged) changes = { state: 'checked', settled: `pull request #${merged} merged` }
+      else if (asked.length && !openCode && asked.every((n) => pulls.has(n) && !pulls.get(n).open)) changes = { state: 'checked', settled: `${list(asked)} ${asked.length === 1 ? 'is' : 'are'} closed, as it asked` }
+      else if (mine.length && mine.every((n) => !pulls.get(n).open)) changes = { aside: true, settled: `${mine.length === 1 ? 'pull request' : 'pull requests'} ${list(mine)} closed without merging` }
+      if (!changes) continue
+      await this.write(s, { ...changes, waitingOn: null }, 'settled', null)
+      did.settled.push(s.id)
+    }
+  }
+
   /** Offer a step to another agent: listening now if one is, of another person than whoever had it, not already busy. */
   async offer (step, because, now = Date.now()) {
     const st = this.st
@@ -753,6 +806,7 @@ export class Facilitator {
     const st = this.st
     for (const s of this.steps()) {
       if (s.state !== 'result posted' || s.waitingOn || isParked(s)) continue
+      if (this.ownPulls(s).length) continue // code for the room: its approvals in Decide are the check, and the board ends it when it merges (settle)
       const asked = s.checkAsked ?? [], waiting = asked.filter((d) => !(s.checkDeclined ?? []).includes(d)) // one who said no is not waited on
       if (waiting.length >= 2 || (waiting.length && now - time(s.checkAskedAt ?? s.at) < STALE_MS)) continue
       const pick = this.candidates([s.owner, ...asked], { ask: 'check', code: isCodeStep(s) })[0]
@@ -805,12 +859,15 @@ export class Facilitator {
     const others = this.steps().filter((s) => !s.test && !s.aside)
     if (others.length) out.push('Other steps:', ...others.slice(0, 12).map((s) => '  ' + line(s)))
     const n = (c) => changed.filter((e) => e.document.payload.change === c).length
-    out.push(`Since the last report: ${n('opened')} opened, ${n('claimed')} claimed, ${n('result')} result${n('result') === 1 ? '' : 's'} posted, ${n('checked')} checked${n('check failed') ? `, ${n('check failed')} sent back` : ''}.`)
+    out.push(`Since the last report: ${n('opened')} opened, ${n('claimed')} claimed, ${n('result')} result${n('result') === 1 ? '' : 's'} posted, ${n('checked')} checked${n('check failed') ? `, ${n('check failed')} sent back` : ''}${n('settled') ? `, ${n('settled')} settled by GitHub (merged or closed)` : ''}.`)
+    const live = this.steps().filter((s) => !s.aside), waiting = live.filter((s) => s.state === 'result posted' && !this.ownPulls(s).length).length
+    out.push(`On the board: ${live.length} step${live.length === 1 ? '' : 's'}${waiting ? `, ${waiting} waiting for a check` : ''}.`)
     return out.length > 2 ? out.join('\n').slice(0, 2000) : null
   }
 
   where (s) {
     const st = this.st, n = (d) => st.nameOf(d), d = decided(s)
+    if (s.settled) return s.state === 'checked' ? `Done: ${s.settled}.` : `Set aside: ${s.settled}.`
     if (s.state === 'checked') return `Checked by ${n(s.checkedBy)}.`
     if (d?.parked) return `Parked${d.provisional ? ' provisionally' : ''} by ${n(d.by)}: ${clip(d.why, 200).replace(/\.$/, '')}.`
     const base = this.whereNow(s)
@@ -820,7 +877,7 @@ export class Facilitator {
   whereNow (s) {
     const st = this.st, n = (d) => st.nameOf(d)
     if (s.waitingOn) return `Waiting on ${s.waitingOn.who ? n(s.waitingOn.who) : 'the agents'}: ${s.waitingOn.decision}.${s.waitingOn.held && s.waitingOn.who ? ` Held for ${n(s.waitingOn.who)}: it touches their ${s.waitingOn.held}.` : s.waitingOn.held ? ` Held for the room’s people: it touches ${s.waitingOn.held}, and only a person settles it.` : ''}`
-    if (s.state === 'result posted') return `Result posted by ${n(s.owner)}, waiting for a check.`
+    if (s.state === 'result posted') return this.ownPulls(s).length ? `Result posted by ${n(s.owner)}: its pull request waits for the room’s approval in Decide.` : `Result posted by ${n(s.owner)}, waiting for a check.`
     if (s.state === 'in progress' || s.state === 'claimed') return `${s.state === 'claimed' ? 'Claimed' : 'In progress'}: ${n(s.owner)}.`
     if (s.offeredTo) return `Offered to ${n(s.offeredTo)}.`
     if (s.owner) return `Waiting for ${n(s.owner)} to take it.`
@@ -924,7 +981,8 @@ export class Facilitator {
         const w = st.doers.get(d), n = st.notFor.get(d), live = n && now - Date.parse(n.at) <= NOTE_FADE_MS
         return { did: d, name: st.nameOf(d), took: w?.took ?? 0, results: w?.results ?? 0, checks: w?.checks ?? 0, code: w?.code ?? { took: 0, results: 0, checks: 0 }, notFor: live ? n.kinds.map((k) => NOT_FOR[k].replace(/^to /, '')) : [], onlyFor: live ? n.onlyFor : null, until: live ? new Date(Date.parse(n.at) + NOTE_FADE_MS).toISOString() : null }
       }).sort((a, b) => (b.took + b.results + b.checks) - (a.took + a.results + a.checks)),
-      rules: { staleMinutes: STALE_MS / 60_000, reportMinutes: REPORT_MS / 60_000, asideDays: ASIDE_MS / 86_400_000 },
+      rules: { staleMinutes: STALE_MS / 60_000, reportMinutes: REPORT_MS / 60_000, asideDays: ASIDE_MS / 86_400_000, settleMinutes: SETTLE_EVERY_MS / 60_000 },
+      settled: { at: this.settledAt ? new Date(this.settledAt).toISOString() : null, error: this.settleError ?? null },
     }
   }
 }
