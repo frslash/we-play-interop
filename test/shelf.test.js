@@ -9,7 +9,7 @@ import { after, before, describe, test } from 'node:test'
 import { gzipSync } from 'node:zlib'
 import { config as baseConfig } from '../src/server/config.js'
 import { createApp } from '../src/server/index.js'
-import { FETCHES_PER_MINUTE, MAX_FILE_BYTES, SHELF, SIGNER_FETCHES_PER_HOUR, Shelf, namedRepos, pinOf, pinsFromCommunity, LICENCES, insideFolder, licenceOf, repoOf, secretPath, tarReader } from '../src/server/shelf.js'
+import { FETCHES_PER_MINUTE, MAX_FILE_BYTES, SHELF, SIGNER_FETCHES_PER_HOUR, Shelf, namedRepos, pinOf, pinsFromCommunity, LICENCES, MAX_NAMED_PROJECTS, insideFolder, licenceOf, repoOf, secretPath, tarReader } from '../src/server/shelf.js'
 import { registerAgentTools } from '../src/agent-tools.js'
 import * as views from '../src/server/views.js'
 
@@ -282,6 +282,21 @@ describe('the projects shelf', () => {
     reset(); const s = shelf({ maxBytes: 0, own: 'o/own' })
     for (const who of ['o/demo', 'o/own']) await assert.rejects(s.files(who), (e) => e.status === 503 && /switched off.*SHELF_MAX_MB is 0/.test(e.message))
     assert.deepEqual(hits, []); assert.deepEqual(s.logLines(), [])
+  })
+
+  test('the room\'s people can name only so many projects; the rest are listed as not taken, and the registry is worked out once per answer', async () => {
+    reset(); const named = Array.from({ length: MAX_NAMED_PROJECTS + 5 }, (_, i) => ({ repo: `m/r${i}`, pin: A, by: 'did:key:zMember', at: i })) // the newest are r204 … r5
+    let calls = 0; const s = shelf({ list: [{ repo: 'o/demo', pin: A }], named: () => { calls++; return named } })
+    const all = s.all()
+    assert.equal(all.length, 1 + MAX_NAMED_PROJECTS); assert.equal(all.some((p) => p.repo === 'm/r204'), true); assert.equal(all.some((p) => p.repo === 'm/r4'), false)
+    assert.deepEqual(s.notTaken.map((n) => n.project).sort(), ['m/r0', 'm/r1', 'm/r2', 'm/r3', 'm/r4'])
+    calls = 0; const v = s.view()
+    assert.equal(calls, 1) // one pass over the named entries for the whole listing, however many projects it holds
+    assert.equal(v.projects.length, 1 + MAX_NAMED_PROJECTS); assert.equal(v.notTaken.count, 5); assert.match(v.notTaken.why, /at most 200 projects/)
+    assert.equal(v.limits.namedProjectsAtMost, MAX_NAMED_PROJECTS)
+    await assert.rejects(s.files('m/r0'), (e) => e.status === 404 && /takes at most 200 projects/.test(e.message)); assert.deepEqual(hits, []) // nothing fetched for it
+    await s.files('o/demo'); calls = 0; await s.files('o/demo'); assert.equal(calls, 1) // a read of a held copy works the registry out once too (a first fetch adds one pass to make room)
+    assert.equal(shelf({ list: [], named: () => named.slice(0, 3) }).view().notTaken, undefined) // under the cap, nothing to say
   })
 
   test('a cap that is passed stops the unpack and discards it: no partial copy, and no second try at that commit', async () => {
