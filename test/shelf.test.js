@@ -278,6 +278,12 @@ describe('the projects shelf', () => {
     if (process.env.WPI_SHOW_LICENCES) console.log(seen.join('\n'))
   })
 
+  test('a shelf size of 0 turns fetching off: nothing is asked of GitHub', async () => {
+    reset(); const s = shelf({ maxBytes: 0, own: 'o/own' })
+    for (const who of ['o/demo', 'o/own']) await assert.rejects(s.files(who), (e) => e.status === 503 && /switched off.*SHELF_MAX_MB is 0/.test(e.message))
+    assert.deepEqual(hits, []); assert.deepEqual(s.logLines(), [])
+  })
+
   test('a cap that is passed stops the unpack and discards it: no partial copy, and no second try at that commit', async () => {
     const refuseAt = async (limits, why, files = null) => {
       reset(); override = files; const s = shelf({ limits })

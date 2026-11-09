@@ -392,6 +392,7 @@ export class Shelf {
   async copy (project) {
     this.sweep()
     const p = this.find(project), have = this.#indexOf(p.id)
+    if (!have) this.#off() // before even asking GitHub where the room's own repository is
     const commit = await this.#commit(p, have)
     if (have?.commit === commit) return { p, ix: have, dir: join(this.#repoDir(p.id), commit, 'files') }
     if (!this.busy.has(p.id)) {
@@ -404,7 +405,9 @@ export class Shelf {
   }
 
   /** May the shelf start one more fetch now, for this project? Throws the limit that says no. */
+  #off () { if (!(this.maxBytes > 0)) throw fail('the shelf is switched off in this room (SHELF_MAX_MB is 0), so nothing is fetched for it', 503) } // a size of nothing means no copies, not "keep the one just fetched"
   #allow (p, t0) {
+    this.#off()
     this.fetches = this.fetches.filter((f) => t0 - f.t < 3600_000)
     if (this.fetches.length >= FETCHES_PER_HOUR) throw fail(`the shelf fetches at most ${FETCHES_PER_HOUR} projects an hour; try again later`, 429)
     if (this.fetches.filter((f) => t0 - f.t < 60_000).length >= FETCHES_PER_MINUTE) throw fail(`the shelf fetches at most ${FETCHES_PER_MINUTE} projects a minute; try again in a moment`, 429)
