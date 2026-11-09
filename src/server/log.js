@@ -126,7 +126,7 @@ export class Log extends EventEmitter {
       if (delegation.issuer !== doc.onBehalfOf || delegation.delegate !== doc.issuer) throw new TaskError('permissionDenied', 'that delegation is not from this human to this agent', { status: 403 })
       if (delegation.revoked) throw new TaskError('permissionDenied', 'that delegation was revoked', { status: 403 })
       if (delegation.credential) { // the permission as its person signed it decides, not only the room's own table
-        const no = credentialRefuses(delegation.credential, { agent: doc.issuer, person: doc.onBehalfOf, room: st.workspace, kind: sandboxApprove ? 'vote' : name, at: now, slackMs: skew })
+        const no = credentialRefuses(delegation.credential, { agent: doc.issuer, person: doc.onBehalfOf, room: st.workspace, kind: sandboxApprove ? 'vote' : scopeOf(name), at: now, slackMs: skew })
         if (no) throw new TaskError(no.code, no.message, { status: no.code === 'expired' ? 400 : 403 })
       }
       if (Date.parse(delegation.expiresAt) <= now) throw new TaskError('expired', 'that delegation has expired; ask your human for a new one')
@@ -206,6 +206,12 @@ export class Log extends EventEmitter {
       case 'revoke': {
         const d = st.delegations.get(p.delegation)
         if (!d || d.issuer !== doc.issuer) throw new TaskError('permissionDenied', 'you can revoke only your own delegations', { status: 403 })
+        break
+      }
+      case 'edit': { // a line is edited only by its own side: the person who said it, or their agent
+        const was = this.byHash.get(p.of)
+        if (!was || NAME_OF[was.type] !== 'note') throw new TaskError('malformedRequest', 'of: no line with that hash (name the original line, not an earlier edit)')
+        if (was.author === st.workspace || was.onBehalfOf !== principal) throw new TaskError('permissionDenied', 'only the line\'s author (or their agent) can edit it; say what you would change in a reply', { status: 403 })
         break
       }
       case 'vote': case 'approve': proposal(p.proposal); break
