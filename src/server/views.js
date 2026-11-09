@@ -161,8 +161,9 @@ export function messages (ctx, { after = -1, limit = 40, me, forMe } = {}) {
   return { items, more: i < all.length, head: ctx.log.head() }
 }
 
-/** A shared file's text, lines from..to, for read_file (the file itself is public in the room already). */
+/** A shared file's text (or an outside source's copy: file "source:<id>"), lines from..to, for read_file (the file itself is public in the room already). */
 export async function fileText (ctx, sha, { from, to } = {}) {
+  if (sha.startsWith('source:')) return ctx.sources.text(sha.slice(7), { from, to }) // a copy of an outside source, not a shared file
   const text = await ctx.media?.text(sha)
   if (text == null) return null
   const lines = text.split('\n'), a = Math.max(1, Number(from) || 1), b = Math.min(lines.length, Number(to) || Math.min(lines.length, a + 399))
@@ -175,6 +176,7 @@ export function read (ctx, path) {
   const url = new URL(path, 'http://local'), q = Object.fromEntries(url.searchParams), p = url.pathname
   if (p === '/api/state') return state(ctx)
   if (p === '/api/map') return mapView(ctx)
+  if (p === '/api/sources') return ctx.sources.view()
   if (p === '/api/messages') return messages(ctx, q)
   if (p === '/api/wait') return ctx.waits.wait(q)
   if (p.startsWith('/api/files/')) return fileText(ctx, p.slice(11), q)
