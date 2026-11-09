@@ -50,7 +50,7 @@ server {
   set $upstream ${MEDIATOR_UPSTREAM};
 
   location = /.well-known/did.jsonl         { limit_except GET { deny all; } proxy_pass http://$upstream; }
-  location = /mediator/v1/ws                { proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; proxy_read_timeout 300s; proxy_pass http://$upstream; }
+  location = /mediator/v1/ws                { limit_except GET { deny all; } proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; proxy_read_timeout 300s; proxy_pass http://$upstream; }
   location = /mediator/v1/inbound           { limit_except POST { deny all; } proxy_pass http://$upstream; }
   location / { access_log /dev/stdout refusal; return 404; }
 }
