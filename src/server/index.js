@@ -39,6 +39,7 @@ import { createResolver } from './resolver.js'
 import * as views from './views.js'
 import { Weaver } from './weaver.js'
 import { Facilitator } from './facilitator.js'
+import { Builder } from './builder.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const MAX_BODY = 64 * 1024
@@ -119,6 +120,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   weaver.skip = () => ctx.check.dids() // the check walks the path; it is not part of the conversation
   ctx.facilitator = new Facilitator({ ctx }) // the board of steps toward the held goals (facilitate mode)
   weaver.facilitator = ctx.facilitator
+  ctx.builder = new Builder({ ctx }) // builds what the board hands it, from a routine with only this repository
 
   const page = readFileSync(join(root, 'public/index.html'), 'utf8')
   const importMap = /<script type="importmap">([\s\S]*?)<\/script>/.exec(page)?.[1] ?? ''
