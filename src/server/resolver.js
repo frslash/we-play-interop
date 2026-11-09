@@ -77,7 +77,15 @@ async function doPublicFetch (input, init, { dnsLookup, request, fixedPort }) {
 
 export const publicFetch = createPublicFetch()
 
-export function createResolver ({ fetch = publicFetch, ttlMs = 5 * 60_000 } = {}) {
+// How many did:webvh documents the room keeps resolved at once. The door and the pass check reach this resolver for
+// any signer, so the cache grows with every distinct did:webvh that resolves; without a bound a stream of made-up
+// signers on hosts that answer would grow the room's memory for as long as it runs. A room's members and the
+// services it talks to are far fewer than this; past it the entry resolved longest ago goes first (it is only
+// fetched again when it is next used).
+export const MAX_CACHED_DIDS = 1000
+
+/** `webvh` exists so tests can resolve without a network; the room passes none. */
+export function createResolver ({ fetch = publicFetch, ttlMs = 5 * 60_000, maxCached = MAX_CACHED_DIDS, webvh = resolveWebvh } = {}) {
   const cache = new Map()
   async function resolve (did) {
     if (did.startsWith('did:key:')) return resolveDidKey(did)
@@ -85,17 +93,20 @@ export function createResolver ({ fetch = publicFetch, ttlMs = 5 * 60_000 } = {}
     if (did.startsWith('did:webvh:')) {
       const hit = cache.get(did)
       if (hit && hit.at > Date.now() - ttlMs) return hit.doc
-      const r = await resolveWebvh(did, { fetch })
+      const r = await webvh(did, { fetch })
       const m = r?.didResolutionMetadata
       if (!r?.didDocument || m?.error) throw new Error(`did:webvh did not resolve: ${m?.problemDetails?.title ?? m?.problemDetails?.detail ?? m?.error ?? 'no document'}`)
       if (r.didDocumentMetadata?.deactivated) throw new Error('did:webvh is deactivated')
-      cache.set(did, { doc: r.didDocument, at: Date.now() })
+      cache.delete(did); cache.set(did, { doc: r.didDocument, at: Date.now() }) // newest last, so the first key is the oldest
+      while (cache.size > maxCached) cache.delete(cache.keys().next().value)
       return r.didDocument
     }
     throw new Error('DID method not supported here (did:key, did:peer:4 and did:webvh are)')
   }
   return {
     resolve,
+    /** How many did:webvh documents are held now (for a test, and for anyone checking the bound holds). */
+    cached: () => cache.size,
     /** The Ed25519 key that may sign for `purpose` as `did`. */
     async keyFor (did, vmRef, purpose) {
       return keyFromDidDocument(await resolve(did), did, vmRef, purpose)

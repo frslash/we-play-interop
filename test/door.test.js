@@ -215,7 +215,9 @@ describe('a door on its own: each step, in order', () => {
     const { send, doc, door } = make({ perAddressPerMinute: 2 })
     await send(doc()); await send('not json')
     const slow = await send(doc({}, other))
-    assert.equal(slow.status, 429); assert.equal(slow.body, '')
+    assert.equal(slow.status, 429) // the address's 429 has a small JSON body, as OpenVTC's community gives for its per-address limiter; the signer's stays empty
+    assert.deepEqual(Object.keys(JSON.parse(slow.body)).sort(), ['error', 'limiter', 'message', 'retry_after_secs']); assert.equal(JSON.parse(slow.body).error, 'rate_limited'); assert.equal(JSON.parse(slow.body).limiter, 'address')
+    assert.equal(JSON.parse(slow.body).retry_after_secs, Number(slow.headers['retry-after'])); assert.equal(slow.headers['x-rate-limit-source'], 'room')
     assert.equal((await send(doc(), { ip: '198.51.100.9' })).status, 200)
     assert.equal(door.counts.rateLimited.address, 1)
   })
@@ -328,6 +330,21 @@ describe('a door on its own: each step, in order', () => {
     assert.equal((await send(doc())).status, 200)
   })
 
+  test('a task registered with once: false leaves no record: 2,000 signed pings from fresh signers remember no id, and never fill a record of 50', async () => {
+    const { door, send, clock } = make({ perSignerPerMinute: 1e6, perAddressPerMinute: 1e6, maxRecords: 50 }) // a record of 50: were pings recorded, the 51st would be refused as unavailable
+    serveRoomTasks(door, { acceptEntry: async () => { throw new Error('not used here') } })
+    let signer = newIdentity()
+    for (let i = 0; i < 2000; i++) {
+      if (i % 200 === 0) signer = newIdentity() // fresh signers, a few hundred documents each
+      const r = await send(signedTask(signer, { type: PING, recipient: room.did, issuedAt: instant(clock.now), payload: {} }))
+      assert.equal(r.status, 200)
+    }
+    assert.equal(door.info().counts.rememberedIds, 0)
+    const same = signedTask(signer, { type: PING, recipient: room.did, issuedAt: instant(clock.now), payload: {} })
+    assert.equal((await send(same)).status, 200); assert.equal((await send(same)).status, 200) // again: it runs again, never 202 or 204
+    assert.equal(door.info().counts.rememberedIds, 0); assert.equal(door.counts.duplicates.answeredAgain + door.counts.duplicates.doneNothingKept, 0)
+  })
+
   test('the registry: one task per address, known purposes, and serves() lists what is offered', () => {
     const { door } = make()
     assert.deepEqual(door.serves(), [ECHO])
@@ -360,6 +377,11 @@ describe('a door on its own: each step, in order', () => {
     assert.deepEqual(await list([TYPES.note]), [TYPES.note]) // a type outside the registry is matched whole
     assert.equal((await ask(DISCOVERY, { patterns: 'messaging/*' })).payload.code, 'malformedRequest')
     assert.equal((await ask(DISCOVERY, { patterns: [7] })).payload.code, 'malformedRequest')
+    const some = (n, p = 'test/*') => Array.from({ length: n }, () => p)
+    assert.deepEqual(await list(some(16)), [ECHO]) // sixteen is allowed, seventeen is not, an empty pattern is not, nor one over 300 characters
+    for (const bad of [some(17), [''], ['a'.repeat(301)]]) assert.equal((await ask(DISCOVERY, { patterns: bad })).payload.code, 'malformedRequest')
+    assert.equal((await ask(DISCOVERY_0_3, { patterns: some(17) })).payload.code, 'malformedRequest')
+    assert.deepEqual(await list(['a'.repeat(300)]), [])
     // the older version: the same list, and a window without the horizon it cannot state
     const older = await ask(DISCOVERY_0_3, { patterns: ['messaging/*'] })
     assert.equal(older.type, `${DISCOVERY_0_3}#response`); assert.deepEqual(older.payload, { supportedTypes: [PING], acceptanceWindow: { maxAgeSeconds: 600, clockSkewSeconds: 60 }, frameworkVersion: '0.6.0' })

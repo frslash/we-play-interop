@@ -42,6 +42,7 @@ import { AGREED } from './rules.js'
 import { ActivityPub } from './activitypub.js'
 import { CODE_RE, Visits, interaction, visitLocation } from './visits.js'
 import { SignIn, registerSignIn } from './signin.js'
+import { callerOf } from './caller.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { MAX_DOCUMENT_BYTES } from '../shared/trusttask.js'
@@ -255,8 +256,11 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     res.writeHead(out.status, { 'access-control-allow-origin': '*', 'cache-control': 'no-store', ...(out.body ? { 'content-type': 'application/json' } : {}), ...out.headers })
     res.end(out.body)
   }
-  const ipOf = (req) => String(req.headers['fly-client-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim()
-  const baseOf = (req) => config.publicUrl || `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`
+  /** Who is calling (caller.js decides; nothing here reads a forwarding header). */
+  const callerFor = (req) => callerOf(req, { env: config })
+  /** The address as a limit key: one the room could not confirm is marked, so it still limits but is never taken for a real network (sign-in's "same network" says unknown for it). */
+  const ipOf = (req) => { const c = callerFor(req); return c.trusted ? c.ip : 'untrusted:' + c.ip }
+  const baseOf = (req) => config.publicUrl || `${callerFor(req).https ? 'https' : 'http'}://${req.headers.host}`
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
 
   /** A join link opened: a browser goes to the page's join flow, a wallet asking for JSON gets what the room offers. Once. */
@@ -313,7 +317,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (DOOR_PATHS.has(path)) { // the Trust Task door: a signed standard document in, a signed answer out
       if (req.method !== 'POST') return send(res, 405, { error: 'POST a signed Trust Task document here (application/json). /api/info says what this door serves and which DID to address.' }, { allow: 'POST' })
       const { raw, bytes, cut } = await readDoorBody(req)
-      return sendDoor(res, await ctx.door.handle(raw, { origin: String(req.headers.origin ?? '').slice(0, 300), base: baseOf(req), host: String(req.headers.host ?? ''), ip: ipOf(req), userAgent: String(req.headers['user-agent'] ?? '').slice(0, 300), https: (req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http')) === 'https', bytes, cut }))
+      return sendDoor(res, await ctx.door.handle(raw, { origin: String(req.headers.origin ?? '').slice(0, 300), base: baseOf(req), host: String(req.headers.host ?? ''), ip: ipOf(req), userAgent: String(req.headers['user-agent'] ?? '').slice(0, 300), https: callerFor(req).https, bytes, cut }))
     }
     if (await ctx.community.handle(req, res, path, readBody, send)) return
     if (await ctx.signIn.handle(req, res, path, q, send)) return // ── wallet sign-in: what a page reads to start one, and what the room holds for a browser key (reads only)
@@ -536,7 +540,21 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     send(res, 404, 'not found')
   }
 
-  const server = createServer((req, res) => route(req, res).catch((err) => { console.error(err); if (!res.headersSent) send(res, 500, { error: 'internal error' }) }))
+  /**
+   * A body that is not all in within `bodyTimeoutMs` of the request's start is answered 408 and the connection closed, before
+   * any route (the door included) is waiting on it. It protects the room's connections and memory from one slow sender that
+   * trickles a body to hold a socket and its buffered bytes open. Only requests that carry a body; a long-lived GET is not one.
+   */
+  const bodyMs = config.bodyTimeoutMs ?? 30_000
+  const guardBody = (req, res) => {
+    if (!['POST', 'PUT', 'PATCH'].includes(req.method) || !(bodyMs > 0)) return
+    const timer = setTimeout(() => {
+      if (!res.headersSent) { res.writeHead(408, { 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': '*', connection: 'close' }); res.end(JSON.stringify({ error: 'the request body did not arrive in time' })) }
+      res.once('finish', () => req.destroy()); setTimeout(() => req.destroy(), 1000).unref() // let the 408 out first; the room never waits on a sender longer than that
+    }, bodyMs)
+    timer.unref(); req.once('end', () => clearTimeout(timer)); req.once('close', () => clearTimeout(timer))
+  }
+  const server = createServer((req, res) => { guardBody(req, res); route(req, res).catch((err) => { console.error(err); if (!res.headersSent) send(res, 500, { error: 'internal error' }) }) })
 
   const timers = []
   ctx.start = async () => {
@@ -553,7 +571,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     ctx.sources.start()
     timers.push(setInterval(() => closeVotes(ctx).catch((e) => console.error('closing votes:', e)), 30_000))
   }
-  ctx.stop = async () => { ctx.waits.stop(); timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.sources.stop(); ctx.shelf.flush(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { ctx.waits.stop(); ctx.signIn.stop(); timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.sources.stop(); ctx.shelf.flush(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }

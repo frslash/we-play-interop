@@ -195,6 +195,18 @@ describe('every refusal in the upstream tests (vtc-service/tests/it/member_porta
     }
   })
 
+  test('a held poll keeps the room running until it is answered, and stop() answers it at once', async () => {
+    // Node 22's test runner cancels a test whose only pending work is an unref'd timer ("the event loop has already
+    // resolved"); Node 26 does not. Checked here on any Node: while a poll is held, a referenced timer is active.
+    const h = await room({ holdMs: 5000 }), kb = newIdentity(), id = await h.start(kb)
+    const timers = () => process.getActiveResourcesInfo().filter((x) => x === 'Timeout').length
+    const before = timers(), held = h.redeem(kb, id)
+    await new Promise((resolve) => setImmediate(resolve)); await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(h.signIn.polls.open.has(id), true, 'the poll is held'); assert.ok(timers() > before, 'its timer is referenced')
+    const t0 = Date.now(); h.signIn.stop()
+    assert.equal(code(await held), 'auth/oob/redeem:pending'); assert.ok(Date.now() - t0 < 1000, 'stop() answered the held poll at once')
+  })
+
   test('a bystander who scans first locks the request and cannot get past the person\'s proof', async () => {
     const h = await room(), kb = newIdentity(), id = await h.start(kb)
     const stranger = newIdentity() // not someone this room lets in
@@ -549,6 +561,7 @@ describe('the trigger link', () => {
     assert.equal(sameNetwork('2001:db8:1:2::99', '2001:db8:1:2::10'), true); assert.equal(sameNetwork('2001:db8:1:3::99', '2001:db8:1:2::10'), false)
     assert.equal(sameNetwork(null, '2001:db8:1:2::10'), 'unknown'); assert.equal(sameNetwork('203.0.113.5', '2001:db8:1:2::10'), 'unknown'); assert.equal(sameNetwork('2001:db8:1:2::99', '203.0.113.5'), 'unknown')
     assert.equal(sameNetwork('::ffff:203.0.113.5', '203.0.113.5'), true, 'an IPv4 address written the IPv6 way is that IPv4 address')
+    assert.equal(sameNetwork('untrusted:192.0.2.1', '192.0.2.1'), 'unknown', 'an address the room could not confirm (caller.js) says nothing about the network'); assert.equal(sameNetwork('192.0.2.1', 'untrusted:192.0.2.1'), 'unknown')
     // util.rs:321-336
     assert.deepEqual(browserAndOs('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'), { browser: 'Chrome', os: 'macOS' })
     assert.deepEqual(browserAndOs('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1'), { browser: 'Safari', os: 'iOS' })
@@ -714,5 +727,43 @@ describe('what the room says about it', () => {
       const none = await fetch(`${base}/trust-tasks`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signedTask(newIdentity(), { type: OOB.request, recipient: ctx.identity.did, payload: { purpose: 'login', mode: 'scan' } })) })
       assert.equal((await none.json()).payload.code, 'permissionDenied', 'no Origin at all: not the room\'s page')
     } finally { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
+describe('who sign-in signs as', () => {
+  test('with a door it is the door\'s first identity: the did:webvh only when its document holds the room\'s key; without a door, the log\'s DID as before', async () => {
+    const key = newIdentity(), webvh = 'did:webvh:scidroom:inwove.example.org'
+    const read = async () => ({ did: webvh, document: didDoc(webvh, newIdentity().publicKey, '#room') }) // a log whose document holds some OTHER key
+    const own = { did: key.did, seed: key.seed, verificationMethod: key.verificationMethod }
+    let held = false
+    const door = { identities: () => (held ? [{ did: webvh, seed: key.seed, verificationMethod: `${webvh}#room` }, own] : [own]), register () {} }
+    const make = (withDoor) => { const s = new SignIn({ identity: key, resolver: createResolver(), config: { publicUrl: ORIGIN }, readDid: read, ...(withDoor ? { door: () => door } : {}) }); s.registered = true; return s }
+    const a = make(true); await a.refresh(true)
+    assert.equal(a.me.did, key.did, 'the log names a DID that does not hold the key: the room signs as its did:key')
+    assert.equal(a.did, a.me.did, 'the DID a link names agrees with the one that signs')
+    assert.ok(a.didDocument().missing.includes('assertionMethod'), 'and the document check still says why a wallet would refuse')
+    held = true
+    assert.deepEqual([a.me.did, a.me.verificationMethod], [webvh, `${webvh}#room`])
+    assert.equal(a.did, webvh)
+    const b = make(false); await b.refresh(true)
+    assert.equal(b.me.did, webvh, 'no door: the log\'s DID, as before')
+  })
+})
+
+describe('the origin in step 1', () => {
+  const ask = (h, kb, origin) => h.send(h.op(kb, 'request', { purpose: 'login', mode: 'scan' }), { origin })
+  test('a production room never answers an http origin; a room that is not in production answers one on this machine only', async () => {
+    const kb = newIdentity()
+    for (const [publicUrl, origin, host] of [['http://inwove.example', 'http://inwove.example', 'inwove.example'], ['', 'http://localhost:3000', 'localhost:3000'], ['http://localhost:3000', 'http://localhost:3000', 'localhost:3000']]) {
+      const h = await room({ production: true, publicUrl, did: publicUrl ? 'did:webvh:scidroom:' + host.replace(/:\d+$/, '') : null })
+      h.host = host
+      const r = await ask(h, kb, origin)
+      assert.equal(r.status === 200, false, `production, ${publicUrl || 'no PUBLIC_URL'}, origin ${origin}: ${JSON.stringify(r.body?.payload ?? r.body)}`)
+      assert.notEqual(r.body?.payload?.origin, origin)
+    }
+    const dev = await room({ production: false, publicUrl: 'http://localhost:3000', did: null }); dev.host = 'localhost:3000'
+    assert.equal(dev.signIn.portalOrigin(null), 'http://localhost:3000', 'local trial keeps working outside production')
+    const far = await room({ production: false, publicUrl: 'http://inwove.example', did: null })
+    assert.equal(far.signIn.portalOrigin(null), null, 'and only on this machine: an http origin elsewhere is never answered')
   })
 })

@@ -33,14 +33,15 @@ export const MAX_DOCUMENT_BYTES = 64 * 1024
 export const CODES = ['malformedRequest', 'unsupportedType', 'unsupportedVersion', 'unsupportedExtension', 'expired', 'proofRequired', 'proofInvalid', 'permissionDenied', 'wrongRecipient', 'identityMismatch', 'idConflict', 'cancelled', 'taskFailed', 'unavailable', 'indeterminate', 'internalError']
 /**
  * The HTTP status that goes with a refusal over https (the https binding's table, section 4): a document that could
- * not be read is 400, "you may not" 403, another document under a used id 409, "try again later" 503, the service's
- * own fault 500. Every other refusal (a wrong recipient, a stale or unsigned document, an unknown type, a task's own
+ * not be read is 400, "you may not" 403, another document under a used id 409, "try again later" 503 (`unavailable`, and
+ * `indeterminate`: a did:webvh host that is down is not an answer, and a 422 would tell a client not to retry), the
+ * service's own fault 500. Every other refusal (a wrong recipient, a stale or unsigned document, an unknown type, a task's own
  * "<family>:<local>" code) is one flat 422, so a status line tells a prober nothing the signed code would not.
  * Read from OpenVTC's own tests of its door (vta-service/tests/it/trust_task_admin.rs, auth_flow.rs,
  * vtc-service/tests/it/join_requests.rs, relationships.rs) and the starter kit's mirror of the table
  * (templates/inbox-verifier/src/server.ts). The code in the document is what counts; the status is a courtesy.
  */
-export const statusFor = (code) => ({ malformedRequest: 400, permissionDenied: 403, idConflict: 409, unavailable: 503, internalError: 500 }[String(code)] ?? 422)
+export const statusFor = (code) => ({ malformedRequest: 400, permissionDenied: 403, idConflict: 409, unavailable: 503, indeterminate: 503, internalError: 500 }[String(code)] ?? 422)
 /** What a refusal's `retryable` says when its maker does not: only "try again later" is worth trying again unchanged. */
 export const retryableByDefault = (code) => ['unavailable', 'indeterminate', 'internalError'].includes(code)
 
@@ -74,11 +75,12 @@ export const sameDid = (a, b) => typeof a === 'string' && typeof b === 'string' 
  * recipient refuses the document). `recipient` is the DID of the service it is for: OpenVTC refuses any document
  * not addressed to it by name.
  */
-export function taskDocument ({ type, issuer, recipient, payload = {}, id = `urn:uuid:${uuid()}`, issuedAt = instant(), expiresAt, threadId, parentThreadId, ext }) {
+export function taskDocument ({ type, issuer, recipient, payload = {}, id = `urn:uuid:${uuid()}`, issuedAt = instant(), expiresAt, threadId, parentThreadId, ceremony, ext }) {
   const doc = { id, type, issuer }
   if (recipient) doc.recipient = recipient
   if (threadId) doc.threadId = threadId
   if (parentThreadId) doc.parentThreadId = parentThreadId
+  if (ceremony) doc.ceremony = ceremony
   doc.issuedAt = issuedAt
   if (expiresAt) doc.expiresAt = expiresAt
   if (ext) doc.ext = ext
@@ -116,7 +118,9 @@ export function acceptedUntil (doc, { horizonMs = MAX_EXPIRY_MS } = {}) {
  * that it is addressed to `me` (one DID, or a list when a service answers to more than one). Returns { ok: true } or
  * { ok: false, code, message, details? } with a shared code. `bytes` is the size of the document as it arrived
  * (checked first, before anything is believed). The codes are the ones OpenVTC's door gives (its own tests pin
- * them): `expired` only for a document that was once good; one that never was (no issuedAt, written in the future,
+ * them): a stated `expiresAt` is honoured to the moment (refused once now >= expiresAt, as upstream refuses at
+ * expiresAt <= now); the slack in acceptedUntil is only how long the record of an id is kept, and a stated expiry
+ * beyond `horizonMs` still stops at the horizon. `expired` only for a document that was once good; one that never was (no issuedAt, written in the future,
  * an expiry at or before its own issuedAt, no recipient) is `malformedRequest`, because waiting will not fix it.
  */
 export function checkTask (doc, { me, now = Date.now(), bytes, maxBytes = MAX_DOCUMENT_BYTES, requireRecipient = true, horizonMs = MAX_EXPIRY_MS } = {}) {
@@ -133,7 +137,7 @@ export function checkTask (doc, { me, now = Date.now(), bytes, maxBytes = MAX_DO
   if (doc.expiresAt !== undefined) {
     if (typeof doc.expiresAt !== 'string' || !RFC3339.test(doc.expiresAt) || !Number.isFinite(Date.parse(doc.expiresAt))) return no('malformedRequest', 'expiresAt: an RFC 3339 time')
     if (Date.parse(doc.expiresAt) <= at) return no('malformedRequest', 'expiresAt is not after issuedAt: this document was never good')
-    if (now > acceptedUntil(doc, { horizonMs })) return no('expired', 'this document has run out (its expiresAt has passed, or it is older than a stated expiry is honoured for)')
+    if (now >= Date.parse(doc.expiresAt) || now > acceptedUntil(doc, { horizonMs })) return no('expired', 'this document has run out (its expiresAt has passed, or it is older than a stated expiry is honoured for)')
   } else if (now > acceptedUntil(doc)) return no('expired', 'this document is older than ten minutes: write a fresh one')
   const mine = me ? [].concat(me) : []
   if (mine.length) {
@@ -168,9 +172,18 @@ const short = (v, max) => (typeof v === 'string' && v && v.length <= max ? v : u
 /** The thread a reply belongs to: the request's own thread, else the request itself. */
 const threadOf = (request) => short(request?.threadId, 200) ?? short(request?.id, 200)
 
-/** The reply to a request: its type with "#response", addressed back to whoever asked, in the request's thread. */
+/**
+ * What an answer carries forward from its request besides the thread: `parentThreadId` and `ceremony`, each only when
+ * it is a short string (nothing unchecked is copied in, so a long or odd value is left out). Upstream carries both
+ * from the request into a routed refusal so that a rejection stays inside the enactment it belonged to (Trust Tasks
+ * SPEC section 7.1; vta-service/src/trust_tasks/helpers.rs, the comment in malformed_request_response, which says an
+ * unrouted refusal has no request to carry them from and that `reject_with` copies them for routed ones).
+ */
+const carried = (request) => ({ parentThreadId: short(request?.parentThreadId, 200), ceremony: short(request?.ceremony, 200) })
+
+/** The reply to a request: its type with "#response", addressed back to whoever asked, in the request's thread (and its parent thread and ceremony). */
 export function responseTo (request, payload, issuer) {
-  return taskDocument({ type: `${request.type}#response`, issuer, recipient: request.issuer, threadId: threadOf(request), payload })
+  return taskDocument({ type: `${request.type}#response`, issuer, recipient: request.issuer, threadId: threadOf(request), ...carried(request), payload })
 }
 /**
  * A refusal document for a request (or for something that could not be read at all: then it names no recipient).
@@ -183,7 +196,7 @@ export function refusalTo (request, { code, message, details, retryable = retrya
   const d = details && typeof details === 'object' && !Array.isArray(details) && Object.keys(details).length <= 16 && canonicalize(details).length <= 4096 ? details : undefined // a refusal stays small
   const answers = short(request?.id, 200) && short(request?.type, 300) ? { typeUri: request.type, id: request.id } : null
   const payload = { code, retryable: Boolean(retryable), message: [...String(message ?? '')].slice(0, 1024).join(''), ...(retryAfter ? { retryAfter } : {}), ...(d ? { details: d } : {}), ...(answers ? { inResponseTo: answers } : {}) }
-  return taskDocument({ type: ERROR_TYPE, issuer, ...(typeof request?.issuer === 'string' && DID.test(request.issuer) ? { recipient: request.issuer } : {}), ...(threadOf(request) ? { threadId: threadOf(request) } : {}), payload })
+  return taskDocument({ type: ERROR_TYPE, issuer, ...(typeof request?.issuer === 'string' && DID.test(request.issuer) ? { recipient: request.issuer } : {}), ...(threadOf(request) ? { threadId: threadOf(request) } : {}), ...carried(request), payload })
 }
 
 /** What an answer is: { kind: 'response' | 'error' | 'next-step' | 'other', payload, code? }. Go by its type, never by the HTTP status. */
@@ -212,7 +225,8 @@ export async function postTask (base, doc, { fetch: f = globalThis.fetch, bearer
   const text = await res.text(), wait = res.headers.get('retry-after')
   const later = wait ? { retryAfter: wait } : {} // a 429 or 503 may carry a body too (a signed refusal): the header still says how long to wait
   if (!text) return { status: res.status, reply: null, kind: res.status === 202 ? 'in-flight' : res.status === 204 ? 'done-no-body' : res.status === 429 ? 'slow-down' : 'empty', retryAfter: wait }
-  let reply; try { reply = JSON.parse(text) } catch { return { status: res.status, reply: null, kind: 'not-json', text: text.slice(0, 300), ...later } }
+  let reply; try { reply = JSON.parse(text) } catch { return { status: res.status, reply: null, kind: res.status === 429 ? 'slow-down' : 'not-json', text: text.slice(0, 300), ...later } }
+  if (res.status === 429) return { status: 429, reply, ...classify(reply, doc.type), kind: 'slow-down', ...later } // slow down, with a body or without (a community's per-address limit sends JSON): the kind is slow-down whatever the body, and a signed refusal's code and message stay readable
   return { status: res.status, reply, ...classify(reply, doc.type), ...later }
 }
 

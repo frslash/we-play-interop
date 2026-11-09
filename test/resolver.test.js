@@ -94,3 +94,17 @@ test('size: a reply streaming past 1 MB is cut off, with or without a length hea
     await assert.rejects(rig([[{ address: PUBLIC, family: 4 }]], withHeader.port).fetch('https://big.example/'), /too large/)
   } finally { await noHeader.close(); await withHeader.close() }
 })
+
+import { MAX_CACHED_DIDS, createResolver } from '../src/server/resolver.js'
+test('the did:webvh cache is bounded: past its size the entry resolved longest ago goes first', async () => {
+  let calls = 0
+  const webvh = async (did) => { calls++; return { didDocument: { id: did }, didResolutionMetadata: {}, didDocumentMetadata: {} } }
+  const r = createResolver({ webvh })
+  const did = (n) => `did:webvh:scid${n}:host${n}.example`
+  for (let n = 0; n <= MAX_CACHED_DIDS; n++) await r.resolve(did(n))
+  assert.equal(r.cached(), MAX_CACHED_DIDS)
+  calls = 0
+  await r.resolve(did(MAX_CACHED_DIDS)); assert.equal(calls, 0, 'the newest is still held')
+  await r.resolve(did(0)); assert.equal(calls, 1, 'the oldest was dropped and is resolved again')
+  assert.equal(r.cached(), MAX_CACHED_DIDS)
+})

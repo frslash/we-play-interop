@@ -2,6 +2,7 @@
 // expect (OpenVTC's trust agent, community and room host; RLTP's shared-connect). See src/shared/trusttask.js.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { createServer } from 'node:http'
 import { test } from 'node:test'
 import { fromBase58btc, multibase } from '../src/shared/crypto.js'
 import { newIdentity } from '../src/shared/did.js'
@@ -113,8 +114,8 @@ test('a refusal has the members of the registry\'s error and no others, and alwa
 })
 
 test('the status that goes with a refusal over https is the binding\'s table: 400, 403, 409, 503, 500, and 422 for the rest', () => {
-  assert.deepEqual(['malformedRequest', 'permissionDenied', 'idConflict', 'unavailable', 'internalError'].map(statusFor), [400, 403, 409, 503, 500])
-  for (const c of ['unsupportedType', 'unsupportedVersion', 'expired', 'proofRequired', 'proofInvalid', 'wrongRecipient', 'identityMismatch', 'cancelled', 'taskFailed', 'indeterminate', 'rooms:versionConflict']) assert.equal(statusFor(c), 422, c)
+  assert.deepEqual(['malformedRequest', 'permissionDenied', 'idConflict', 'unavailable', 'indeterminate', 'internalError'].map(statusFor), [400, 403, 409, 503, 503, 500]) // indeterminate: a host that is down, try again
+  for (const c of ['unsupportedType', 'unsupportedVersion', 'expired', 'proofRequired', 'proofInvalid', 'wrongRecipient', 'identityMismatch', 'cancelled', 'taskFailed', 'rooms:versionConflict']) assert.equal(statusFor(c), 422, c)
 })
 
 test('postTask sends to <base>/trust-tasks with no token, and goes by the answer\'s type', async () => {
@@ -148,7 +149,7 @@ test('postTask keeps Retry-After when a 429 or 503 comes with a body', async () 
   const req = signedTask(person, { type: JOIN, recipient: service.did })
   const refusal = refusalTo(req, { code: 'unavailable', message: 'slow down' }, service.did)
   const with429 = await postTask('https://vtc.example', req, { fetch: async () => new Response(JSON.stringify(refusal), { status: 429, headers: { 'retry-after': '7' } }) })
-  assert.equal(with429.kind, 'error'); assert.equal(with429.code, 'unavailable'); assert.equal(with429.retryAfter, '7')
+  assert.equal(with429.kind, 'slow-down'); assert.equal(with429.code, 'unavailable'); assert.equal(with429.retryAfter, '7')
   assert.equal((await postTask('https://vtc.example', req, { fetch: async () => new Response('busy', { status: 503, headers: { 'retry-after': '30' } }) })).retryAfter, '30', 'a body that is not JSON keeps it too')
   assert.equal((await postTask('https://vtc.example', req, { fetch: async () => new Response(null, { status: 429, headers: { 'retry-after': '5' } }) })).retryAfter, '5')
   assert.equal('retryAfter' in (await postTask('https://vtc.example', req, { fetch: async () => new Response(JSON.stringify(responseTo(req, {}, service.did)), { status: 200 }) })), false, 'nothing is added when there is no header')
@@ -178,4 +179,34 @@ test('a did:scid "src" hint is not part of who someone is; a private key reads i
   assert.deepEqual([...seedFromPrivateMultibase(multibase(person.seed))], [...person.seed])
   assert.deepEqual([...seedFromPrivateMultibase(multibase(new Uint8Array([0x80, 0x26, ...person.seed])))], [...person.seed])
   assert.throws(() => seedFromPrivateMultibase(multibase(new Uint8Array(10))), /not an Ed25519 private key/)
+})
+
+test('an answer and a refusal carry the request\'s parentThreadId and ceremony when they are short strings, and nothing else unchecked', () => {
+  const req = taskDocument({ type: JOIN, issuer: person.did, recipient: service.did, parentThreadId: 'urn:uuid:parent', ceremony: 'urn:uuid:ceremony' })
+  for (const a of [responseTo(req, {}, service.did), refusalTo(req, { code: 'taskFailed', message: 'no' }, service.did)]) {
+    assert.equal(a.parentThreadId, 'urn:uuid:parent'); assert.equal(a.ceremony, 'urn:uuid:ceremony'); assert.equal(a.threadId, req.id)
+  }
+  const odd = { ...req, parentThreadId: 'x'.repeat(201), ceremony: { a: 1 } }
+  for (const a of [responseTo(odd, {}, service.did), refusalTo(odd, { code: 'taskFailed', message: 'no' }, service.did)]) assert.ok(!('parentThreadId' in a) && !('ceremony' in a))
+  const plain = responseTo(taskDocument({ type: JOIN, issuer: person.did, recipient: service.did }), {}, service.did)
+  assert.ok(!('parentThreadId' in plain) && !('ceremony' in plain))
+})
+
+test('a stated expiresAt is honoured to the second: one second past it is expired, one second before it is accepted', async () => {
+  const now = Date.now(), at = (ms) => instant(now + ms)
+  const mk = (over) => signedTask(person, { type: JOIN, recipient: service.did, issuedAt: at(-60_000), expiresAt: at(0), payload: {}, ...over })
+  const code = (d, t) => { const r = checkTask(d, { me: service.did, now: t }); return r.ok ? 'ok' : r.code }
+  const d = mk(), exp = Date.parse(d.expiresAt)
+  assert.equal(code(d, exp + 1000), 'expired'); assert.equal(code(d, exp), 'expired'); assert.equal(code(d, exp - 1000), 'ok')
+})
+
+test('postTask: a 429 is slow-down whether or not it has a body, and keeps Retry-After', async () => {
+  const bodies = [JSON.stringify({ error: 'rate_limited', limiter: 'address', retry_after_secs: 7 }), '', 'not json at all']
+  let n = 0
+  const server = createServer((req, res) => { req.resume(); res.writeHead(429, { 'retry-after': '7', ...(bodies[n] ? { 'content-type': 'application/json' } : {}) }); res.end(bodies[n++]) })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`, req = signedTask(person, { type: JOIN, recipient: service.did })
+    for (let i = 0; i < 3; i++) { const r = await postTask(base, req); assert.equal(r.status, 429); assert.equal(r.kind, 'slow-down', String(i)); assert.equal(r.retryAfter, '7') }
+  } finally { server.close() }
 })
