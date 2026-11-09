@@ -25,6 +25,7 @@ import { RoomCheck } from './check.js'
 import { closeVotes } from './votes.js'
 import { NeverLists } from './never.js'
 import { Drafts } from './drafts.js'
+import { forYou } from './foryou.js'
 import { Host } from './host.js'
 import { Media } from './media.js'
 import { Changes } from './changes.js'
@@ -311,6 +312,14 @@ export async function createApp (config = defaultConfig, { resolver = createReso
         }
         if (op === 'drop') await ctx.drafts.drop(agent, id)
         return send(res, 200, { drafts: ctx.drafts.list(agent) })
+      } catch (err) { return refuse(res, err, doc) }
+    }
+    if (path === '/api/for-you' && req.method === 'POST') { // what waits on you, for you alone: signed by you, answered only to you, never logged or kept
+      let doc
+      try {
+        doc = await log.verifyPrivate(JSON.parse(await readBody(req)), 'forYou')
+        if (!log.state.isHuman(doc.issuer)) throw new TaskError('permissionDenied', 'join first: this counts what waits on a person', { status: 403 })
+        return send(res, 200, forYou(ctx, doc.issuer, doc.payload), { 'cache-control': 'no-store' })
       } catch (err) { return refuse(res, err, doc) }
     }
     if (path === '/api/never' && req.method === 'POST') { // your never-say list: you send only salted hashes; the room never holds the words
