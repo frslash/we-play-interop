@@ -12,7 +12,7 @@
 //   the join page is the member portal with ?join (vtc-service/CLAUDE.md, "Join page");
 //   the pass is its membership credential (credentials/dtg.rs), revoked by a bit on its list (status_list/).
 import { PASS_CHECK_TYPE, checkDtgCredential, describeDtg, issuerOf, openCredential, verifyDtgCredential, withDidPeer2 } from '../shared/dtg.js'
-import { instant, refusalTo, responseTo, sameDid, serviceEndpoint, signTask, statusFor, verifyTask } from '../shared/trusttask.js'
+import { instant, postTask, refusalTo, responseTo, sameDid, serviceEndpoint, signTask, signedTask, statusFor, typeUri, verifyTask } from '../shared/trusttask.js'
 import { DID_RE } from '../shared/types.js'
 import { publicFetch } from './resolver.js'
 import { StatusLists } from './status-list.js'
@@ -23,8 +23,17 @@ const LOOK_MS = 60_000
 // A check may make this server fetch the presenter's DID and the community's list. One a second on average is more
 // than a room of people showing passes needs, and keeps the check from being a way to send requests through the room.
 export const MAX_CHECKS_PER_MINUTE = 60
+// The community's join requirements (manifest 0.4) are asked for at most once in ten minutes: they change when the
+// community's people change them, and the community's door should not see one request per page view. A manifest that
+// could not be read is remembered for a minute, for the same reason.
+const MANIFEST_MS = 10 * 60_000
+const MANIFEST_RETRY_MS = 60_000
+const MAX_CRITERIA = 16 // what a page can show a person without a wall of text (the schema sets none)
+const MAX_DISCLOSURE_CHARS = 16_000 // the community's own statement of what its directory shows: kept whole up to a page of text, else left to the community's page
 const MAX_NAME = 120 // a community's name on the page: a line, not a paragraph
 
+const httpsOnly = (u) => { try { const x = String(u ?? '').trim(); return x && new URL(x).protocol === 'https:' ? new URL(x).href : null } catch { return null } }
+const text = (v, max) => (typeof v === 'string' && v.trim() ? [...v.trim()].slice(0, max).join('') : undefined)
 const an = (w) => (/^[aeiou]/i.test(w) ? 'an ' : 'a ') + w
 
 export class Community {
@@ -45,6 +54,11 @@ export class Community {
     this.recent = [] // times of recent checks, for the cap
     // counts and reasons only: no DID, no credential, nothing a pass said
     this.counts = { asked: 0, current: 0, notCurrent: {}, refused: {} }
+    // where a person is sent to join: COMMUNITY_JOIN_URL (https) when set, else derived from the community's own DID document
+    this.joinUrl = httpsOnly(config.communityJoinUrl ?? process.env.COMMUNITY_JOIN_URL)
+    this.manifestSeen = null // { at, value }: the last read of the join requirements (criteria only, nothing about members)
+    this.reading = null
+    this.joinCounts = { manifestReads: 0, manifestRefused: {}, cacheHits: 0 } // counts and codes only
   }
 
   get set () { return Boolean(this.did) }
@@ -99,7 +113,63 @@ export class Community {
       await this.looking
     }
     const me = this.room()
-    return { ...this.seen.value, pass: { check: '/api/community/pass', type: PASS_CHECK_TYPE, recipient: me.did, payload: '{ membership: the membership credential the community issued to you }', words: 'To check a pass, its holder signs one Trust Task document addressed to this room and sends it there. The room keeps nothing.' } }
+    return { ...this.seen.value, join: await this.#join(), pass: { check: '/api/community/pass', type: PASS_CHECK_TYPE, recipient: me.did, payload: '{ membership: the membership credential the community issued to you }', words: 'To check a pass, its holder signs one Trust Task document addressed to this room and sends it there. The room keeps nothing.' } }
+  }
+
+  /**
+   * The signed manifest request to the community's door (https://trusttasks.org/spec/vtc/join-requests/manifest/0.4:
+   * an empty payload; a community that turned public discovery off refuses a caller it cannot identify with
+   * permissionDenied, trust_tasks/mod.rs discovery_refusal, so the room asks signed, as itself). Returns the criteria
+   * as { ok: true, ... } or { ok: false, code }. Only what the page shows is kept, each piece cut to a size; nothing
+   * about members is asked for or kept (the manifest holds none).
+   */
+  async #readManifest (base) {
+    this.joinCounts.manifestReads++
+    const refused = (code) => { const k = /^[A-Za-z][A-Za-z0-9]{0,40}(:[A-Za-z0-9]{1,40})?$/.test(String(code)) ? String(code) : 'other'; const b = this.joinCounts.manifestRefused; this.#count(b, k in b || Object.keys(b).length < 24 ? k : 'other'); return { ok: false, code: k } } // few distinct codes are counted: a hostile door cannot grow the counter
+    let out
+    try { out = await postTask(base, signedTask(this.room(), { type: typeUri('vtc/join-requests/manifest', '0.4'), recipient: this.did, payload: {} }), { fetch: this.fetch, timeoutMs: 15_000 }) } catch { return refused('unavailable') }
+    if (out.kind === 'error') return refused(out.code)
+    const p = out.kind === 'response' ? out.payload : null
+    if (!p || typeof p !== 'object' || p.communityDid !== this.did || !Array.isArray(p.criteria)) return refused('malformedResponse')
+    const num = (v) => (Number.isInteger(v) && v >= 0 && v < 1_000_000 ? v : undefined)
+    const criteria = p.criteria.slice(0, MAX_CRITERIA).filter((c) => c && typeof c === 'object' && text(c.id, 128)).map((c) => {
+      const v = c.vetting && typeof c.vetting === 'object' ? c.vetting : null
+      const byMethod = v?.minByMethod && typeof v.minByMethod === 'object' ? Object.fromEntries(Object.entries(v.minByMethod).slice(0, 10).filter(([, n]) => num(n) !== undefined).map(([m, n]) => [String(m).slice(0, 40), n])) : undefined
+      return {
+        id: text(c.id, 128), ...(text(c.description, 300) ? { description: text(c.description, 300) } : {}),
+        admission: c.admission === 'automatic' ? 'automatic' : 'review', ...(typeof c.invitationRequired === 'boolean' ? { invitationRequired: c.invitationRequired } : {}),
+        ...(text(c.requirementsDigest, 100) ? { requirementsDigest: text(c.requirementsDigest, 100) } : {}),
+        ...(c.presentationDefinition ? { asksForCredentials: true } : {}),
+        ...(v ? { vetting: { ...(num(v.minStatements) !== undefined ? { minStatements: v.minStatements } : {}), acceptedMethods: (Array.isArray(v.acceptedMethods) ? v.acceptedMethods : []).slice(0, 10).map((m) => text(m, 40)).filter(Boolean), ...(byMethod && Object.keys(byMethod).length ? { minByMethod: byMethod } : {}), ...(['required', 'optional', 'none'].includes(v.invitation) ? { invitation: v.invitation } : {}) } } : {}),
+      }
+    })
+    // the attributes a person is asked for sit at the top of the manifest, not under each criterion (the bundle's Response)
+    const attributes = (Array.isArray(p.requestedAttributes) ? p.requestedAttributes : []).slice(0, 32).filter((a) => text(a?.type, 128)).map((a) => ({ type: text(a.type, 128), required: a.required !== false, ...(text(a.purpose, 256) ? { purpose: text(a.purpose, 256) } : {}) }))
+    let disclosure = null; try { if (p.directoryDisclosure && typeof p.directoryDisclosure === 'object' && JSON.stringify(p.directoryDisclosure).length <= MAX_DISCLOSURE_CHARS) disclosure = p.directoryDisclosure } catch {}
+    return { ok: true, criteria, attributes, directoryDisclosure: disclosure }
+  }
+
+  /** The "join" part of GET /api/community: where to go, what is asked there, and, in words, why it could not be read. */
+  async #join () {
+    const look = this.seen.value
+    const s = look.services ?? {}
+    // The link: the setting when given; else the community's own sign-in portal (its DID document names it, and the
+    // page is the member portal with ?join); else /members/ on the origin of its API address (vtc-service serves it
+    // there when run with its website; not confirmed for every community, which is why the setting exists).
+    let url = this.joinUrl ?? look.joinPage?.url ?? null
+    if (!url) { try { const o = s.rest ?? s.trustTasks; if (o) url = new URL('/members/?join', o).href } catch {} }
+    const out = { url, criteria: [], attributes: [], fetchedAt: null }
+    const base = s.trustTasks ?? (s.rest && !/\/v\d+$/.test(s.rest.replace(/\/+$/, '')) ? s.rest.replace(/\/+$/, '') + '/v1' : s.rest)
+    if (!look.resolves || !base) return { ...out, problemCode: 'unavailable', problem: look.resolves ? 'The community\'s DID names no address this room can ask what it requires (unavailable).' : 'The community\'s DID did not resolve, so what it requires could not be read (unavailable).' }
+    const m =this.manifestSeen
+    if (m && this.now() - m.at < (m.value.ok ? MANIFEST_MS : MANIFEST_RETRY_MS)) this.joinCounts.cacheHits++
+    else {
+      this.reading ??= this.#readManifest(base).then((value) => { this.manifestSeen = { at: this.now(), value } }).finally(() => { this.reading = null }) // one request in flight, however many pages ask
+      await this.reading
+    }
+    const v = this.manifestSeen.value, at = instant(this.manifestSeen.at)
+    if (!v.ok) return { ...out, fetchedAt: at, problemCode: v.code, problem: `The community's requirements could not be read right now (${v.code}). You can still follow the link and read them there.` }
+    return { ...out, criteria: v.criteria, attributes: v.attributes, ...(v.directoryDisclosure ? { directoryDisclosure: v.directoryDisclosure } : {}), fetchedAt: at }
   }
 
   #count (bucket, reason) { bucket[reason] = (bucket[reason] ?? 0) + 1 }
@@ -173,6 +243,7 @@ export class Community {
       lookedAt: s?.checkedAt ?? null,
       passes: { asked: this.counts.asked, current: this.counts.current, notCurrent: { ...this.counts.notCurrent }, refused: { ...this.counts.refused } },
       statusLists: this.lists.summary(),
+      join: { manifestReads: this.joinCounts.manifestReads, manifestRefused: { ...this.joinCounts.manifestRefused }, cacheHits: this.joinCounts.cacheHits },
       details: '/api/community',
     }
   }
