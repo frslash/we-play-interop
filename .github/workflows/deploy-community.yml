@@ -1,0 +1,50 @@
+name: deploy-community
+# Deploys community/ (VTA, VTC, mediator, allowlist proxy) to the room's own Railway project, wpi-community.
+# The token is RAILWAY_TOKEN, a project token for `production` only, held as an ENVIRONMENT secret on the
+# `production` environment (restricted to main), never as a repo-wide secret. Nothing here runs on a pull request.
+on:
+  push:
+    branches: [main]
+    paths: ['community/**']
+permissions:
+  contents: read
+concurrency:
+  group: deploy-community
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      RAILWAY_CLI_VERSION: 5.71.0
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - name: Fail loudly unless this is main, in the production environment, with its token
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ] || [ "$GITHUB_EVENT_NAME" != "push" ]; then echo "::error::deploys run only on a push to main"; exit 1; fi
+          if [ -z "$RAILWAY_TOKEN" ]; then echo "::error::RAILWAY_TOKEN is missing: it must be an environment secret on 'production' (not a repo-wide secret)"; exit 1; fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 22
+      - name: Install the Railway CLI (pinned)
+        run: npm install --global --ignore-scripts "@railway/cli@${RAILWAY_CLI_VERSION}"
+      - name: Deploy each service from its own folder
+        run: |
+          set +x
+          for svc in vta vtc mediator proxy; do
+            if [ -d "community/$svc" ]; then
+              echo "deploying $svc"
+              (cd "community/$svc" && railway up --ci --service "$svc" --environment production)
+            fi
+          done
+      - name: Check from outside (VTC's DID answers, /admin does not)
+        run: |
+          set +x
+          did=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 https://vtc.inwove.org/.well-known/did.jsonl)
+          admin=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 https://vtc.inwove.org/admin)
+          echo "did=$did admin=$admin"
+          [ "$did" = "200" ] && [ "$admin" = "404" ]
