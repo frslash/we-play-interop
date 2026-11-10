@@ -8,7 +8,7 @@ Names used below are placeholders: `inwove.example` is your room's public name, 
 
 1. In the Hetzner Cloud console, create a server: Ubuntu 26.04, any type with 2 vCPU and 4 GB of memory, your SSH key added, no backups add-on needed (section 6 does its own).
 2. Create a **Volume** of 10 GB (the smallest) in the same location and attach it to the server. When asked, choose **not** to format or mount it: section 2 does that, encrypted.
-3. Create a **Firewall** that allows inbound TCP 22, 80 and 443 and nothing else, and apply it to the server. (Docker's published ports go around the server's own `ufw`, so the firewall is Hetzner's, not `ufw`.)
+3. Create a **Firewall** that allows inbound TCP 22, 80 and 443 and nothing else, and apply it to the server; the section "Locking the server down" narrows port 22 before real people join. (Docker's published ports go around the server's own `ufw`, so the firewall is Hetzner's, not `ufw`.)
 4. In Cloudflare, add an `A` record for `inwove.example` pointing at the server's IPv4 address (and an `AAAA` record for its IPv6 address). Set **Proxy status: DNS only** (the grey cloud). Caddy ends https itself; see "Never" at the end for why.
 5. Log in and bring the system up to date:
 
@@ -33,6 +33,8 @@ chattr +i /mnt/roomdata                                                  # nothi
 mount /dev/mapper/roomdata /mnt/roomdata
 cryptsetup luksHeaderBackup "$VOL" --header-backup-file /root/roomdata-luks-header.img
 ```
+
+LUKS protects the disk **at rest only**: when the volume is detached, copied or thrown away on its own. While the server runs and the disk is unlocked, anyone who is logged in to the server can read it. The passphrase is never on the server, never with the provider (Hetzner), and never in the repository.
 
 Copy `/root/roomdata-luks-header.img` to your own computer (`scp root@inwove.example:/root/roomdata-luks-header.img .`), keep it with the passphrase, and delete it from the server. Without the passphrase, the volume cannot be read by anyone, you included.
 
@@ -191,6 +193,41 @@ age -d -i inwove-backup-key.txt ~/inwove-backups/room-20261110T0300Z.tar.age | s
 Then run the checks in section 4. Do a trial restore on a spare server once, before you need it.
 
 The room's record can also be saved by a member: put your key in a file (see section 7) and run `docker run --rm -e WPI_MEMBER_KEY_FILE=/k -v "$PWD/member-key:/k:ro" inwove-room node agent/export-log.js https://inwove.example > room-export.json`. A member reads people-only lines too, so a member's export is the whole record (not notebooks, drafts, wake links or keys, which are not in the log). Without a key a members-only room answers every read with 401, and the tool says what to set.
+
+## 6a. Locking the server down
+
+Do all of this before real people join. Each step has a way to check it.
+
+**SSH by key only.** Open a second terminal and keep it logged in while you do this, so a mistake cannot lock you out.
+
+```bash
+cat > /etc/ssh/sshd_config.d/00-inwove.conf <<'EOF'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+EOF
+sshd -t && systemctl reload ssh
+sshd -T | grep -E '^(passwordauthentication|kbdinteractiveauthentication)'   # both must say "no"
+```
+
+From another computer, `ssh -o PubkeyAuthentication=no root@inwove.example` must now be refused.
+
+**Firewall.** In the Hetzner console, edit the firewall from section 1 so it allows TCP 80 and 443 from anywhere, and TCP 22 **only from the owner's own address range** (the address or range their internet provider gives them; if it changes, they edit the rule). Nothing else inbound.
+
+**Security updates by themselves.**
+
+```bash
+apt-get install -y unattended-upgrades
+dpkg-reconfigure -f noninteractive unattended-upgrades
+systemctl is-enabled unattended-upgrades          # must say "enabled"
+```
+
+**Two-factor sign-in on the Hetzner account.** In the Hetzner Cloud console, open the account's security settings and turn on two-factor sign-in for every person who can reach the project. Whoever holds the account can reach the server's root console, so this account is as sensitive as the server.
+
+**Prove one restore before real people join.** A backup you have never restored is a hope. Make sure the `age` private key is held offline (on a computer or a USB stick that is not a server and is not online all day), then follow the restore steps in section 6 on a spare server, or on this one before anyone has joined. It is proved when all of these are true: the room starts from the restored data, `docker compose ps` shows it healthy, `curl -fsS https://inwove.example/healthz` answers, `verify-log.js` (section 7) reports `"ok": true` with the same head as before the backup, and a member can sign in with their passkey. Write down the date and who did it.
+
+## 6b. What a passkey cannot show
+
+Most passkeys sync between a person's own devices (through their phone or computer maker's account) and report a signature counter of 0 on every sign-in. The room checks the counter when an authenticator really keeps one, and refuses a counter that goes backwards. For a synced passkey it cannot do that, so the room **cannot detect a copied passkey**. The room accepts this. A person who loses a device removes that device's passkey themselves: **You → Passkeys → Remove**. Tell members this when they join.
 
 ## 7. Moving the record from the old room
 
