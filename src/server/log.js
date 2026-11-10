@@ -190,7 +190,8 @@ export class Log extends EventEmitter {
       case 'repos': { // linking: GitHub told the room this login and these repositories, in the last ten minutes, for this person
         const v = st.isHuman(doc.issuer) ? this.githubVerification(doc.issuer) : null
         if (!v || v.login.toLowerCase() !== p.github.toLowerCase()) throw new TaskError('permissionDenied', 'Link your GitHub first: press "Link GitHub" and come back here (the link lasts ten minutes).', { status: 403 })
-        const stray = p.repos.find((r) => r.verified && !v.repos.has(r.name.toLowerCase()))
+        const had = new Set((st.participants.get(doc.issuer)?.repos ?? []).filter((r) => r.verified).map((r) => r.name.toLowerCase())) // ones GitHub vouched for before keep their mark
+        const stray = p.repos.find((r) => r.verified && !v.repos.has(r.name.toLowerCase()) && !had.has(r.name.toLowerCase()))
         if (stray) throw new TaskError('permissionDenied', `GitHub did not list ${stray.name} for ${v.login}; add it as a private repository instead`, { status: 403 })
         break
       }

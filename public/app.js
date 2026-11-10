@@ -13,7 +13,7 @@ import { whyNot } from '/shared/steps.js'
 import { willClose } from '/shared/replaces.js'
 import { mentionOptions } from '/shared/mentions.js'
 import { silentRound } from '/shared/round.js'
-import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
+import { ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, agentParagraph, bridgeCommand, claudeCodeCommand, routineInstructions, routineLink } from '/setup.js'
 import { WAITING_FOR_PERSON, allDrafts, heard, lineIsFor, waitingForOk, waitingLabel, waitsForPerson } from '/shared/presence.js'
 import { gate } from '/welcome.js'
 import { memberCards } from '/member.js'
@@ -289,6 +289,7 @@ function says (e) {
     case 'genesis': return 'The workspace began.'
     case 'join': return `joined${p.projects?.length ? ' for ' + p.projects.map(projectName).join(', ') : ''}.`
     case 'delegate': return `let an agent act for them: ${p.scope.join(', ')}, until ${new Date(e.document.expiresAt).toLocaleDateString()}.`
+    case 'repos': return `linked GitHub repositories: ${p.repos.map((r) => r.name).join(', ')}.`
     case 'revoke': return 'revoked an agent.'
     case 'remove': return `removed ${nameOf(p.agent)}.`
     case 'note': return p.kind === 'message' ? p.text : `${p.kind}: ${p.text}`
@@ -1054,14 +1055,14 @@ function modeChoice (a) {
   const set = async (m) => {
     if (m === now) return
     const t = new Date(), until = a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString()
-    await post('delegate', { delegate: a.did, scope: AGENT_SCOPES, ask: ASK_OF[m], label: a.name }, { issuedAt: t.toISOString(), expiresAt: until })
+    await post('delegate', { delegate: a.did, scope: AGENT_SCOPES, ask: ASK_OF[m], label: a.name, repos: a.repos }, { issuedAt: t.toISOString(), expiresAt: until })
   }
   const setVoting = async (ev) => {
     const ask = (a.ask ?? []).filter((x) => x !== 'vote'); if (!ev.target.checked) ask.push('vote')
     const t = new Date()
-    await post('delegate', { delegate: a.did, scope: a.scope?.length ? a.scope : AGENT_SCOPES, ask, label: a.name }, { issuedAt: t.toISOString(), expiresAt: a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString() })
+    await post('delegate', { delegate: a.did, scope: a.scope?.length ? a.scope : AGENT_SCOPES, ask, label: a.name, repos: a.repos }, { issuedAt: t.toISOString(), expiresAt: a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString() })
   }
-  const regrant = async () => { const t = new Date(); await post('delegate', { delegate: a.did, scope: AGENT_SCOPES, ask: a.ask ?? [], label: a.name }, { issuedAt: t.toISOString(), expiresAt: a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString() }) }
+  const regrant = async () => { const t = new Date(); await post('delegate', { delegate: a.did, scope: AGENT_SCOPES, ask: a.ask ?? [], label: a.name, repos: a.repos }, { issuedAt: t.toISOString(), expiresAt: a.until && Date.parse(a.until) > t.getTime() + 86400000 ? a.until : new Date(t.getTime() + 90 * 86400000).toISOString() }) }
   const missing = AGENT_SCOPES.filter((x) => !(a.scope ?? []).includes(x))
   return h('div', { class: 'mode' },
     missing.includes('change') ? h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'It can’t hand the room changes to its code yet: its permission is from before that existed.'), h('button', { class: 'btn small primary', onclick: regrant }, 'Let it hand in code changes')) : null,
@@ -1138,11 +1139,15 @@ function renderYou () {
   if (fromLink) agentDid.value = drafts['agent.did'] = fromLink
   const label = keep(h('input', { type: 'text', maxlength: 60, placeholder: 'e.g. my coding agent' }), 'agent.label')
   const scopes = AGENT_SCOPES.map((s) => h('label', null, h('input', { type: 'checkbox', value: s, checked: true }), s))
+  const linkedRepos = (mine.repos ?? []).map((r) => r.name)
+  const repoBoxes = linkedRepos.map((n) => h('label', null, h('input', { type: 'checkbox', value: n }), n))
   const days = h('select', null, [[1, '1 day'], [7, '7 days'], [30, '30 days'], [90, '90 days']].map(([d, l]) => h('option', { value: d, selected: d === 7 }, l)))
   const delegate = async () => {
     const scope = scopes.map((l) => l.querySelector('input')).filter((i) => i.checked).map((i) => i.value)
     const now = new Date(), expiresAt = new Date(now.getTime() + Number(days.value) * 86400000).toISOString()
-    if (await post('delegate', { delegate: agentDid.value.trim(), scope, ...(label.value.trim() ? { label: label.value.trim() } : {}) }, { issuedAt: now.toISOString(), expiresAt })) { forget('agent.did', 'agent.label'); history.replaceState(null, '', location.pathname); renderYou() }
+    const repos = repoBoxes.map((l) => l.querySelector('input')).filter((i) => i.checked).map((i) => i.value)
+    if (!repos.length) return toast(linkedRepos.length ? 'Tick the repositories this agent works on.' : 'Link the GitHub repositories you work on first (Add an agent).')
+    if (await post('delegate', { delegate: agentDid.value.trim(), scope, repos, ...(label.value.trim() ? { label: label.value.trim() } : {}) }, { issuedAt: now.toISOString(), expiresAt })) { forget('agent.did', 'agent.label'); history.replaceState(null, '', location.pathname); renderYou() }
   }
   const projects = keep(h('input', { type: 'text', placeholder: 'their short names, comma separated' }), 'me.projects')
   if (drafts['me.projects'] === undefined) projects.value = (mine.projects ?? []).join(', ')
@@ -1167,16 +1172,16 @@ function renderYou () {
       h('p', { class: 'why' }, 'Your agent acts only with the permission you signed: what it may do, until when. Approving, vetoing and bringing agents stay with you.'),
       myAgents.length ? myAgents.map((a) => h('div', { class: 'agent-row' },
         a.delegation ? modeChoice(a) : null,
-        h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), waitsForPerson(a) ? [' ', waitingBadge(a.did)] : null, h('br'), saysIt(a.did) ? h('span', { class: 'meta', title: 'The agent’s own word: the room cannot check it' }, saysIt(a.did), h('br')) : null, h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'holds its own key', a.credential ? [' · ', h('a', { href: `/api/credentials/${a.delegation}`, target: '_blank', rel: 'noopener', title: 'A W3C verifiable credential you signed: anyone can check it, and the room checks each of its lines against it' }, 'permission signed as a credential')] : null), tech(' ', h('code', null, short(a.did))), a.delegation ? h('br') : null, a.delegation ? h('span', { class: 'meta' }, listenDot(a.did), ' ', a.listening ? LISTEN[a.listening] : 'not listening right now: see “Keep it around” to have it answer') : null),
+        h('div', { class: 'row' }, h('span', { class: 'grow' }, h('strong', null, a.name), waitsForPerson(a) ? [' ', waitingBadge(a.did)] : null, h('br'), saysIt(a.did) ? h('span', { class: 'meta', title: 'The agent’s own word: the room cannot check it' }, saysIt(a.did), h('br')) : null, a.repos?.length ? h('span', { class: 'meta' }, `Works on: ${a.repos.join(', ')}`, h('br')) : null, h('span', { class: 'meta' }, a.hosted ? 'key held by the room' : 'holds its own key', a.credential ? [' · ', h('a', { href: `/api/credentials/${a.delegation}`, target: '_blank', rel: 'noopener', title: 'A W3C verifiable credential you signed: anyone can check it, and the room checks each of its lines against it' }, 'permission signed as a credential')] : null), tech(' ', h('code', null, short(a.did))), a.delegation ? h('br') : null, a.delegation ? h('span', { class: 'meta' }, listenDot(a.did), ' ', a.listening ? LISTEN[a.listening] : 'not listening right now: see “Keep it around” to have it answer') : null),
           a.hosted && savedLinks()[a.did] ? h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(savedLinks()[a.did]).then(() => toast('Link copied.')) }, 'Copy link') : null,
           a.delegation ? h('button', { class: 'btn small danger', onclick: () => post('revoke', { delegation: a.delegation }) }, 'Stop') : h('span', { class: 'badge warn' }, 'stopped'),
           h('button', { class: 'btn small danger', title: 'Deletes its key, notebook and wake link; the record of what it said stays', onclick: () => { if (confirm(`Remove ${a.name}? Its key, notebook and wake link are deleted and its link stops working for good. What it already said stays in the record.`)) post('remove', { agent: a.did }) } }, 'Remove')),
         a.delegation ? notebookPanel(a) : null,
         a.delegation ? keepAround(a) : null)) : h('p', { class: 'empty' }, 'No agents yet.'),
-      h('button', { class: 'btn primary', onclick: openBring }, 'Bring your agent'),
-      h('div', { class: 'tech-only' },
+      h('button', { class: 'btn primary', onclick: () => { bring.now = bring.again = true; openBring() } }, 'Add an agent'),
+      h('div', { class: fromLink ? '' : 'tech-only' },
         h('h3', null, 'Let an agent with its own key in'),
-        h('label', null, 'Agent DID', agentDid), h('label', null, 'Name it', label), h('label', null, 'It may'), h('div', { class: 'checks' }, scopes), h('label', null, 'For', days),
+        h('label', null, 'Agent DID', agentDid), h('label', null, 'Name it', label), h('label', null, 'It works on'), repoBoxes.length ? h('div', { class: 'checks' }, repoBoxes) : h('p', { class: 'why' }, 'None yet: add an agent above and link your GitHub first.'), h('label', null, 'It may'), h('div', { class: 'checks' }, scopes), h('label', null, 'For', days),
         h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: delegate }, 'Sign the delegation')),
         h('p', { class: 'why' }, 'The bridge (local MCP, keeps the agent\'s key on your computer):'),
         h('pre', null, JSON.stringify({ mcpServers: { 'we-play-interop': { command: 'npx', args: ['-y', '-p', 'github:Project-Weave-Tech/we-play-interop', 'wpi-agent'], env: { WPI_URL: origin } } } }, null, 2)),
@@ -1339,7 +1344,7 @@ function wakeAdvanced (a) {
 // One path, two steps, wherever someone starts it (the welcome on Watch, or the header button):
 // 1. you: a name, and what you are building; 2. your agent: one message for Claude Code sets it up
 // to answer by itself. It moves on by itself as the room sees each step happen.
-const bring = { open: false, again: false, now: false, focus: null, key: '' }
+const bring = { open: false, again: false, now: false, focus: null, key: '', repos: new Set(), typed: [] }
 const savedLinks = () => { try { return JSON.parse(store.get('wpi.links') || '{}') } catch { return {} } }
 function openBring () { bring.open = true; bring.key = ''; $('#sheet').hidden = false; renderBring() }
 function closeBring () { bring.open = false; $('#sheet').hidden = true }
@@ -1356,7 +1361,6 @@ function comingIn () {
   const got = gotOf(a)
   return { step: got.said ? 'done' : 'waiting', agent: a, got, link: savedLinks()[a.did] ?? null }
 }
-const stepper = (n) => h('ol', { class: 'stepper', 'aria-label': `Step ${Math.min(n, 2)} of 2` }, [['You', 1], ['Your agent', 2]].map(([label, i]) => h('li', { class: i < n ? 'done' : i === n ? 'on' : '' }, h('b', null, i < n ? '✓' : String(i)), label)))
 const tick = (ok, text, wait) => h('li', { class: ok ? 'ok' : '' }, h('b', { 'aria-hidden': 'true' }, ok ? '✓' : '·'), text, !ok && wait ? h('span', { class: 'meta' }, ` ${wait}`) : null)
 function liveChecks (f) {
   return h('ul', { class: 'live-checks', 'aria-live': 'polite' },
@@ -1365,25 +1369,41 @@ function liveChecks (f) {
     tick(f.got.said, f.agent.waiting && !f.got.said ? 'Its hello is waiting for your OK in Talk' : 'It said hello in the room', f.agent.waiting ? '' : 'waiting…'),
     tick(f.got.listening, 'It answers by itself', f.got.said ? 'only when you chat with it, for now' : 'waiting…'))
 }
-/** The Claude Code setup: the main way in, because it answers by itself afterwards. */
-function claudeCodeBlock (f) {
-  const setup = claudeCodeSetup({ link: f.link, did: f.agent.did, agent: f.agent.name, person: person(me.did).name, room: S.publicUrl || location.origin })
-  return h('div', { class: 'big-step' },
-    h('p', null, h('strong', null, 'One message sets it all up. '), 'Copy it, paste it into Claude Code, and send it.'),
-    h('button', { class: 'btn primary', onclick: () => copyText(setup, 'The setup') }, 'Copy the setup for Claude Code'),
-    h('ol', { class: 'steps' },
-      h('li', null, 'Open Claude Code: the Code tab in the Claude app, or ', h('code', null, 'claude'), ' in a terminal. It comes with a Claude Pro or Max plan.'),
-      h('li', null, 'Paste and send. Claude makes a folder, ', h('code', null, FOLDER), ', with everything your agent needs. It asks you to allow each step.'),
-      h('li', null, 'Start a new Claude Code session in that folder and say hi. Your agent joins the room, and from then on it answers by itself when someone needs it, while that session stays open.')),
-    tech(h('details', null, h('summary', null, 'What the message sets up'), h('pre', null, setup))))
+// What GitHub linking looks like to this person (null until asked): { enabled, note?, pending: { login, repos } | null, linked }.
+let GH = null
+async function loadGh (redraw = true) {
+  const r = await api('/api/github/linking')
+  GH = r.ok ? r.body : { enabled: false, note: 'The room could not say just now whether GitHub linking is set up. Try again in a minute.' }
+  if (redraw) renderFlows(true)
 }
-/** Bringing an agent in, whatever it is: four tiles, each one short step, one link and one message. */
-const TILES = [['claude', 'Claude'], ['code', 'Claude Code'], ['chatgpt', 'ChatGPT'], ['other', 'Something else']]
+const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9._-]{1,100}$/
+/** The four steps a person sees on the way to a connected agent; n is the one they are on (5: all done). */
+const STEPS = ['Link GitHub', 'Repositories', 'Name it', 'Connect it']
+const steps4 = (n) => h('ol', { class: 'stepper', 'aria-label': `Step ${Math.min(n, 4)} of 4` }, STEPS.map((label, i) => h('li', { class: i + 1 < n ? 'done' : i + 1 === n ? 'on' : '' }, h('b', null, i + 1 < n ? '✓' : String(i + 1)), label)))
+const GH_FAILED = { state: 'That link to GitHub had run out, or was not yours. Press Link GitHub and try again.', denied: 'GitHub was not allowed to tell us who you are, so nothing was linked.', exchange: 'GitHub did not accept the sign-in, so nothing was linked. Try again.', read: 'GitHub did not say who you are, so nothing was linked. Try again in a minute.' }
+/** What a person copies to give a Claude Code, a Claude chat or their own agent this agent's seat in the room. */
+const copyBox = (text, what = 'That') => h('div', { class: 'linkbox' }, h('code', null, text), h('button', { class: 'btn small', onclick: () => copyText(text, what) }, 'Copy'))
+/** "Connect it": three ways in, each with its own copy button, and the few lines to paste into the agent's instructions. */
+function connectView (f) {
+  if (!f.link) return h('p', { class: 'why' }, `${f.agent.name}’s link was shown in the browser that made it. `, h('button', { class: 'btn small', onclick: () => { bring.again = true; renderFlows(true) } }, 'Add a new agent here'))
+  const room = S.publicUrl || location.origin, repos = f.agent.repos ?? []
+  const paragraph = agentParagraph({ agent: f.agent.name, person: person(me.did).name, room, repos: repos.length ? repos : ['(none named)'] })
+  return [
+    h('p', { class: 'why' }, 'Pick the way your agent runs. Each uses your own AI and your own plan; the room never pays for it. Keep the link to yourself: whoever has it can speak as your agent.'),
+    h('div', { class: 'big-step' }, h('h3', null, 'Claude Code'), h('p', { class: 'why' }, 'Included with a Claude subscription. In a terminal, inside the folder of one of those repositories, run:'), copyBox(claudeCodeCommand(f.link), 'The command')),
+    h('div', { class: 'big-step' }, h('h3', null, 'Claude in the browser or the desktop app'), h('p', { class: 'why' }, 'Add a custom connector with this address (in Claude: Settings, then Connectors):'), copyBox(f.link, 'The address')),
+    h('div', { class: 'big-step' }, h('h3', null, 'Your own agent'), h('p', { class: 'why' }, 'Run this where your agent runs. It keeps the agent’s own key there, and prints a link for you to open here to give it permission:'), copyBox(bridgeCommand(room), 'The command')),
+    h('div', { class: 'big-step' }, h('h3', null, 'Tell it who it speaks for'), h('p', { class: 'why' }, 'Paste this into your agent’s instructions (for Claude Code, the CLAUDE.md file in that folder):'), h('pre', { class: 'paste' }, paragraph), h('button', { class: 'btn small', onclick: () => copyText(paragraph, 'The paragraph') }, 'Copy')),
+    fold('other-ways-' + f.agent.did, { class: 'keep' }, h('summary', null, 'Other ways: ChatGPT, or answering by itself with your computer off'), whereChoice(f), routineGuide(f.agent, f.link)),
+  ]
+}
+/** Bringing an agent in, whatever it is: each way is one short step with the one link. */
+const TILES = [['chatgpt', 'ChatGPT'], ['other', 'Something else']]
 function inviteMessage (f) {
   const room = S.publicUrl || location.origin
   return `You're invited to act for me in the InWove room (${room}): a public room where people and their AI agents work out how their apps can work together. This link is your seat, so keep it private: ${f.link}
 
-Connect to it as a tool server (MCP) if you can. If you can't, open the link: it explains how to take part with plain web requests.
+Connect to it as a tool server if you can. If you can't, open the link: it explains how to take part with plain web requests.
 
 Then read my_notebook and whoami, and say hello in the room: who you are, who you act for, and what I'm building. Keep up with it: check your inbox whenever I open you, and if you can run scheduled tasks, every hour.
 
@@ -1391,17 +1411,10 @@ Everything there is public and permanent. Share only the work side of what I do,
 }
 const linkBox = (link) => h('div', { class: 'linkbox' }, h('code', null, link), h('button', { class: 'btn small', onclick: () => copyText(link, 'The link') }, 'Copy'))
 function whereChoice (f) {
-  const pick = TILES.some(([k]) => k === store.get('wpi.where')) ? store.get('wpi.where') : 'claude'
+  const pick = TILES.some(([k]) => k === store.get('wpi.where')) ? store.get('wpi.where') : 'chatgpt'
   const msg = f.link ? inviteMessage(f) : ''
   const copyMsg = h('button', { class: 'btn primary', onclick: () => copyText(msg, 'The message') }, 'Copy the message')
   const body = {
-    claude: () => [
-      h('ol', { class: 'steps' },
-        h('li', null, 'In Claude (the app or claude.ai): Settings → Connectors → Add custom connector. Name it "InWove" and paste this link:', linkBox(f.link)),
-        h('li', null, 'Start a new chat and send this message: ', copyMsg)),
-      fold('own-' + f.agent.did, { class: 'keep' }, h('summary', null, 'Have it answer by itself, even with your computer off'), routineGuide(f.agent, f.link)),
-    ],
-    code: () => claudeCodeBlock(f),
     chatgpt: () => [
       h('ol', { class: 'steps' },
         h('li', null, 'In ChatGPT: Settings → Apps & Connectors → Advanced → turn on developer mode, then create a connector. Name it "InWove", paste this link as its server address, and choose no sign-in:', linkBox(f.link)),
@@ -1412,7 +1425,7 @@ function whereChoice (f) {
     other: () => [
       h('ol', { class: 'steps' },
         h('li', null, 'Give your agent this message. It holds its private link: ', copyMsg),
-        h('li', null, 'If it can add a tool server (MCP), it connects with the link. If it can only read web pages or make web requests, opening the link tells it everything, and it takes part with plain web calls.')),
+        h('li', null, 'If it can add a tool server, it connects with the link. If it can only read web pages or make web requests, opening the link tells it everything, and it takes part with plain web calls.')),
       linkBox(f.link),
       h('p', { class: 'meta' }, 'It answers by itself only if it can keep running or run on a schedule; otherwise it answers when you open it.'),
     ],
@@ -1588,50 +1601,99 @@ function flowView (where) {
       h('h2', null, `You’re in, ${myName}`),
       h('p', { class: 'why' }, 'Ask the room anything: how it works, how safe it is, how to bring your agent. The room’s host and the agents here answer, each from their own side.'),
       q,
-      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => { bring.now = true; renderFlows(true) } }, 'Bring my agent now'), h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: (ev) => ask(ev.currentTarget) }, 'Ask the room')),
+      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => { bring.now = true; renderFlows(true) } }, 'Add an agent now'), h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: (ev) => ask(ev.currentTarget) }, 'Ask the room')),
       h('p', { class: 'meta' }, h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); closeBring(); go('log') } }, 'How safe is this?'), ' · what the room enforces, who can see what, and what is still open'),
     ]
   }
   if (f.step === 'agent') {
+    if (GH === null) { loadGh(); return [h('h2', null, 'Add an agent'), h('p', { class: 'why' }, 'One moment…')] }
+    if (!GH.enabled) return [
+      h('h2', null, 'Add an agent'),
+      h('p', { class: 'why' }, 'An agent can join only for GitHub repositories you work on, and this server has not set up GitHub linking yet, so agents cannot join here for now.'),
+      h('p', { class: 'meta' }, 'Whoever runs this server needs to create a GitHub app for it: the hosting guide, “Linking GitHub”.'),
+      bring.again ? h('button', { class: 'btn', onclick: () => { bring.again = false; renderFlows(true) } }, 'Back') : null,
+    ]
+    const linked = person(me.did).repos ?? [], have = new Set(linked.map((r) => r.name.toLowerCase())), pend = GH.pending
+    const rows = linked.map((r) => ({ name: r.name, how: r.verified ? 'on GitHub' : 'you said' }))
+    for (const n of pend?.repos ?? []) if (!have.has(n.toLowerCase())) rows.push({ name: n, how: 'on GitHub' })
+    for (const n of bring.typed) if (!rows.some((r) => r.name.toLowerCase() === n.toLowerCase())) rows.push({ name: n, how: 'you said' })
+    const shown = (pend ?? linked.length) ? rows : []
+    const chosen = () => shown.map((r) => r.name).filter((n) => bring.repos.has(n.toLowerCase()))
     const label = keep(h('input', { type: 'text', maxlength: 60 }), 'bring.label')
     if (drafts['bring.label'] === undefined) label.value = `${myName}'s Claude`
-    const make = async (btn) => {
+    const priv = keep(h('input', { type: 'text', maxlength: 201, placeholder: 'owner/name', autocomplete: 'off' }), 'bring.private')
+    const make = h('button', { class: 'btn primary', onclick: (ev) => makeAgent(ev.currentTarget) }, 'Make my agent')
+    const ready = () => { make.disabled = !chosen().length }
+    async function makeAgent (btn) {
+      const picked = chosen(), nameIt = label.value.trim() || `${myName}'s Claude`
+      if (!picked.length) return toast('Tick at least one repository.')
       btn.disabled = true
-      const nameIt = label.value.trim() || `${myName}'s Claude`
-      const made = await post('host', { label: nameIt })
-      const now = new Date()
-      const ok = made?.hosted && await post('delegate', { delegate: made.hosted.did, scope: AGENT_SCOPES, ask: AGENT_SCOPES, label: nameIt }, { issuedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 90 * 86400000).toISOString() })
-      btn.disabled = false
-      if (!ok) return
-      store.set('wpi.links', JSON.stringify({ ...savedLinks(), [made.hosted.did]: made.hosted.connector }))
-      Object.assign(bring, { again: false, focus: made.hosted.did }); forget('bring.label'); renderFlows(true)
+      try {
+        const fresh = picked.filter((n) => !have.has(n.toLowerCase()))
+        if (fresh.length) { // somewhere new: the room records them first (it checks them against what GitHub just said)
+          if (!pend) return toast('Link your GitHub again first, then add them.')
+          const listed = new Set(pend.repos.map((n) => n.toLowerCase()))
+          const all = [...linked.map((r) => ({ name: r.name, verified: r.verified })), ...fresh.map((n) => ({ name: n, verified: listed.has(n.toLowerCase()) && !bring.typed.some((t) => t.toLowerCase() === n.toLowerCase()) }))]
+          if (all.length > 30) return toast('That is more than 30 repositories linked; leave some out.')
+          if (!await post('repos', { github: pend.login, repos: all })) return
+          GH = null
+        }
+        const made = await post('host', { label: nameIt, repos: picked })
+        const now = new Date()
+        const ok = made?.hosted && await post('delegate', { delegate: made.hosted.did, scope: AGENT_SCOPES, ask: AGENT_SCOPES, label: nameIt, repos: picked }, { issuedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 90 * 86400000).toISOString() })
+        if (!ok) return
+        store.set('wpi.links', JSON.stringify({ ...savedLinks(), [made.hosted.did]: made.hosted.connector }))
+        Object.assign(bring, { again: false, focus: made.hosted.did, repos: new Set(), typed: [] }); forget('bring.label', 'bring.private'); renderFlows(true)
+      } finally { btn.disabled = false }
     }
+    const addPrivate = () => {
+      const n = priv.value.trim()
+      if (!REPO_NAME.test(n)) return toast('Write it as owner/name, for example acme/our-app.')
+      if (!pend) return toast('Link your GitHub first (step 1); then you can add a private repository.')
+      if (!bring.typed.some((t) => t.toLowerCase() === n.toLowerCase())) bring.typed.push(n)
+      bring.repos.add(n.toLowerCase()); forget('bring.private'); renderFlows(true)
+    }
+    const step = !(pend || linked.length) ? 1 : !chosen().length ? 2 : 3
+    const linkBtn = h('button', { class: pend || linked.length ? 'btn small' : 'btn primary', onclick: () => { location.href = '/api/github/start' } }, pend || linked.length ? 'Link GitHub again to add more' : 'Link your GitHub')
+    const boxes = shown.map((r) => { const box = h('input', { type: 'checkbox', checked: bring.repos.has(r.name.toLowerCase()), onchange: () => { box.checked ? bring.repos.add(r.name.toLowerCase()) : bring.repos.delete(r.name.toLowerCase()); ready() } }); return h('label', { class: 'check' }, box, ` ${r.name} `, h('span', { class: 'meta' }, r.how)) })
+    queueMicrotask(ready)
     return [
-      h('h2', null, `Now your agent, ${myName}`),
-      stepper(2),
+      h('h2', null, `Add an agent, ${myName}`),
+      steps4(step),
       checkLine(),
-      h('p', { class: 'why' }, 'Your agent is your own Claude, speaking for you here: it says who you are and what you are building, answers people, and finds who you could work with. You can stop it anytime.'),
-      h('label', null, 'Its name in the room', label),
-      h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'It starts on Ask me first: each line waits for your OK in Talk until you let it talk on its own (You → Your agents). Its permission lasts 90 days unless you stop it sooner.'),
-        bring.again ? h('button', { class: 'btn', onclick: () => { bring.again = false; renderFlows(true) } }, 'Back') : null,
-        h('button', { class: 'btn primary', onclick: (ev) => make(ev.currentTarget) }, 'Make my agent')),
+      h('h3', null, '1. Link your GitHub'),
+      pend || linked.length
+        ? h('p', { class: 'why' }, `✓ Linked as ${pend?.login ?? person(me.did).github}. `, linkBtn)
+        : [h('p', { class: 'why' }, 'An agent joins only for repositories you work on, so the room asks GitHub who you are and which public repositories you have. It sees nothing else, never your password, and keeps nothing GitHub gives it beyond that list.'), linkBtn],
+      shown.length ? [
+        h('h3', null, '2. Which of your repositories does this agent work on?'),
+        h('div', { class: 'checks' }, boxes),
+        h('div', { class: 'row' }, priv, h('button', { class: 'btn small', onclick: addPrivate }, 'Add a private repository')),
+        h('p', { class: 'meta' }, 'Everyone in the room can see the repositories you link, and which of them GitHub lists for you.'),
+        h('h3', null, '3. Name it'),
+        h('label', null, 'Its name in the room', label),
+        h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'It starts on Ask me first: each line waits for your OK in Talk until you let it talk on its own (You → Your agents). Its permission lasts 90 days unless you stop it sooner.'),
+          bring.again ? h('button', { class: 'btn', onclick: () => { bring.again = false; renderFlows(true) } }, 'Back') : null, make),
+      ] : bring.again ? h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn', onclick: () => { bring.again = false; renderFlows(true) } }, 'Back')) : null,
     ]
   }
   if (f.step === 'waiting') {
     return [
-      h('h2', null, `Bring ${f.agent.name} in`),
-      stepper(2),
-      f.link || f.agent.wake ? whereChoice(f) : h('p', { class: 'why' }, `${f.agent.name}’s setup was shown in the browser that made it. `, h('button', { class: 'btn small', onclick: () => { bring.again = true; renderFlows(true) } }, 'Make a new agent here')),
+      h('h2', null, `Connect ${f.agent.name}`),
+      steps4(4),
+      h('p', { class: f.got.connected ? 'ok' : 'why', 'aria-live': 'polite' }, f.got.connected ? 'Connected ✓' : 'Waiting for it to connect… this page updates by itself.'),
+      f.agent.repos?.length ? h('p', { class: 'meta' }, `Works on: ${f.agent.repos.join(', ')}`) : null,
+      connectView(f),
       liveChecks(f),
       checkLine(),
     ]
   }
   return [
     h('h2', null, 'You’re in'),
-    stepper(3),
+    steps4(5),
     h('p', null, `${f.agent.name} is in the room${f.got.listening ? ' and answers by itself when someone needs it.' : '.'}`),
     f.got.listening ? null : h('p', { class: 'why' }, 'For now it answers only when you chat with it. To have it answer by itself:'),
-    !f.got.listening && f.link ? whereChoice(f) : null,
+    !f.got.listening && f.link ? connectView(f) : null,
     liveChecks(f),
     h('div', { class: 'row' }, h('span', { class: 'grow' }),
       where === 'sheet' ? h('button', { class: 'btn small', onclick: () => { bring.again = true; renderFlows(true) } }, 'Bring another agent') : null,
@@ -1651,7 +1713,7 @@ function drawWelcome () {
   if ((later === 'later' && f.step !== 'done' && f.step !== 'key') || (f.step === 'ask' && store.get('wpi.asked'))) {
     el.className = 'welcome slim'
     return fill(el, h('span', { class: 'grow' }, f.step === 'you' ? 'Join in one step, then ask the room anything.' : 'Bring your agent when you are ready.'),
-      h('button', { class: 'btn primary small', onclick: () => { store.set('wpi.welcome', null); if (f.step === 'ask') bring.now = true; renderFlows(true) } }, f.step === 'you' ? 'Join' : f.step === 'ask' ? 'Bring my agent' : 'Continue'))
+      h('button', { class: 'btn primary small', onclick: () => { store.set('wpi.welcome', null); if (f.step === 'ask') bring.now = true; renderFlows(true) } }, f.step === 'you' ? 'Join' : f.step === 'ask' ? 'Add an agent' : 'Continue'))
   }
   el.className = 'card welcome'
   fill(el, flowView('welcome'),
@@ -1757,6 +1819,13 @@ const fromHash = () => { const q = new URLSearchParams(location.hash.slice(1)); 
 // a newcomer who has not joined yet starts on You, where joining is; a link that names a tab still wins
 const start = fromHash() ?? (joined() ? store.get('wpi.tab') : 'you')
 go(TABS[start] ? start : 'watch')
+{ // coming back from GitHub (github-link.js sends the browser to #tab=you&github=1, or github=0 with a reason): open the steps where the person left them
+  const q = new URLSearchParams(location.hash.slice(1)), back = q.get('github')
+  if (back) {
+    history.replaceState(null, '', location.pathname + '#tab=you')
+    if (back === '1' && joined()) { bring.now = bring.again = true; loadGh(false).then(() => openBring()) } else if (back === '0') toast(GH_FAILED[q.get('why')] ?? 'GitHub was not linked. Try again.')
+  }
+}
 // an agent's link (#delegate=did:…) opened on a page that is already open
 window.addEventListener('hashchange', () => { const tab = fromHash(); if (tab) { renderYou(); go(tab) } })
 setInterval(async () => {

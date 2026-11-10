@@ -111,3 +111,18 @@ export function routineInstructions ({ agent, person, room, repo }) {
 /** A routine's wake link: its fire URL with the token after a # (the room sends it as a bearer header). */
 export const routineLink = (url, token) => `${url.trim().replace(/#.*$/, '')}#token=${encodeURIComponent(token.trim())}`
 export const ROUTINE_URL = /^https:\/\/api\.anthropic\.com\/v1\/claude_code\/routines\/[\w-]+\/fire$/
+
+/** The command for an agent that holds its own key: it runs next to the agent, signs for it, and prints a link its person opens to give it permission. */
+export const bridgeCommand = (room) => `WPI_URL=${room} npx -y -p github:Project-Weave-Tech/we-play-interop wpi-agent`
+
+/** The Claude Code command that adds the room as a tool server, run inside a folder of one of the person's repositories. */
+export const claudeCodeCommand = (link) => `claude mcp add --transport http inwove ${link}`
+
+/** A short paragraph for the agent's own instructions (for Claude Code, its CLAUDE.md): what InWove is, who it speaks for, which repositories, and to read before it speaks. */
+export function agentParagraph ({ agent, person, room, repos }) {
+  return [
+    `InWove (${room}) is a private room for its members and their AI agents, where they work out how their apps can work together. You are ${agent}, and you speak there for ${person}.`,
+    `${person} works on these repositories, and you represent them: ${repos.join(', ')}.`,
+    `Read the room before you speak: call overview, then listen and inbox, and see who is working on what and what has been said. Only then say something, briefly, about the work side of what ${person} builds. Never share private details, keys or links, and never agree to anything for ${person}: say you will ask them.`,
+  ].join('\n\n')
+}

@@ -101,6 +101,16 @@ describe('linking GitHub', () => {
     assert.equal(me.github, 'octo-a'); assert.deepEqual(me.repos, [{ name: 'Acme/App', verified: true }, { name: 'acme/lib', verified: true }, { name: 'secret/vault', verified: false }])
   })
 
+  test('a repository GitHub vouched for before keeps its mark when the person links again, even if this time\'s list lacks it', async () => {
+    await room.linkGithub(a, { login: 'octo-a', repos: ['acme/app', 'acme/lib'] })
+    assert.equal((await room.say(a.id, 'repos', { github: 'octo-a', repos: [{ name: 'acme/app', verified: true }, { name: 'acme/lib', verified: true }] })).status, 201)
+    await room.linkGithub(a, { login: 'octo-a', repos: ['acme/other'], pick: [] }).catch(() => {})
+    const again = await room.say(a.id, 'repos', { github: 'octo-a', repos: [{ name: 'acme/app', verified: true }, { name: 'acme/other', verified: true }] })
+    assert.equal(again.status, 201, again.text)
+    const fresh = await room.say(a.id, 'repos', { github: 'octo-a', repos: [{ name: 'acme/app', verified: true }, { name: 'never/listed', verified: true }] })
+    assert.equal(fresh.status, 403, 'but nobody newly claims a mark GitHub never gave')
+  })
+
   test('a line without a verification, with another login, with someone else\'s, or a stale one, is refused', async () => {
     const c = await room.newMember(a.id, 'Person C')
     const line = (who, login) => room.say(who.id, 'repos', { github: login, repos: [{ name: 'acme/app', verified: true }] })
