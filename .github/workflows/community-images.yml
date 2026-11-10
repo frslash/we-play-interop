@@ -1,0 +1,138 @@
+name: community-images
+# Every change to the community host's files must build its images before it can merge (Emrys, 2026-11-09:
+# the host's first deploys failed one guessed detail at a time, because Railway's log hides the compiler error).
+# Then, with the images it just built (never a second build), it checks what a build alone cannot: the binaries
+# answer, the mediator's first boot runs its real setup tool and refuses every value that would open it up, and the
+# trust agent and the community boot together and answer the room's own code (community/smoke.mjs).
+# Build and boot only: no secrets, no RAILWAY_TOKEN, no environments, no id-token, no push or pull_request_target
+# trigger, no deploy. The keys the boot makes are throwaway and die with the runner. The full log stays here, and
+# the error lines are shown at the end of a failed step.
+on:
+  pull_request:
+    paths: ['community/**', '.github/workflows/community-images.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: community-images-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # #117's builds finished inside 60 minutes; the mediator now also builds its default features and its setup tool.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        svc: [vta, vtc, mediator, proxy]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+      - name: docker build ${{ matrix.svc }}
+        shell: bash
+        run: docker build --progress=plain -t "inwove-${{ matrix.svc }}:ci" "community/${{ matrix.svc }}" 2>&1 | tee build.log; exit "${PIPESTATUS[0]}"
+      - name: Show the errors
+        if: failure()
+        run: |
+          grep -nE 'error(\[E[0-9]+\])?:|-->|could not compile|panicked|failed to run custom build|error: ' build.log | head -80 || true
+          echo "---- last 120 lines ----"; tail -n 120 build.log
+      - name: the binaries are there and answer
+        if: matrix.svc != 'proxy'
+        run: |
+          set -eu
+          case "${{ matrix.svc }}" in
+            vta) docker run --rm --entrypoint vta inwove-vta:ci --version; docker run --rm --entrypoint vta inwove-vta:ci setup --help >/dev/null
+                 docker run --rm --entrypoint node inwove-vta:ci --version; docker run --rm --entrypoint wget inwove-vta:ci --version >/dev/null ;;
+            vtc) docker run --rm --entrypoint vtc inwove-vtc:ci --version; docker run --rm --entrypoint vtc inwove-vtc:ci setup --help >/dev/null
+                 docker run --rm --entrypoint node inwove-vtc:ci --version ;;
+            mediator) docker run --rm --entrypoint mediator-setup inwove-mediator:ci --help >/dev/null; docker run --rm --entrypoint mediator inwove-mediator:ci --help >/dev/null ;;
+          esac
+      - name: the proxy's template is valid nginx
+        if: matrix.svc == 'proxy'
+        run: |
+          set -eu
+          # the image's own entrypoint fills in the template (NGINX_ENVSUBST_FILTER), then nginx -t reads it
+          docker run --rm -e VTC_UPSTREAM=127.0.0.1:8200 -e VTA_UPSTREAM=127.0.0.1:8100 -e MEDIATOR_UPSTREAM=127.0.0.1:7037 inwove-proxy:ci nginx -t
+      - name: the mediator's first boot, its closed values, and each refusal
+        if: matrix.svc == 'mediator'
+        run: |
+          set -u
+          fail() { echo "FAIL: $*"; docker logs med-boot 2>&1 | tail -n 80 || true; exit 1; }
+          docker network create medtest >/dev/null
+          # Redis as the README pins it, on a private test network only
+          docker run -d --name redis --network medtest redis:7.4.6-alpine@sha256:3b73847e72874be07e6657b129a94761662b79bc0f679273757d4218573b2a98 >/dev/null
+          M="docker run --rm --network medtest -v med:/var/lib/mediator -e DATABASE_URL=redis://redis:6379/ -e MEDIATOR_PUBLIC_URL=https://mediator.example.test"
+          # 1. first boot: setup runs, the config and DID log are written, then the server starts (or says why not)
+          docker run -d --name med-boot --network medtest -v med:/var/lib/mediator -e DATABASE_URL=redis://redis:6379/ -e MEDIATOR_PUBLIC_URL=https://mediator.example.test inwove-mediator:ci >/dev/null
+          for i in $(seq 1 60); do docker logs med-boot 2>&1 | grep -q 'mediator: closed' && break; docker inspect -f '{{.State.Running}}' med-boot | grep -q true || break; sleep 2; done
+          docker logs med-boot 2>&1 | grep 'mediator: closed' || fail "the entrypoint did not reach the start (see its log)"
+          $M --entrypoint sh inwove-mediator:ci -c 'ls -l /var/lib/mediator; test -s /var/lib/mediator/mediator.toml && test -s /var/lib/mediator/did.jsonl && test -f /var/lib/mediator/atm-functions.lua && test ! -e /var/lib/mediator/admin-monitor.json' || fail "first boot did not leave config, DID log and functions file (or left the admin profile)"
+          $M --entrypoint sh inwove-mediator:ci -c 'grep -nE "^(mediator_acl_mode|global_acl_default|trust_task_verification|enable_inter_mediator_relay|admin_did|did_web_self_hosted|local_endpoints|listen_address)" /var/lib/mediator/mediator.toml; grep -c "^\[didcomm_v1\]" /var/lib/mediator/mediator.toml || true'
+          # is the server up? Informational on the first runs: its did:webvh names a host that only exists once deployed
+          sleep 10; docker run --rm --network medtest --entrypoint bash inwove-mediator:ci -c 'exec 3<>/dev/tcp/med-boot/7037' 2>/dev/null && echo "the mediator listens on 7037" || { echo "NOTE: the mediator is not listening on 7037; its last lines:"; docker logs med-boot 2>&1 | tail -n 40; }
+          docker rm -f med-boot >/dev/null
+          # 2. every refused value stops it with exit 78 before the server starts
+          # the step runs under `bash -e`: a refusal exits 78 by design, so its exit code is caught here, not left to end the step
+          refused() { code=0; out=$($M "$@" inwove-mediator:ci 2>&1) || code=$?; [ "$code" = 78 ] && printf '%s' "$out" | grep -q 'refusing to start' || fail "not refused ($code): $* :: $out"; echo "refused as it should be: $*"; }
+          refused -e MEDIATOR_NETWORK_MODE=open
+          refused -e MEDIATOR_NETWORK_MODE=opne
+          refused -e GLOBAL_DEFAULT_ACL=ALLOW_ALL
+          refused -e GLOBAL_DEFAULT_ACL=DENY_ALL,LOCAL,SEND_MESSAGES,RECEIVE_MESSAGES,SEND_FORWARDED
+          refused -e MEDIATOR_ACL_MODE=explicit_deny
+          refused -e ENABLE_INTER_MEDIATOR_RELAY=true
+          refused -e TRUST_TASK_VERIFICATION=warn
+          refused -e MEDIATOR_ADMIN_DID=z6MkNotADid
+          # the file: an open relay planted in the config is refused too (last, it changes the volume)
+          $M --entrypoint sh inwove-mediator:ci -c 'printf "\n[didcomm_v1]\nenabled = true\nallow_unauthenticated_forwards = true\n" >> /var/lib/mediator/mediator.toml'
+          refused
+          echo "ok: closed values, and every refusal stops the start"
+      - name: keep the image for the boot job
+        if: matrix.svc == 'vta' || matrix.svc == 'vtc'
+        run: docker save inwove-${{ matrix.svc }}:ci | gzip > /tmp/${{ matrix.svc }}.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: matrix.svc == 'vta' || matrix.svc == 'vtc'
+        with:
+          name: image-${{ matrix.svc }}
+          path: /tmp/${{ matrix.svc }}.tar.gz
+          retention-days: 1
+  boot:
+    name: boot the agent and the community, and talk to them
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: image-*
+          path: /tmp/images
+      - name: load the images
+        run: for s in vta vtc; do gunzip -c /tmp/images/image-$s/$s.tar.gz | docker load; done
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: the entrypoints keep a planted passphrase out of every output and off the volume
+        run: sudo sh community/test-entrypoints.sh
+      - name: boot (throwaway passphrases, made here)
+        run: |
+          set -eu
+          export VTA_SEED_PASSPHRASE="$(openssl rand -base64 48 | tr -d '\n=+/' | cut -c1-48)" VTC_SECRETS_PASSPHRASE="$(openssl rand -base64 48 | tr -d '\n=+/' | cut -c1-48)"
+          docker compose -f community/compose.ci.yml up -d
+          # the community's first boot waits for the agent, the hand-off and its phase 2: up to 15 minutes here
+          for i in $(seq 1 180); do curl -fsS http://127.0.0.1:8200/health >/dev/null 2>&1 && break; sleep 5; done
+          curl -fsS http://127.0.0.1:8100/health && echo
+          curl -fsS http://127.0.0.1:8200/health && echo
+      - name: the room's code talks to the community
+        run: node community/smoke.mjs http://127.0.0.1:8200
+      - name: what each service said, when something failed (throwaway keys; the entrypoints withhold setup output)
+        if: failure()
+        run: docker compose -f community/compose.ci.yml logs --no-color --tail 200 || true
+      - name: tear down
+        if: always()
+        run: docker compose -f community/compose.ci.yml down -v || true
