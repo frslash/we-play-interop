@@ -21,6 +21,29 @@ export const forViewer = (entries, viewer) => (isPerson(viewer) ? entries : entr
 export const forAgents = (e) => !isPeopleOnly(e)
 
 /**
+ * The head of the log as this viewer may see it: { seq, hash } of the newest line they can read. A person gets the real head.
+ * Anyone else gets the newest line that is not people-only, because the real head's hash can be a people-only line's hash.
+ */
+export function headFor (log, viewer) {
+  if (isPerson(viewer)) return log.head()
+  for (let i = log.entries.length - 1; i >= 0; i--) if (!isPeopleOnly(log.entries[i])) return { seq: log.entries[i].seq, hash: log.entries[i].hash }
+  return null
+}
+
+/**
+ * An entry as this viewer is told it. Each line names the one before it (`parent`); when that one is a people-only line, anyone
+ * but a person is given the nearest earlier line they can read instead, so the hash does not leave by that door.
+ */
+export function asSeen (log, viewer, e) {
+  if (isPerson(viewer) || !e?.parent) return e
+  const before = log.byHash.get(e.parent)
+  if (!before || !isPeopleOnly(before)) return e
+  let i = before.seq - 1
+  while (i >= 0 && isPeopleOnly(log.entries[i])) i--
+  return { ...e, parent: i >= 0 ? log.entries[i].hash : null }
+}
+
+/**
  * Whether a file or photo (by its hash) is attached only to people-only notes, so an agent must not be handed it.
  * A hash that a public note also carries is public. (Hashes are content addresses: a file shared both ways stays readable.)
  */

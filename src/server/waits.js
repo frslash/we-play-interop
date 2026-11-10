@@ -10,7 +10,7 @@
 import { DEFAULT_WAKE_ON, NAME_OF, WAKE_ON } from '../shared/types.js'
 import { concerns, namedIn } from './views.js'
 import { silentRound } from '../shared/round.js'
-import { isPeopleOnly } from './audience.js'
+import { headFor, isPeopleOnly } from './audience.js'
 
 const MAX_SECONDS = 90 // tunnels and proxies cut idle connections near 100 s; the agent simply calls again
 const MAX_WAITERS = 500 // a room's worth of agents; beyond this a wait answers at once, empty
@@ -58,7 +58,7 @@ export class Waits {
     if (newest && newest > (this.privateTold?.get(me) ?? '') && this.ctx.log.state.activeDelegation(me)) {
       (this.privateTold ??= new Map()).set(me, newest)
       this.seen.set(me, Date.now())
-      return { woke: true, reasons: ['private'], head: this.ctx.log.head() }
+      return { woke: true, reasons: ['private'], head: headFor(this.ctx.log) }
     }
     return this.waitForRoom(args)
   }
@@ -66,7 +66,7 @@ export class Waits {
   waitForRoom ({ me, after, timeout, on }) {
     if (this.stopping) return Promise.resolve(this.restarting())
     const { log, waker } = this.ctx, st = log.state
-    const head = () => log.head()
+    const head = () => headFor(log) // the newest line an agent may read: the real head can be a people-only line (audience.js)
     const seconds = Math.max(1, Math.min(MAX_SECONDS, Number(timeout) || 50))
     const asked = String(on ?? '').split(',').map((x) => x.trim()).filter((x) => WAKE_ON.includes(x))
     const wakeOn = asked.length ? asked : waker?.hooks.get(me)?.on ?? DEFAULT_ON
@@ -101,18 +101,18 @@ export class Waits {
   /** Answer a wake, and remember where the agent got to. */
   woke (agent, reasons, head) { const a = { woke: true, reasons, head }; this.remember(agent, a); return a }
 
-  restarting () { return { woke: false, restarting: true, retryAfter: RETRY_AFTER_SECONDS, reason: `the room is restarting; call again in ${RETRY_AFTER_SECONDS} seconds`, head: this.ctx.log.head() } }
+  restarting () { return { woke: false, restarting: true, retryAfter: RETRY_AFTER_SECONDS, reason: `the room is restarting; call again in ${RETRY_AFTER_SECONDS} seconds`, head: headFor(this.ctx.log) } }
 
   armRoundup (agent, w) {
     clearTimeout(w.roundupTimer)
     const due = w.roundup && this.roundupDue(w.roundup)
     if (due == null) return
-    w.roundupTimer = setTimeout(() => this.end(agent, { woke: true, reasons: ['roundup'], head: this.ctx.log.head() }), Math.max(0, due - Date.now()))
+    w.roundupTimer = setTimeout(() => this.end(agent, { woke: true, reasons: ['roundup'], head: headFor(this.ctx.log) }), Math.max(0, due - Date.now()))
     w.roundupTimer.unref?.()
   }
 
   /** Wake an agent that is waiting now, for something that is not a line in the record (its person's private note). */
-  poke (agent, why) { this.end(agent, { woke: true, reasons: [why], head: this.ctx.log.head() }) }
+  poke (agent, why) { this.end(agent, { woke: true, reasons: [why], head: headFor(this.ctx.log) }) }
 
   end (agent, answer) {
     const w = this.waiters.get(agent)

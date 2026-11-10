@@ -8,9 +8,9 @@ import { AGREED } from './rules.js'
 import { KINDS as RESOURCE_KINDS, RESOURCES as CURATED } from '../../public/resources.js'
 import { gist } from './weaver.js'
 import { repoOf } from './shelf.js'
-import { canSee, hiddenFromAgents, isPeopleOnly, isPerson } from './audience.js'
+import { asSeen, canSee, headFor, hiddenFromAgents, isPeopleOnly, isPerson } from './audience.js'
 
-export function info (ctx) {
+export function info (ctx, viewer) {
   const { config, log, llm, weaver } = ctx, st = log.state
   return {
     name: config.workspaceName,
@@ -26,7 +26,7 @@ export function info (ctx) {
     signIn: ctx.signIn?.view() ?? null, // signing in with a wallet: whether it is on, what a wallet would trip over, and how far sign-ins get (counts only)
     tunnel: (() => { try { const h = new URL(config.publicUrl).hostname; return /trycloudflare\.com$/i.test(h) ? 'Cloudflare’s quick tunnel' : /ngrok/i.test(h) ? 'an ngrok tunnel' : null } catch { return null } })(),
     mode: st.mode,
-    head: log.head(),
+    head: headFor(log, viewer), // the newest line this viewer may read (audience.js)
     weaver: { model: llm.configured ? (llm.model ?? 'chosen at first round') : null, configured: llm.configured, endpoint: llm.endpoint ?? config.llm.baseUrl, nextRoundAt: new Date(weaver.nextRoundAt()).toISOString(), rounds: st.roundCount, lastError: weaver.lastError, lastSilent: weaver.lastSilent ?? null, cache: weaver.cache ?? null, speaksAfterQuietMinutes: config.weaverQuietMinutes, atMostEveryMinutes: config.weaverIntervalMinutes },
     rules: { voteMinutes: config.voteMinutes, agentApprovers: config.agentApprovals ? config.agentApprovers : null, vetoWindowMinutes: config.vetoWindowMinutes, approvalsRequired: config.approvalsRequired, freshDays: config.freshDays, actsOutside: config.githubToken ? 'opens pull requests and issues itself' : 'prepares links for a person to open (no GitHub token set)' , data: { agreed: '/rules.json', inEffect: inEffect(AGREED, config), differences: differences(AGREED, inEffect(AGREED, config)) } },
     types: TYPES,
@@ -203,7 +203,7 @@ export function messages (ctx, { after = -1, limit = 40, me, forMe } = {}, viewe
     if (only && (!why || why === 'round')) continue
     items.push({ ...message(ctx, all[i], me, viewer), ...(why && why !== 'round' ? { forYou: why } : {}) })
   }
-  return { items, more: i < all.length, head: ctx.log.head() }
+  return { items, more: i < all.length, head: headFor(ctx.log, viewer) }
 }
 
 /** A shared file's text (or an outside source's copy: file "source:<id>"), lines from..to, for read_file (the file itself is public in the room already). */
@@ -282,15 +282,21 @@ export function credential (ctx, hash) {
 /** One entry by hash, or null (also null for a people-only line the viewer may not read). */
 export function entry (ctx, hash, viewer) {
   const e = ctx.log.byHash.get(hash)
-  return e && canSee(viewer, e) ? e : null
+  return e && canSee(viewer, e) ? asSeen(ctx.log, viewer, e) : null
 }
 
 export function entries (ctx, { after = -1, limit = 100, type } = {}, viewer) {
   const all = ctx.log.entries
   const t = type ? (TYPES[type] ?? type) : null
   const out = []
-  for (let i = Math.max(0, Number(after) + 1); i < all.length && out.length < Math.min(Number(limit) || 100, 500); i++) if ((!t || all[i].type === t) && canSee(viewer, all[i])) out.push(all[i])
-  return { entries: out, head: ctx.log.head() }
+  for (let i = Math.max(0, Number(after) + 1); i < all.length && out.length < Math.min(Number(limit) || 100, 500); i++) if ((!t || all[i].type === t) && canSee(viewer, all[i])) out.push(asSeen(ctx.log, viewer, all[i]))
+  return { entries: out, head: headFor(ctx.log, viewer) }
+}
+
+/** The chain check's report, with the head as this viewer may see it (a hash can be a people-only line's). */
+export async function verify (ctx, viewer) {
+  const r = await ctx.log.verify()
+  return isPerson(viewer) ? r : { ...r, head: headFor(ctx.log, viewer) }
 }
 
 /**

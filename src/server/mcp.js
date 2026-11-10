@@ -31,7 +31,7 @@ export function buildMcpServer (ctx, { name = 'we-play-interop' } = {}) {
     const e = views.entry(ctx, hash) // an agent's view: a people-only line is not there
     return e ? text(e) : fail('no entry with that hash')
   })
-  server.registerTool('verify_log', { title: 'Verify the log', description: 'Re-check every hash link, signature and delegation in the log.' }, async () => text(await ctx.log.verify()))
+  server.registerTool('verify_log', { title: 'Verify the log', description: 'Re-check every hash link, signature and delegation in the log.' }, async () => text(await views.verify(ctx)))
   server.registerTool('participant', { title: 'Who is this DID', description: 'A participant and their delegations (agents: find your delegation hash here).', inputSchema: { did: z.string() } }, async ({ did }) => {
     const p = views.participant(ctx, did)
     return p ? text(p) : fail('not in the workspace yet')

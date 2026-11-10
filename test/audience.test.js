@@ -26,10 +26,11 @@ describe('people-only lines', () => {
   before(async () => {
     room = await startRoom({ options: { awayGatherMs: 0 } }); ctx = room.ctx
     A = await room.firstMember('Person A'); B = await room.newMember(A.id, 'Person B')
-    const made = (await asPerson(A, 'host', { label: 'Helper' })).body.hosted
+    assert.equal((await room.linkGithub(A)).status, 201) // an agent is made only after its person has linked repositories
+    const made = (await asPerson(A, 'host', { label: 'Helper', repos: ['acme/app'] })).body.hosted
     assert.ok(made?.connector, 'an agent was made')
     agent = made.did; token = made.connector.split('/mcp/a/')[1]
-    await asPerson(A, 'delegate', { delegate: agent, scope: ['note', 'propose', 'vote'], label: 'Helper' }, { expiresAt: expires() })
+    await asPerson(A, 'delegate', { delegate: agent, scope: ['note', 'propose', 'vote'], label: 'Helper', repos: ['acme/app'] }, { expiresAt: expires() })
     // something public first, so there is a conversation to compare with
     await asPerson(A, 'note', { text: 'A public hello for everyone', kind: 'message' })
     const r = await asPerson(A, 'note', { text: `Only people may read this ${PHRASE}?`, kind: 'message', audience: 'people' })

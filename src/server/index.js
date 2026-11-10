@@ -5,7 +5,7 @@ import { handleRoomDid, ensureRoomDid, growRoomDid, roomDidDiffers } from './roo
 import { RoomDidWatch } from './room-did-watch.js'
 import { createGate } from './gate.js'
 import { createAccess } from './access.js'
-import { canSee, hiddenFromAgents, isPerson } from './audience.js'
+import { asSeen, canSee, headFor, hiddenFromAgents, isPerson } from './audience.js'
 import { createGithubLink } from './github-link.js'
 import { createAgentReads } from './agent-read.js'
 import { ensureFirstInvite } from './invites.js'
@@ -218,7 +218,7 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
   const csp = `default-src 'self'; script-src 'self' 'sha256-${createHash('sha256').update(importMap).digest('base64')}'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`
 
   const sse = new Map() // a live connection -> { did, viewer }: the member it belongs to (null in an open test room) and who was reading when it connected
-  log.on('entry', (e) => { const msg = `event: entry\ndata: ${JSON.stringify(e)}\n\n`; for (const [res, c] of sse) if (canSee(c.viewer, e)) res.write(msg) }) // a people-only line goes only to a person's connection (audience.js)
+  log.on('entry', (e) => { for (const [res, c] of sse) if (canSee(c.viewer, e)) res.write(`event: entry\ndata: ${JSON.stringify(asSeen(log, c.viewer, e))}\n\n`) }) // a people-only line goes only to a person's connection (audience.js)
 
   const send = (res, status, body, headers = {}) => {
     const json = typeof body !== 'string'
@@ -282,7 +282,7 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
     if (await githubLink.handle(req, res, path)) return // linking GitHub: start, callback, what is pending
     if (config.activitypub && (path === '/.well-known/webfinger' || path.startsWith('/ap/'))) return ctx.activitypub.handle(req, res, url)
     if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
-    if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), join: { via: 'invite' }, roomDid: { differs: roomDidDiffers(ctx.join.status.document) }, agentReads: { allowed: agentReads.stats.allowed, refused: agentReads.stats.refused } }) }
+    if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx, req.inwoveViewer), join: { via: 'invite' }, roomDid: { differs: roomDidDiffers(ctx.join.status.document) }, agentReads: { allowed: agentReads.stats.allowed, refused: agentReads.stats.refused } }) }
     if (path === '/api/state') return send(res, 200, views.state(ctx))
     if (path === '/api/steps') return send(res, 200, ctx.facilitator.view())
     if (path === '/api/map' || path === '/api/board') return send(res, 200, views.mapView(ctx))
@@ -295,7 +295,7 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
       return q.as === 'text' ? send(res, status, waitLine(a), headers) : send(res, status, a, headers) // as=text: one line a shell hook can read without a JSON parser
     }
     if (path.startsWith('/api/log/')) { const e = views.entry(ctx, path.slice(9), req.inwoveViewer); return e ? send(res, 200, e) : send(res, 404, { error: 'no entry with that hash' }) }
-    if (path === '/api/verify') return send(res, 200, await log.verify())
+    if (path === '/api/verify') return send(res, 200, await views.verify(ctx, req.inwoveViewer))
     if (path.startsWith('/api/credentials/')) { const c = views.credential(ctx, decodeURIComponent(path.slice(17))); return typeof c === 'string' ? send(res, 404, { error: c }) : send(res, 200, c) }
     if (path.startsWith('/api/participants/')) { const p = views.participant(ctx, decodeURIComponent(path.slice(18))); return p ? send(res, 200, p) : send(res, 404, { error: 'not in the workspace yet' }) }
     if (path === '/api/qr.svg') {
@@ -307,7 +307,7 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
     if (path === '/api/events') {
       // no-transform and no buffering, so proxies and tunnels pass each event on at once; the padding pushes past buffers that wait for a first chunk
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no', connection: 'keep-alive' })
-      res.write(`:${' '.repeat(2048)}\n\nevent: hello\ndata: ${JSON.stringify(log.head())}\n\n`)
+      res.write(`:${' '.repeat(2048)}\n\nevent: hello\ndata: ${JSON.stringify(headFor(log, req.inwoveViewer))}\n\n`)
       sse.set(res, { did: req.inwoveViewer?.did ?? null, viewer: req.inwoveViewer })
       const beat = setInterval(() => res.write(': keep-alive\n\n'), 25_000)
       req.on('close', () => { clearInterval(beat); sse.delete(res) })
