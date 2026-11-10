@@ -23,7 +23,7 @@ services:
       # Caddy sets this header (deploy/Caddyfile). SAFE ONLY WHILE THIS SERVICE PUBLISHES NO PORT: the header is
       # believed because the only way to reach the room is through Caddy. Publish the room's port, or put anything
       # between the internet and Caddy that is not on a header Caddy overwrites, and anyone can choose their own address.
-      TRUSTED_CLIENT_IP_HEADER: x-forwarded-for
+      TRUSTED_CLIENT_IP_HEADER: x-inwove-client-ip
     # No ports: here on purpose. The room answers only on the compose network, to Caddy.
     volumes:
       - room-data:/data

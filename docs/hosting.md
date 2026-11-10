@@ -208,7 +208,7 @@ If `ROOM_DID_UPDATE_KEY` is empty, the room keeps a key of its own in `/data/upd
 
 ## What the owner must never do
 
-- **Publish the room's port.** No `ports:` on the `room` service, no `network_mode: host`. The room trusts `x-forwarded-for` (the `TRUSTED_CLIENT_IP_HEADER` in `docker-compose.yml`) only because the room can be reached through Caddy alone. If the port is open, anyone can choose the address the room limits and logs them by.
+- **Publish the room's port.** No `ports:` on the `room` service, no `network_mode: host`. The room trusts `x-inwove-client-ip`, the header Caddy writes (the `TRUSTED_CLIENT_IP_HEADER` in `docker-compose.yml`), only because the room can be reached through Caddy alone. If the port is open, anyone can choose the address the room limits and logs them by.
 - **Turn on the Cloudflare proxy (orange cloud) without changing the caller setting.** Caddy would then see Cloudflare's address for everyone, so every person would share one limit. Behind the proxy the room must read `cf-connecting-ip` instead, and Caddy must pass it on; change `TRUSTED_CLIENT_IP_HEADER` and the Caddyfile together, and only after reading `src/server/caller.js`. Cloudflare would also see everything members send, and this guide promises that only the host can read it.
 - **Commit `.env`**, paste it anywhere, or put `WORKSPACE_KEY` or the DID's secret key in a shared place.
 - **Let Docker start before the disk is unlocked**, or move Docker's data back to `/var/lib/docker`: the room's data would then sit on the unencrypted disk.

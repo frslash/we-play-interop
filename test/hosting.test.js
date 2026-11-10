@@ -56,7 +56,7 @@ describe('the compose file', () => {
     const where = Object.entries(services).filter(([, b]) => setting.test(b)).map(([n]) => n)
     assert.deepEqual(where, ['room'], 'only the room carries it')
     assert.equal(hasPorts(services.room), false, 'and only while its port is unpublished')
-    assert.match(services.room, /^ {6}TRUSTED_CLIENT_IP_HEADER: x-forwarded-for\s*$/m, 'it names the header Caddy writes')
+    assert.match(services.room, /^ {6}TRUSTED_CLIENT_IP_HEADER: x-inwove-client-ip\s*$/m, 'it names the header Caddy writes')
     assert.match(compose, /SAFE ONLY WHILE THIS SERVICE PUBLISHES NO PORT/, 'the comment saying why stays')
     assert.equal(/^TRUSTED_CLIENT_IP_HEADER=\S/m.test(envExample), false, 'the example .env does not set it (the compose file does)')
   })
@@ -80,7 +80,8 @@ describe('the Caddyfile', () => {
     assert.equal(/^\S*:\d+ \{/m.test(code), false, 'no plain-port site block that would serve without the name')
   })
   test('it SETS the caller address and the scheme, and trusts no earlier proxy', () => {
-    assert.match(code, /header_up X-Forwarded-For \{remote_host\}\s*$/m)
+    assert.match(code, /header_up X-InWove-Client-IP \{remote_host\}\s*$/m)
+    assert.doesNotMatch(code, /header_up X-(Forwarded-For|Real-IP)/i, 'the address never travels in a header callers write')
     assert.match(code, /header_up X-Forwarded-Proto \{scheme\}\s*$/m)
     assert.equal(/trusted_proxies/.test(code), false)
   })
