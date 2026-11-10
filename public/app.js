@@ -16,6 +16,11 @@ import { silentRound } from '/shared/round.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
 import { WAITING_FOR_PERSON, allDrafts, heard, lineIsFor, waitingForOk, waitingLabel, waitsForPerson } from '/shared/presence.js'
 import { walletCard } from '/signin.js'
+import { gate } from '/welcome.js'
+import { memberCards } from '/member.js'
+
+// The door comes first: signed out, only the welcome screen shows and nothing below runs until someone is in.
+const session = await gate()
 
 // ---------- tiny DOM helpers (user text only ever goes in as text) ----------
 const $ = (s) => document.querySelector(s)
@@ -146,6 +151,7 @@ async function api (path, opts) {
   const said = Date.parse(res.headers.get('date') ?? '')
   if (said) serverOffset = said + 500 - Date.now() // the header is in whole seconds
   const body = await res.json().catch(() => ({}))
+  if (res.status === 401 && body.error === 'Sign in first.') location.reload() // the sign-in ended (signed out elsewhere, or it ran out): back to the door
   return { ok: res.ok, status: res.status, body }
 }
 
@@ -1144,8 +1150,13 @@ function communityCard () {
 function renderYou () {
   const el = $('#tab-you')
   const origin = S.publicUrl || location.origin // the address others can reach (PUBLIC_URL), not necessarily this one
-  const invite = h('div', { class: 'card' }, h('h2', null, 'Bring someone in'), h('p', { class: 'why' }, 'Scan to open this room. Joining makes a key on that phone; nothing else to install.'),
-    h('img', { class: 'qr', src: `/api/qr.svg?text=${encodeURIComponent(origin)}`, alt: `QR code for ${origin}` }), h('p', null, h('code', null, origin)))
+  if (!joined() && session?.did) { // signed in, but this browser does not hold the key: they can read, not write
+    const seedIn = h('input', { type: 'text', placeholder: '64 hex characters' })
+    return fill(el, h('div', { class: 'card' }, h('h2', null, 'You can read, but not write yet'),
+      h('p', { class: 'why' }, 'You are signed in, but this browser does not have your key, so you cannot say anything or sign anything here. If you saved your key, put it in below.'),
+      h('details', { open: true }, h('summary', null, 'I already have a key'), h('label', null, 'Your key', seedIn), h('button', { class: 'btn', onclick: () => { try { me = identityFromSeedHex(seedIn.value.trim()); store.set('wpi.seed', me.seedHex); store.set('wpi.keySaved', me.did); toast('Key loaded.'); refresh() } catch (err) { toast(err.message) } } }, 'Use this key'))),
+      ...memberCards({ me: null, origin, session, toast, redraw: renderYou }))
+  }
   if (!joined()) {
     const name = keep(h('input', { type: 'text', maxlength: 60, placeholder: 'How the room will see you' }), 'join.name')
     const seedIn = h('input', { type: 'text', placeholder: '64 hex characters' })
@@ -1190,9 +1201,10 @@ function renderYou () {
         h('p', { class: 'why' }, 'Leaving removes your agents and deletes everything private the room holds for you and them: their keys, their notebooks and drafts, their wake links. The room stops listing you and takes nothing more from you, and this browser forgets your key. What you said in the room stays in its public record as "(left)": that record is signed and copied by others, so nothing in it can be taken back. You can come back later by joining again.'),
         h('button', { class: 'btn danger small', onclick: async () => {
           if (!confirm('Leave the room? Your agents are removed and everything private is deleted. What you said publicly stays in the record.')) return
-          if (await post('leave', {})) { store.set('wpi.seed', null); store.set('wpi.links', null); me = null; toast('You have left the room. Everything private is deleted.'); await refresh(); go('watch') }
+          if (await post('leave', {})) { store.set('wpi.seed', null); store.set('wpi.links', null); me = null; toast('You have left the room. Everything private is deleted.'); location.replace('/') }
         } }, 'Leave the room')),
       h('details', null, h('summary', null, 'Forget this key in this browser'), h('button', { class: 'btn danger small', onclick: () => { if (confirm('Remove your key from this browser? Without a backup you cannot act as yourself here again.')) { store.set('wpi.seed', null); me = null; render() } } }, 'Forget my key'))),
+    ...(session ? memberCards({ me, origin, session, toast, redraw: renderYou }) : []),
     cardPanel(mine),
     h('div', { class: 'card', id: 'agents' }, h('h2', null, 'Your agents'),
       h('p', { class: 'why' }, 'Your agent acts only with the permission you signed: what it may do, until when. Approving, vetoing and bringing agents stay with you.'),
@@ -1216,8 +1228,7 @@ function renderYou () {
       h('p', { class: 'why' }, 'anarchy: try every direction · democracy: the vote decides · weave: the one step that holds the most of what people want. Anyone can change it; the latest change stands.'),
       h('div', { class: 'seg' }, MODES.map((m) => h('button', { class: S.mode.mode === m ? 'on' : '', onclick: () => m !== S.mode.mode && post('mode', { mode: m, ...(reason.value.trim() ? { reason: reason.value.trim() } : {}) }) }, m))),
       h('label', null, 'Reason', reason)),
-    communityCard(),
-    invite)
+    communityCard())
 }
 
 // ---------- Watch: the loom ----------
