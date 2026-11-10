@@ -24,7 +24,7 @@ async function room () {
   const wakeFetch = async () => ({ ok: true, status: 200 })
   const gh = async (method, path) => (method === 'GET' && path.includes('/pulls?') ? pulls : {})
   const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, voteMinutes: 10, workspaceRepo: 'example/room', publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }
-  const ctx = await createApp(config, { resolver: createResolver(), hostWelcomeMs: null, wakeFetch, gh })
+  const ctx = await createApp(config, { openRoom: true, resolver: createResolver(), hostWelcomeMs: null, wakeFetch, gh })
   await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
   const base = `http://127.0.0.1:${ctx.server.address().port}`
   await ctx.board.refresh()

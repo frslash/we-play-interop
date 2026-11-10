@@ -25,7 +25,7 @@ const V1 = [
 async function room () {
   const dir = mkdtempSync(join(tmpdir(), 'wpi-goal2-'))
   const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, voteMinutes: 10, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }
-  const ctx = await createApp(config, { resolver: createResolver(), hostWelcomeMs: null })
+  const ctx = await createApp(config, { openRoom: true, resolver: createResolver(), hostWelcomeMs: null })
   await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
   const base = `http://127.0.0.1:${ctx.server.address().port}`
   await ctx.board.refresh()

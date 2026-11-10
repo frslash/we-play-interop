@@ -15,7 +15,7 @@ const BOARD = { generated: '2026-11-09', projects: [], scenarios: [], runs: [] }
 describe('a new release reaches browsers at once', () => {
   test('the page points at this release, re-checks itself, and each file of the release may be kept for good', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wpi-fresh-'))
-    const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }, { hostWelcomeMs: null })
+    const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }, { openRoom: true, hostWelcomeMs: null })
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
     try {
       const base = `http://127.0.0.1:${ctx.server.address().port}`

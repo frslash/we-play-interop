@@ -1,24 +1,18 @@
 // The room's Trust Task door (src/server/door.js): every step a document goes through, the answers it gets, and the
-// tasks the door serves from the start. First a door on its own (each step in isolation, with a clock the test
-// moves), then the door in a running room, over http, with the same helpers another project's client would use
-// (signedTask, postTask).
+// tasks the door serves from the start: a door on its own, each step in isolation, with a clock the test moves.
+// (The door is not served by the room any more: the room is for members, and /trust-tasks answers 404, which
+// test/access.test.js checks. The tests that ran the door inside a room, over http, went with the route.)
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, test } from 'node:test'
-import { resolveDIDFromLog } from 'didwebvh-ts'
-import { mintRoomDid } from '../agent/mint-room-did.js'
-import { config as baseConfig } from '../src/server/config.js'
 import { DISCOVERY, DISCOVERY_0_3, Door, FRAMEWORK_VERSION, HORIZON_MS, PING, Refusal, SIGNED, serveRoomTasks } from '../src/server/door.js'
-import { createApp } from '../src/server/index.js'
 import { TaskError } from '../src/server/log.js'
 import { createResolver } from '../src/server/resolver.js'
-import { growRoomDid, roomDidDocument } from '../src/server/roomdid.js'
+import { roomDidDocument } from '../src/server/roomdid.js'
 import { keyFromDidDocument } from '../src/shared/chain.js'
 import { didPeer4FromDocument, ed25519Multikey, newIdentity } from '../src/shared/did.js'
-import { ACCEPT_MS, ERROR_TYPE, MAX_DOCUMENT_BYTES, SKEW_MS, classify, instant, postTask, responseTo, serviceEndpoint, signTask, signedTask, taskDocument, typeUri, verifyTask } from '../src/shared/trusttask.js'
-import { TYPES, signedDocument } from '../src/shared/types.js'
+import { ACCEPT_MS, ERROR_TYPE, MAX_DOCUMENT_BYTES, SKEW_MS, classify, instant, responseTo, signTask, signedTask, taskDocument, typeUri, verifyTask } from '../src/shared/trusttask.js'
+import { TYPES } from '../src/shared/types.js'
 
 const ECHO = typeUri('test/echo', '0.1') // a task of the test's own, to see what a handler is given and what its outcomes become
 const MEMBERS = ['code', 'retryable', 'inResponseTo', 'message', 'retryAfter', 'details'] // the registry's trust-task-error payload, and nothing else
@@ -402,148 +396,5 @@ describe('a door on its own: each step, in order', () => {
     assert.deepEqual(info.limits, { perSignerPerMinute: 60, perAddressPerMinute: 240, rememberedIds: 18300 })
     assert.equal(info.counts.received, 3); assert.equal(info.counts.answered, 1); assert.deepEqual(info.counts.refused, { wrongRecipient: 1, malformedRequest: 1 }); assert.equal(info.counts.rememberedIds, 1)
     assert.ok(!text.includes(secret) && !text.includes(person.did) && !text.includes(other.did) && !text.includes('203.0.113.7'))
-  })
-})
-
-describe('the door in a running room', () => {
-  let ctx, base, dir
-  const person = newIdentity(), stranger = newIdentity()
-  const PUBLIC = 'https://room.example'
-  const get = async (p) => (await fetch(base + p)).json()
-  const raw = (body, path = '/trust-tasks', headers = { 'content-type': 'application/json' }) => fetch(base + path, { method: 'POST', headers, body })
-
-  before(async () => {
-    dir = mkdtempSync(join(tmpdir(), 'wpi-door-'))
-    const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, publicUrl: PUBLIC, checkEveryMinutes: 0, boardDataUrl: 'data:application/json,{}', llm: { ...baseConfig.llm, apiKey: '' } }
-    ctx = await createApp(config, { hostWelcomeMs: null, resolver })
-    await new Promise((resolve) => ctx.server.listen(0, '127.0.0.1', resolve))
-    base = `http://127.0.0.1:${ctx.server.address().port}`
-  })
-  after(async () => { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) })
-
-  test('a document built with signedTask and sent with postTask gets a signed #response, at /trust-tasks and at /v1/trust-tasks', async () => {
-    const room = ctx.identity.did
-    const ping = signedTask(person, { type: PING, recipient: room, payload: { nonce: 'abc' } })
-    const a = await postTask(base, ping)
-    assert.equal(a.status, 200); assert.equal(a.kind, 'response'); assert.equal(a.reply.type, `${PING}#response`); assert.equal(a.payload.nonce, 'abc'); assert.equal(a.payload.status, 'ok')
-    assert.deepEqual(await verifyTask(a.reply, { keyFor: createResolver().keyFor, me: person.did, purposes: ['authentication'] }), { ok: true, signer: room }) // the reply's proof, against the room's key
-    assert.equal(a.reply.threadId, ping.id)
-    const b = await postTask(`${base}/v1`, signedTask(person, { type: DISCOVERY, recipient: room, payload: { patterns: ['messaging/*', 'trust-task-discovery/*'] } }))
-    assert.equal(b.kind, 'response'); assert.deepEqual(b.payload.supportedTypes, [PING, DISCOVERY_0_3, DISCOVERY])
-  })
-
-  test('over http: JSON back, open to any origin, POST only; a huge body is refused without being kept', async () => {
-    const res = await raw(JSON.stringify(signedTask(person, { type: PING, recipient: ctx.identity.did })))
-    assert.equal(res.status, 200); assert.equal(res.headers.get('content-type'), 'application/json'); assert.equal(res.headers.get('access-control-allow-origin'), '*'); assert.equal(res.headers.get('cache-control'), 'no-store')
-    const pre = await fetch(`${base}/trust-tasks`, { method: 'OPTIONS' })
-    assert.equal(pre.status, 204); assert.equal(pre.headers.get('access-control-allow-origin'), '*'); assert.match(pre.headers.get('access-control-allow-methods'), /POST/)
-    const getIt = await fetch(`${base}/trust-tasks`)
-    assert.equal(getIt.status, 405); assert.equal(getIt.headers.get('allow'), 'POST')
-    const big = await raw(JSON.stringify({ ...signedTask(person, { type: PING, recipient: ctx.identity.did }), payload: { nonce: 'x'.repeat(200_000) } }))
-    assert.equal(big.status, 400)
-    const refusal = await big.json()
-    assert.equal(refusal.type, ERROR_TYPE); assert.equal(refusal.payload.code, 'malformedRequest'); assert.deepEqual(refusal.payload.details, { maxBytes: 65536 }); assert.match(refusal.payload.message, /^the document is 2\d{5} bytes/)
-    assert.equal((await verifyTask(refusal, { keyFor: createResolver().keyFor, requireRecipient: false })).ok, true)
-    const huge = await raw(Buffer.alloc(3 * 1024 * 1024, 0x20)) // past a megabyte the room stops counting and answers while the rest is still arriving
-    assert.equal(huge.status, 400); assert.match((await huge.json()).payload.message, /^the document is more than \d+ bytes/)
-    const notJson = await raw('this is not a document')
-    assert.equal(notJson.status, 400); assert.equal((await notJson.json()).payload.code, 'malformedRequest')
-  })
-
-  test('a room line written through the door is in the log, exactly as one sent to /api/entries would be', async () => {
-    const room = ctx.identity.did, before = ctx.log.entries.length
-    // nothing gets in without a verified signature
-    const { proof, ...unsigned } = signedTask(person, { type: TYPES.join, recipient: room, payload: { name: 'Door Tester' } })
-    assert.equal((await postTask(base, unsigned)).code, 'proofRequired')
-    assert.equal((await postTask(base, { ...unsigned, proof: { ...proof, proofValue: proof.proofValue.slice(0, -4) + 'zzzz' } })).code, 'proofInvalid')
-    assert.equal(ctx.log.entries.length, before)
-    // a note before joining: the log's own refusal, with its own words, under the shared code
-    const early = await postTask(base, signedTask(person, { type: TYPES.note, recipient: room, payload: { text: 'hello', kind: 'message' } }))
-    assert.equal(early.status, 403); assert.equal(early.code, 'permissionDenied'); assert.match(early.message, /join first/)
-    // join, then a note
-    const join = signedTask(person, { type: TYPES.join, recipient: room, payload: { name: 'Door Tester' } })
-    const joined = await postTask(base, join)
-    assert.equal(joined.status, 200); assert.equal(joined.kind, 'response'); assert.equal(joined.reply.type, `${TYPES.join}#response`); assert.equal(joined.payload.duplicate, false)
-    const note = signedTask(person, { type: TYPES.note, recipient: room, payload: { text: 'written through the Trust Task door', kind: 'message' } })
-    const noted = await postTask(base, note)
-    assert.equal(noted.kind, 'response')
-    const entry = await get(`/api/log/${noted.payload.entry.hash}`)
-    assert.deepEqual(entry.document, note); assert.equal(entry.author, person.did); assert.equal(entry.seq, noted.payload.entry.seq)
-    const { document, ...rest } = entry
-    assert.deepEqual(noted.payload.entry, rest) // the answer is the entry without the document, which the sender has
-    assert.ok((await get('/api/log?type=note')).entries.some((e) => e.hash === entry.hash))
-    assert.equal((await get('/api/verify')).ok, true) // the whole chain still verifies, this line's proof included
-    // the same document again: the same answer from the door; at /api/entries, the same entry as a duplicate
-    const again = await postTask(base, note)
-    assert.deepEqual(again.reply, noted.reply)
-    const rest2 = await fetch(`${base}/api/entries`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(note) })
-    assert.equal(rest2.status, 200); assert.equal((await rest2.json()).hash, entry.hash)
-    assert.equal(ctx.log.entries.filter((e) => e.document.id === note.id).length, 1)
-    // after a restart the door's own record is gone: the log's index of ids still answers a replay as a duplicate, and a changed document as idConflict
-    ctx.door.accepted.records.clear()
-    const afterRestart = await postTask(base, note)
-    assert.equal(afterRestart.kind, 'response'); assert.equal(afterRestart.payload.duplicate, true); assert.equal(afterRestart.payload.entry.hash, entry.hash)
-    ctx.door.accepted.records.clear()
-    const forged = await postTask(base, signTask({ ...taskDocument({ type: TYPES.note, issuer: person.did, recipient: room, payload: { text: 'something else', kind: 'message' } }), id: note.id }, person))
-    assert.equal(forged.status, 409); assert.equal(forged.code, 'idConflict')
-  })
-
-  test('the room\'s other types are refused in the log\'s own words: what only the room writes, what is private, what goes elsewhere', async () => {
-    const room = ctx.identity.did
-    const code = async (type, payload = {}) => { const r = await postTask(base, signedTask(person, { type, recipient: room, payload })); return `${r.status} ${r.code}: ${r.message}` }
-    assert.match(await code(TYPES.round), /^403 permissionDenied: only the workspace writes round/)
-    assert.match(await code(TYPES.notebook), /^400 malformedRequest: notebook is private: send it to \/api\/notebook/)
-    assert.match(await code(TYPES.wake, { agent: person.did, urlHash: null, on: [] }), /^400 malformedRequest: send wake settings to \/api\/wake/)
-    assert.match(await code(TYPES.note, { text: '', kind: 'message' }), /^400 malformedRequest: text: 1 to 2000 characters/)
-    assert.match(await code(TYPES.vote, { proposal: 'a'.repeat(64), choice: 'for' }), /^400 malformedRequest: no proposal with that hash/)
-    const stray = await postTask(base, signedTask(stranger, { type: TYPES.vote, recipient: room, payload: { proposal: 'a'.repeat(64), choice: 'for' } }))
-    assert.equal(stray.code, 'permissionDenied')
-    // a document signed the room's older way (signedDocument: no recipient) is not a door document
-    const old = await postTask(base, signedDocument(person, { type: TYPES.note, payload: { text: 'no recipient', kind: 'message' } }))
-    assert.equal(old.status, 400); assert.equal(old.code, 'malformedRequest'); assert.match(old.message, /recipient/)
-  })
-
-  test('/api/info says where the door is, what it serves, and what it has done', async () => {
-    const { door } = await get('/api/info')
-    assert.equal(door.address, `${PUBLIC}/trust-tasks`); assert.deepEqual(door.answersTo, [ctx.identity.did]); assert.equal(door.inDid, false) // no DID log yet
-    assert.ok(door.serves.includes(PING) && door.serves.includes(DISCOVERY) && door.serves.includes(TYPES.note))
-    assert.ok(door.counts.received >= 10); assert.ok(door.counts.answered >= 4); assert.ok(door.counts.answeredByType[PING] >= 2); assert.equal(door.counts.answeredByType[TYPES.note], 2)
-    for (const c of ['proofRequired', 'proofInvalid', 'permissionDenied', 'malformedRequest', 'idConflict']) assert.ok(door.counts.refused[c] >= 1, c)
-    assert.ok(door.counts.duplicates.answeredAgain >= 1); assert.deepEqual(door.counts.rateLimited, { address: 0, signer: 0 })
-    assert.ok(!JSON.stringify(door).includes(person.did))
-  })
-
-  test('with its did:webvh: the DID document names the door, and a document addressed to that DID is answered as it', async () => {
-    const m = await mintRoomDid('room.example')
-    writeFileSync(join(dir, 'did.jsonl'), m.log); writeFileSync(join(dir, 'update-key.txt'), m.seedHex + '\n')
-    assert.equal((await growRoomDid({ dataDir: dir, publicUrl: PUBLIC, roomPublicKey: ctx.identity.publicKey, log: () => {} })).grown, true)
-    await ctx.join.refresh(true)
-    // what anyone resolves from the room's own /.well-known/did.jsonl
-    const log = (await (await fetch(`${base}/.well-known/did.jsonl`)).text()).trim().split('\n').map((l) => JSON.parse(l))
-    const didDoc = (await resolveDIDFromLog(log)).didDocument
-    assert.equal(didDoc.id, m.did)
-    assert.equal(serviceEndpoint(didDoc, 'TrustTaskHTTPS'), PUBLIC)
-    const info = (await get('/api/info')).door
-    assert.equal(info.address, `${serviceEndpoint(didDoc, 'TrustTaskHTTPS')}/trust-tasks`); assert.equal(info.inDid, true); assert.deepEqual(info.answersTo, [m.did, ctx.identity.did])
-    // a sender that starts from the DID: addressed to it, answered as it, and the answer verifies against its document
-    known.set(m.did, didDoc)
-    const pong = await postTask(base, signedTask(person, { type: PING, recipient: m.did, payload: { nonce: 'from the DID' } }))
-    assert.equal(pong.kind, 'response'); assert.equal(pong.reply.issuer, m.did); assert.equal(pong.reply.proof.verificationMethod, `${m.did}#room`)
-    assert.deepEqual(await verifyTask(pong.reply, { keyFor: resolver.keyFor, me: person.did, purposes: ['authentication'] }), { ok: true, signer: m.did })
-    // and still to its did:key
-    assert.equal((await postTask(base, signedTask(person, { type: PING, recipient: ctx.identity.did }))).reply.issuer, ctx.identity.did)
-    // a did:webvh member writes through the same door (its DID document comes from the stand-in resolver)
-    const persona = webvhPersona('member.example')
-    const joined = await postTask(base, signedTask(persona, { type: TYPES.join, recipient: m.did, payload: { name: 'A persona' } }))
-    assert.equal(joined.kind, 'response', JSON.stringify(joined.reply)); assert.equal(joined.reply.recipient, persona.did)
-    assert.equal((await get(`/api/log/${joined.payload.entry.hash}`)).author, persona.did)
-  })
-
-  test('while the room restarts, the door says so in its own form: a signed unavailable with when to try again', async () => {
-    ctx.waits.stopping = true
-    try {
-      const r = await postTask(base, signedTask(person, { type: PING, recipient: ctx.identity.did }))
-      assert.equal(r.status, 503); assert.equal(r.kind, 'error'); assert.equal(r.code, 'unavailable'); assert.equal(r.reply.payload.retryable, true); assert.match(r.reply.payload.retryAfter, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/)
-    } finally { ctx.waits.stopping = false }
   })
 })

@@ -94,7 +94,7 @@ describe('the room checks the credential: at the grant, then on every write', ()
   before(async () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-cred-'))
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify({ projects: [] })), llm: { ...baseConfig.llm, apiKey: '' } }
-    ctx = await createApp(config, { hostWelcomeMs: null })
+    ctx = await createApp(config, { openRoom: true, hostWelcomeMs: null })
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
     base = `http://127.0.0.1:${ctx.server.address().port}`
     room = ctx.log.state.workspace

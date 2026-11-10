@@ -20,7 +20,7 @@ const roomConfig = (dataDir) => ({ ...baseConfig, dataDir, databaseUrl: '', work
 describe('log round trip: export-log.js from a running room, import-log.js into an empty data dir', () => {
   test('prints ok, the entry count, the head seq and hash, and 0 unchecked signatures', async () => {
     const roomDir = mkdtempSync(join(tmpdir(), 'wpi-rt-room-')), emptyDir = mkdtempSync(join(tmpdir(), 'wpi-rt-empty-')), work = mkdtempSync(join(tmpdir(), 'wpi-rt-work-'))
-    const ctx = await createApp(roomConfig(roomDir), { awayGatherMs: 0, hostWelcomeMs: null })
+    const ctx = await createApp(roomConfig(roomDir), { openRoom: true, awayGatherMs: 0, hostWelcomeMs: null })
     try {
       await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
       const base = `http://127.0.0.1:${ctx.server.address().port}`, person = newIdentity()
@@ -50,17 +50,15 @@ describe('log round trip: export-log.js from a running room, import-log.js into 
     }
   })
 
-  test('the CI job runs on every pull request and on main, export then round trip, into an empty dir, with no secrets', () => {
+  test('the CI job runs on every pull request and on main, the round trip on a room it starts itself, with no secrets', () => {
     // The job moved to its own workflow (.github/workflows/log-roundtrip.yml) so it also runs on main.
     const wf = readFileSync('.github/workflows/log-roundtrip.yml', 'utf8')
     assert.ok(wf.includes('\n  export-roundtrip:'), 'the job exists')
     assert.match(wf, /\n  pull_request:\n/, 'runs on every pull request')
     assert.match(wf, /push:\n\s+branches: \[main\]/, 'and on main')
-    assert.match(wf, /ROOM_URL: https:\/\/inwove\.org/)
-    assert.match(wf, /node agent\/export-log\.js "\$ROOM_URL"/)
-    assert.match(wf, /node agent\/roundtrip-log\.js /, 're-imports, exports again and compares')
-    assert.match(wf, /mkdir /, 'imports into a fresh, empty dir')
-    assert.match(wf, /node agent\/roundtrip-summary\.js /, 'checks the unchecked-signature count (agent/roundtrip-summary.js, see test/roundtrip-notice.test.js)')
+    // the record is for the room's members, so the job no longer reads a live room's log: it runs the round trip against a room it starts itself
+    assert.doesNotMatch(wf, /ROOM_URL|inwove\.org|export-log\.js/, 'no live room is reached')
+    assert.match(wf, /node --test test\/export-roundtrip-ci\.test\.js test\/log-roundtrip\.test\.js/, 'the round trip (export, re-import into an empty dir, export again, compare, summary) runs locally, in the tests')
     const code = wf.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n')
     assert.doesNotMatch(code, /secrets\.|id-token|pull_request_target|environment:/, 'stays read-only')
     assert.doesNotMatch(code, /^\s+[\w-]+:\s*write\b/m, 'asks for no write permission')
@@ -70,7 +68,7 @@ describe('log round trip: export-log.js from a running room, import-log.js into 
 describe('log round trip: a refused import says where the chain breaks', () => {
   test('import-log.js prints the seq and reason of each problem', async () => {
     const roomDir = mkdtempSync(join(tmpdir(), 'wpi-rt2-room-')), emptyDir = mkdtempSync(join(tmpdir(), 'wpi-rt2-empty-')), work = mkdtempSync(join(tmpdir(), 'wpi-rt2-work-'))
-    const ctx = await createApp(roomConfig(roomDir), { awayGatherMs: 0, hostWelcomeMs: null })
+    const ctx = await createApp(roomConfig(roomDir), { openRoom: true, awayGatherMs: 0, hostWelcomeMs: null })
     try {
       await ctx.log.accept(signedDocument(newIdentity(), { type: TYPES.join, payload: { name: 'Person A' } })).catch(() => {})
       const { makeExport } = await import('../src/server/export.js')

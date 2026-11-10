@@ -20,7 +20,7 @@ const roomConfig = (dataDir) => ({ ...baseConfig, dataDir, databaseUrl: '', work
 describe('import-log.js writes a refused import\'s reason to the job summary', () => {
   test('a tampered chain: the summary says ok=false, the reason, and the failing seq', async () => {
     const roomDir = mkdtempSync(join(tmpdir(), 'wpi-is-room-')), emptyDir = mkdtempSync(join(tmpdir(), 'wpi-is-empty-')), work = mkdtempSync(join(tmpdir(), 'wpi-is-work-'))
-    const ctx = await createApp(roomConfig(roomDir), { awayGatherMs: 0, hostWelcomeMs: null })
+    const ctx = await createApp(roomConfig(roomDir), { openRoom: true, awayGatherMs: 0, hostWelcomeMs: null })
     try {
       await ctx.log.accept(signedDocument(newIdentity(), { type: TYPES.join, payload: { name: 'Person A' } })).catch(() => {})
       const doc = JSON.parse(JSON.stringify(makeExport(ctx.log.entries)))

@@ -180,7 +180,7 @@ describe('the workspace, end to end', () => {
     webvh = await makeWebvh()
     ghCalls = []
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: 'test', vetoWindowMinutes: 0, approvalsRequired: 1, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, apiKey: '' } }
-    ctx = await createApp(config, { resolver: createResolver({ fetch: webvh.fetch }), gh, wakeFetch, awayGatherMs: 0, hostWelcomeMs: null })
+    ctx = await createApp(config, { openRoom: true, resolver: createResolver({ fetch: webvh.fetch }), gh, wakeFetch, awayGatherMs: 0, hostWelcomeMs: null })
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
     base = `http://127.0.0.1:${ctx.server.address().port}`
     await ctx.board.refresh()
@@ -604,7 +604,7 @@ describe('the workspace, end to end', () => {
   test('the log survives a restart, byte for byte', async () => {
     const before = ctx.log.entries.map((e) => e.hash)
     await ctx.stop()
-    ctx = await createApp({ ...ctx.config }, { resolver: createResolver({ fetch: webvh.fetch }), gh })
+    ctx = await createApp({ ...ctx.config }, { openRoom: true, resolver: createResolver({ fetch: webvh.fetch }), gh })
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
     base = `http://127.0.0.1:${ctx.server.address().port}`
     assert.deepEqual(ctx.log.entries.map((e) => e.hash), before)
@@ -949,7 +949,7 @@ describe('the weaver caches what its rounds repeat', () => {
   test('the round puts the slow-changing context first, and the split falls exactly where what is new begins', async () => {
     const { SLOW_KEYS } = await import('../src/server/weaver.js')
     const dir = mkdtempSync(join(tmpdir(), 'wpi-cache-'))
-    const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }, { hostWelcomeMs: null })
+    const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }, { openRoom: true, hostWelcomeMs: null })
     try {
       await ctx.board.refresh()
       const [, user] = ctx.weaver.prompt(ctx.weaver.context([]))

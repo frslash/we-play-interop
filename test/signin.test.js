@@ -674,59 +674,13 @@ describe('what the room says about it', () => {
     } finally { delete globalThis.crypto.subtle; if (!globalThis.crypto.subtle && subtle) Object.defineProperty(globalThis.crypto, 'subtle', subtle) }
   })
 
-  test('in the room itself: /api/info says whether it is on, the room\'s DID asks for a sign-in page, and the page is served its part', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'wpi-signin-'))
-    const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, publicUrl: '', checkEveryMinutes: 0, boardDataUrl: 'data:application/json,{}', llm: { ...baseConfig.llm, apiKey: '' } }, { hostWelcomeMs: null })
-    await new Promise((resolve) => ctx.server.listen(0, '127.0.0.1', resolve))
-    try {
-      const base = `http://127.0.0.1:${ctx.server.address().port}`
-      const info = (await (await fetch(`${base}/api/info`)).json()).signIn
-      assert.equal(info.linkHost, 'link.trustoverip.org'); assert.equal(info.flow, '/vti/flow/sign-in/0.1'); assert.equal(info.did, ctx.identity.did)
-      assert.deepEqual(info.counts, { requested: 0, claimed: 0, proved: 0, approved: 0, declined: 0, redeemed: 0, cancelled: 0, expired: 0, proofFailed: 0 })
-      assert.equal(info.on, Boolean(ctx.door), 'on exactly when the room has a Trust Task door'); if (!ctx.door) assert.match(info.why[0], /door/)
-      const config = await fetch(`${base}/api/signin/config`)
-      assert.equal(config.status, 200); assert.equal(config.headers.get('cache-control'), 'no-store'); assert.equal((await config.json()).serviceDid, ctx.identity.did)
-      assert.equal((await fetch(`${base}/api/signin/session?key=${encodeURIComponent(newIdentity().did)}`)).status, 404)
-      const page = await (await fetch(`${base}/`)).text()
-      assert.match(page, /"\/signin\.js":"\/r\/[0-9a-f]{12}\/signin\.js"/, 'the page can load its sign-in module from this release')
-      assert.equal((await fetch(`${base}/shared/signin.js`)).status, 200); assert.equal((await fetch(`${base}/signin.js`)).status, 200)
-      // the six tasks are on the room's own Trust Task door, listed beside discovery and ping
-      const door = (await (await fetch(`${base}/api/info`)).json()).door
-      for (const task of ['request', 'claim', 'prove', 'respond', 'cancel', 'redeem']) assert.ok(door.serves.includes(OOB[task]), `the door serves ${task}`)
-    } finally { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) }
+  // (The room no longer serves wallet sign-in or its Trust Task door: those routes are gone, and test/access.test.js checks they answer 404.
+  // The two tests that ran a whole sign-in through the room's own /trust-tasks went with them; the modules and the exchange tests above stay.)
+  test('the room\'s DID document asks wallets to accept its own page as the place sign-in starts', () => {
     // the room's DID document asks wallets to accept its own page as the place sign-in starts: https only
     const d = roomDidDocument({ did: 'did:webvh:abc:interop.example', roomPublicKey: newIdentity().publicKey, publicUrl: 'https://interop.example/x' })
     assert.deepEqual(d.service.find((x) => x.type === 'SignInPortal'), { id: 'did:webvh:abc:interop.example#sign-in-portal', type: 'SignInPortal', serviceEndpoint: 'https://interop.example/' })
     assert.equal(signInPortalEndpoint('http://localhost:3000'), ''); assert.equal(roomDidDocument({ did: 'did:webvh:abc:localhost%3A3000', roomPublicKey: newIdentity().publicKey, publicUrl: 'http://localhost:3000' }).service.some((x) => x.type === 'SignInPortal'), false)
-  })
-
-  test('in the room itself: a whole sign-in, browser and wallet, through the room\'s real POST /trust-tasks', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'wpi-signin-door-'))
-    const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, publicUrl: '', checkEveryMinutes: 0, boardDataUrl: 'data:application/json,{}', llm: { ...baseConfig.llm, apiKey: '' } }, { hostWelcomeMs: null })
-    ctx.signIn.holdMs = 80 // a poll is held a moment, not the 25 seconds a real page waits
-    await new Promise((resolve) => ctx.server.listen(0, '127.0.0.1', resolve))
-    try {
-      const base = `http://127.0.0.1:${ctx.server.address().port}`
-      const before = ctx.door.counts.answered
-      const done = await playSignIn({ url: base }) // the same exchange test/live plays against a running room
-      assert.equal(done.config.trustTasks, '/trust-tasks'); assert.equal(done.session.origin, base); assert.equal(done.session.mayWrite, false)
-      const counts = (await (await fetch(`${base}/api/info`)).json()).door.counts
-      for (const task of ['request', 'claim', 'prove', 'respond', 'redeem']) assert.ok(counts.answeredByType[OOB[task]] >= 1, `the door answered ${task}`)
-      assert.ok(ctx.door.counts.answered >= before + 5)
-      // the room's attestations go out as sign-in signed them (assertionMethod), not signed again by the door; its other answers the door signs (authentication)
-      const kb = newIdentity(), post = (doc) => fetch(`${base}/trust-tasks`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base }, body: JSON.stringify(doc) })
-      const opened = await (await post(signedTask(kb, { type: OOB.request, recipient: ctx.identity.did, payload: { purpose: 'login', mode: 'scan' } }))).json()
-      assert.equal(opened.type, `${OOB.request}#response`, JSON.stringify(opened.payload)); assert.equal(opened.proof.proofPurpose, 'authentication')
-      const r = await post(signedTask(kb, { type: OOB.cancel, recipient: ctx.identity.did, payload: { requestId: opened.payload.requestId } }))
-      const cancelled = await r.json()
-      assert.equal(r.status, 200, JSON.stringify(cancelled.payload)); assert.equal(cancelled.type, `${OOB.cancel}#response`); assert.equal(cancelled.payload.status, 'cancelled'); assert.equal(cancelled.proof.proofPurpose, 'assertionMethod')
-      assert.equal((await verifyTask(cancelled, { keyFor: createResolver().keyFor, me: kb.did, purposes: ['assertionMethod'] })).ok, true)
-      // another website's page cannot open one through a person's browser: the door hands sign-in the page's Origin, not the room's own address
-      const evil = await fetch(`${base}/trust-tasks`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://evil.example' }, body: JSON.stringify(signedTask(newIdentity(), { type: OOB.request, recipient: ctx.identity.did, payload: { purpose: 'login', mode: 'scan' } })) })
-      assert.equal((await evil.json()).payload.code, 'permissionDenied')
-      const none = await fetch(`${base}/trust-tasks`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signedTask(newIdentity(), { type: OOB.request, recipient: ctx.identity.did, payload: { purpose: 'login', mode: 'scan' } })) })
-      assert.equal((await none.json()).payload.code, 'permissionDenied', 'no Origin at all: not the room\'s page')
-    } finally { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) }
   })
 })
 

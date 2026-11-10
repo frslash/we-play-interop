@@ -36,7 +36,7 @@ describe('the room reads, names and counts the three addresses', () => {
   before(async () => {
     c = await standInCommunity()
     dir = mkdtempSync(join(tmpdir(), 'wpi-dtgctx-'))
-    ctx = await createApp(settings(dir, { communityDid: c.did }), { hostWelcomeMs: null, resolver: c.resolver, communityFetch: c.fetch })
+    ctx = await createApp(settings(dir, { communityDid: c.did }), { openRoom: true, hostWelcomeMs: null, resolver: c.resolver, communityFetch: c.fetch })
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
     base = `http://127.0.0.1:${ctx.server.address().port}`
     ctx.community.lists.ttlMs = 0; ctx.community.lists.failTtlMs = 0

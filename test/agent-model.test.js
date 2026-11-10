@@ -27,7 +27,7 @@ describe('an agent says which model it runs on and where', () => {
   before(async () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-model-'))
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', llm: { ...baseConfig.llm, apiKey: '' } }
-    ctx = await createApp(config, { hostWelcomeMs: null, awayGatherMs: 0 })
+    ctx = await createApp(config, { openRoom: true, hostWelcomeMs: null, awayGatherMs: 0 })
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
     base = `http://127.0.0.1:${ctx.server.address().port}`
     await send(A, 'join', { name: 'Person A' }); await send(B, 'join', { name: 'Person B' })

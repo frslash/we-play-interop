@@ -17,7 +17,7 @@ const clone = (x) => JSON.parse(JSON.stringify(x))
 // A small room's whole record, with the room's server stopped.
 async function aRecord () {
   const dir = mkdtempSync(join(tmpdir(), 'wpi-rbr-'))
-  const ctx = await createApp(cfg(dir), { awayGatherMs: 0, hostWelcomeMs: null })
+  const ctx = await createApp(cfg(dir), { openRoom: true, awayGatherMs: 0, hostWelcomeMs: null })
   const a = newIdentity()
   await ctx.log.accept(signedDocument(a, { type: TYPES.join, payload: { name: 'Person A' } }))
   await ctx.log.accept(signedDocument(a, { type: TYPES.card, payload: { goals: ['interop'], workingOn: 'a thing', lookingFor: 'partners' } }))

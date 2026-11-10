@@ -21,7 +21,7 @@ const clone = (x) => JSON.parse(JSON.stringify(x))
 
 async function aRoom () {
   const dir = mkdtempSync(join(tmpdir(), 'wpi-rb-'))
-  const ctx = await createApp(cfg(dir), { awayGatherMs: 0, hostWelcomeMs: null })
+  const ctx = await createApp(cfg(dir), { openRoom: true, awayGatherMs: 0, hostWelcomeMs: null })
   const a = newIdentity(), b = newIdentity()
   const say = (who, name, payload) => ctx.log.accept(signedDocument(who, { type: TYPES[name], payload }))
   await say(a, 'join', { name: 'Person A' }); await say(b, 'join', { name: 'Person B' })
@@ -84,7 +84,7 @@ describe('the record rebuilds from members\' copies with the server off', () => 
   // The ceiling only keeps a hung child process from stalling the suite; the waits inside poll for a condition.
   test('from running mirrors, after the room is switched off (agent/mirror.js, agent/rebuild.js)', { timeout: 300_000 }, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wpi-rbm-'))
-    const ctx = await createApp(cfg(dir), { awayGatherMs: 0, hostWelcomeMs: null })
+    const ctx = await createApp(cfg(dir), { openRoom: true, awayGatherMs: 0, hostWelcomeMs: null })
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
     const room = `http://127.0.0.1:${ctx.server.address().port}`
     const a = newIdentity()
