@@ -25,8 +25,8 @@ describe('For you: a private count of what waits on a person', () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-for-you-'))
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, checkEveryMinutes: 0, boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }
     ctx = await createApp(config, { resolver: createResolver(), hostWelcomeMs: null, wakeFetch: async () => ({ ok: true, status: 200 }) })
-    await new Promise((r) => ctx.server.listen(0, r))
-    base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${ctx.server.address().port}`
     await ctx.board.refresh()
     assert.equal((await send(ada, 'join', { name: 'Ada' })).status, 201)
     assert.equal((await send(bo, 'join', { name: 'Bo' })).status, 201)

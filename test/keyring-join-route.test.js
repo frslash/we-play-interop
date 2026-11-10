@@ -36,8 +36,8 @@ describe('Keyring joins through the live route (test community only)', () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-keyring-'))
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, publicUrl: PUBLIC, checkEveryMinutes: 0, boardDataUrl: 'data:application/json,{}', llm: { ...baseConfig.llm, apiKey: '' }, joinTestMembers: [member.did] }
     ctx = await createApp(config, { hostWelcomeMs: null })
-    await new Promise((r) => ctx.server.listen(0, r))
-    base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${ctx.server.address().port}`
   })
   after(async () => { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) })
 

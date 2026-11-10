@@ -7,6 +7,7 @@ import { differences, inEffect } from '../shared/rules.js'
 import { AGREED } from './rules.js'
 import { KINDS as RESOURCE_KINDS, RESOURCES as CURATED } from '../../public/resources.js'
 import { gist } from './weaver.js'
+import { repoOf } from './shelf.js'
 
 export function info (ctx) {
   const { config, log, llm, weaver } = ctx, st = log.state
@@ -20,6 +21,8 @@ export function info (ctx) {
     sandbox: config.sandbox || false,
     branch: config.workspaceBranch || 'main',
     fediverse: ctx.activitypub?.summary() ?? null, // the room's account on Mastodon and the fediverse: its address and how sending goes
+    community: ctx.community?.summary() ?? { set: false }, // the community whose membership pass the room takes: set or not, what answered, how checks went (counts only)
+    signIn: ctx.signIn?.view() ?? null, // signing in with a wallet: whether it is on, what a wallet would trip over, and how far sign-ins get (counts only)
     tunnel: (() => { try { const h = new URL(config.publicUrl).hostname; return /trycloudflare\.com$/i.test(h) ? 'Cloudflare’s quick tunnel' : /ngrok/i.test(h) ? 'an ngrok tunnel' : null } catch { return null } })(),
     mode: st.mode,
     head: log.head(),
@@ -227,6 +230,7 @@ export function read (ctx, path) {
   if (p === '/api/state') return state(ctx)
   if (p === '/api/map') return mapView(ctx)
   if (p === '/api/sources') return ctx.sources.view()
+  if (p === '/api/shelf' || p.startsWith('/api/shelf/')) return shelf(ctx, p, q)
   if (p === '/api/steps') return ctx.facilitator.view()
   if (p === '/api/resources') return resourcesView(ctx, q)
   if (p === '/api/messages') return messages(ctx, q)
@@ -238,6 +242,17 @@ export function read (ctx, path) {
   if (p.startsWith('/api/participants/')) return participant(ctx, decodeURIComponent(p.slice(18)))
   if (p.startsWith('/api/credentials/')) return credential(ctx, decodeURIComponent(p.slice(17)))
   throw new Error(`nothing at ${p}`)
+}
+
+/** The projects shelf: /api/shelf (what is on it), /api/shelf/files, /api/shelf/read and /api/shelf/search (inside one project). */
+export async function shelf (ctx, path, q = {}) {
+  const s = ctx.shelf
+  if (!s) throw Object.assign(new Error('this room has no projects shelf'), { status: 404 })
+  if (path === '/api/shelf') return s.view()
+  if (path === '/api/shelf/files') return s.files(q.project, { under: q.under })
+  if (path === '/api/shelf/read') return s.read(q.project, q.path, { from: q.from, to: q.to })
+  if (path === '/api/shelf/search') return s.search(q.project, q.q, { under: q.under, max: q.max, exact: q.exact === '1' || q.exact === 'true' || q.exact === true })
+  throw Object.assign(new Error('the shelf answers at /api/shelf, /api/shelf/files, /api/shelf/read and /api/shelf/search'), { status: 404 })
 }
 
 export function participant (ctx, did) {
@@ -327,15 +342,18 @@ export function resourcesView (ctx, { kind, q } = {}) {
   const st = ctx.log.state, name = (did) => (did ? st.nameOf(did) : null)
   const notes = (r) => (r?.notes ?? []).map((n) => ({ text: n.text, by: name(n.by), ...(n.agent ? { agent: name(n.agent) } : {}), at: n.at, id: n.hash }))
   const seen = new Set(), list = []
+  // a github.com repository on the shelf's registry: agents read its code in the room, at one named commit
+  const onShelf = new Set(ctx.shelf?.all().map((p) => p.id) ?? [])
+  const code = (url) => { const repo = ctx.shelf && repoOf(url); return repo && onShelf.has(repo.toLowerCase()) ? { code: { project: repo, read: `code_files, read_code and search_code with project "${repo}"`, files: `/api/shelf/files?project=${encodeURIComponent(repo)}` } } : {} }
   for (const c of CURATED) {
     const key = resourceKey(c.url), r = st.resources.get(key)
     seen.add(key)
-    list.push({ title: c.title, url: c.url, kind: c.kind, by: c.by, status: c.status ?? '', about: c.about ?? '', ...(c.source ? { source: c.source, read: `read_file with file "source:${c.source}": the room's own copy` } : {}), notes: notes(r) })
+    list.push({ title: c.title, url: c.url, kind: c.kind, by: c.by, status: c.status ?? '', about: c.about ?? '', ...(c.source ? { source: c.source, read: `read_file with file "source:${c.source}": the room's own copy` } : {}), ...code(c.url), notes: notes(r) })
   }
   for (const [key, r] of st.resources) {
     if (seen.has(key)) continue
     const by = name(r.addedBy ?? r.notes[0]?.by), agent = name(r.agent ?? r.notes[0]?.agent)
-    list.push({ title: r.title ?? r.url, url: r.url, kind: r.kind || 'Added in the room', by: agent ? `${agent} for ${by}` : by, status: r.status ?? '', about: r.about ?? '', added: r.at ?? r.notes[0]?.at, id: r.hash ?? r.notes[0]?.hash, notes: notes(r) })
+    list.push({ title: r.title ?? r.url, url: r.url, kind: r.kind || 'Added in the room', by: agent ? `${agent} for ${by}` : by, status: r.status ?? '', about: r.about ?? '', added: r.at ?? r.notes[0]?.at, id: r.hash ?? r.notes[0]?.hash, ...code(r.url), notes: notes(r) })
   }
   const words = String(q ?? '').toLowerCase().split(/\s+/).filter(Boolean)
   const hit = (r) => (!kind || r.kind.toLowerCase() === String(kind).toLowerCase()) &&

@@ -8,11 +8,14 @@ export const config = {
   port: int(env.PORT, 3000),
   production: env.NODE_ENV === 'production',
   publicUrl: (env.PUBLIC_URL || '').replace(/\/$/, ''),
+  onFly: Boolean(env.FLY_APP_NAME), // set by Fly's platform: the room is behind Fly's proxy, which writes fly-client-ip and x-forwarded-proto itself (see caller.js)
+  trustedClientIpHeader: (env.TRUSTED_CLIENT_IP_HEADER || '').trim().toLowerCase(), // the one request header a proxy in front of the room sets to the caller's address (e.g. cf-connecting-ip); empty: the socket's address is used. Read only by caller.js
   activitypub: env.ACTIVITYPUB !== '0', // the room's public lines, followable from Mastodon as @room@<the host of PUBLIC_URL>; 0 turns it off
-  workspaceName: env.WORKSPACE_NAME || 'We Play Interop',
+  workspaceName: env.WORKSPACE_NAME || 'InWove',
   workspaceKey: env.WORKSPACE_KEY || '',
   databaseUrl: env.DATABASE_URL || '',
   dataDir: env.DATA_DIR || './data',
+  shelfMaxMb: int(env.SHELF_MAX_MB, 300), // how much of the data disk the projects shelf may use (other projects' public code, for agents to read); 0 turns the shelf's fetching off
   didLogFile: env.DID_LOG_FILE || '', // the room's did:webvh log, served at /.well-known/did.jsonl; empty: <DATA_DIR>/did.jsonl
   roomDidNextKey: env.ROOM_DID_NEXT_KEY || '', // public Ed25519 multikey (z6Mk…) of a recovery key the room's people make; its hash is committed in the DID log (pre-rotation). Never a secret; empty: no commitment
   roomDidUpdateKey: env.ROOM_DID_UPDATE_KEY || '', // public Ed25519 multikey (z6Mk…) the room's DID hands its update power to; empty: a fresh key on the host
@@ -46,6 +49,8 @@ export const config = {
   weaverQuietMinutes: int(env.WEAVER_QUIET_MINUTES, 2),
   vetoWindowMinutes: int(env.VETO_WINDOW_MINUTES, AGREED.proposals.vetoWindowMinutes),
   operator: env.ROOM_OPERATOR || '', // who runs this room, named on its safety card
+  communityDid: (env.COMMUNITY_DID || '').trim(), // the community (a did:webvh) whose membership pass this room takes; empty: none, and the page says so
+  signInLinkHost: (env.SIGNIN_LINK_HOST || '').trim().toLowerCase(), // the host of the link in a wallet sign-in code; empty: link.trustoverip.org, the one OpenVTC's wallets are registered to open. Never this room's own domain
   joinTestMembers: (env.JOIN_TEST_MEMBERS || '').split(',').map((x) => x.trim()).filter((x) => /^did:key:/.test(x)), // the test community's members (did:key): only they can say yes to a wallet that joined it
   hosts: (env.ROOM_HOSTS || '').split(',').map((x) => x.trim()).filter((x) => /^did:[a-z0-9]+:/.test(x)), // the people (DIDs) who host this room: they mark an account replaced once people have vouched for a lost key
   voteMinutes: int(env.VOTE_MINUTES, AGREED.votes.closeAfterMinutes), // a vote that isn't a goal or an outside change closes this long after it was proposed, and the room prompts whoever has to act

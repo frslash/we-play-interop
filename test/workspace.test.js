@@ -181,11 +181,19 @@ describe('the workspace, end to end', () => {
     ghCalls = []
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: 'test', vetoWindowMinutes: 0, approvalsRequired: 1, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, apiKey: '' } }
     ctx = await createApp(config, { resolver: createResolver({ fetch: webvh.fetch }), gh, wakeFetch, awayGatherMs: 0, hostWelcomeMs: null })
-    await new Promise((r) => ctx.server.listen(0, r))
-    base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${ctx.server.address().port}`
     await ctx.board.refresh()
   })
   after(async () => { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) })
+
+  test('a document over the 64 KB cap gets a real 413 with the usual error body', async () => {
+    const r = await fetch(`${base}/api/entries`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pad: 'x'.repeat(70_000) }) })
+    assert.equal(r.status, 413)
+    const e = await r.json()
+    assert.equal(e.payload.code, 'malformedRequest')
+    assert.match(e.payload.message, /64 KB/)
+  })
 
   test('genesis and the first board snapshot are in the log', async () => {
     const { entries } = await get('/api/log')
@@ -597,8 +605,8 @@ describe('the workspace, end to end', () => {
     const before = ctx.log.entries.map((e) => e.hash)
     await ctx.stop()
     ctx = await createApp({ ...ctx.config }, { resolver: createResolver({ fetch: webvh.fetch }), gh })
-    await new Promise((r) => ctx.server.listen(0, r))
-    base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${ctx.server.address().port}`
     assert.deepEqual(ctx.log.entries.map((e) => e.hash), before)
     assert.equal((await ctx.log.verify()).ok, true)
   })
@@ -747,7 +755,7 @@ describe('the workspace, end to end', () => {
     const made = (await send(who, 'host', { label: 'Maker bot' })).body.hosted
     await send(who, 'delegate', { delegate: made.did, scope: AGENT_SCOPES, label: 'Maker bot' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
     const link = made.connector.replace(/^https?:\/\/[^/]+/, base)
-    const patch = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# We Play Interop\n+# We Play Interop!\n'
+    const patch = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# InWove\n+# InWove!\n'
     const out = JSON.parse((await call(link, 'submit_change', { title: 'A brighter title', why: 'Agreed in the room.', patch })).result.content[0].text)
     assert.equal(out.accepted, true); assert.match(out.sha256, /^[0-9a-f]{64}$/)
     assert.equal(await (await fetch(`${base}/patches/${out.sha256}`)).text(), patch, 'anyone can read the change before approving it')

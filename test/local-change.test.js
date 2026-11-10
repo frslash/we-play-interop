@@ -16,7 +16,7 @@ import { createApp } from '../src/server/index.js'
 // submit_change: the diff goes to POST /api/changes with its signed room:change line, and the room tests
 // it and opens the pull request itself. Nothing on the agent's side needs a GitHub token.
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const PATCH = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# We Play Interop\n+# We Play Interop, from a local agent\n'
+const PATCH = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# InWove\n+# InWove, from a local agent\n'
 const sha = (t) => createHash('sha256').update(t).digest('hex')
 
 describe('a change from a local agent', () => {
@@ -33,8 +33,8 @@ describe('a change from a local agent', () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-local-change-'))
     const board = { generated: new Date().toISOString().slice(0, 10), projects: [], credentialProfiles: { profiles: {} }, runs: [] }
     ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(board)), llm: { ...baseConfig.llm, apiKey: '', anthropicKey: '', provider: 'openai' } })
-    await new Promise((r) => ctx.server.listen(0, r))
-    base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${ctx.server.address().port}`
     assert.equal((await send(person, 'join', { name: 'Person K' })).status, 201)
     assert.equal((await send(stranger, 'join', { name: 'Person S' })).status, 201)
     const d = await send(person, 'delegate', { delegate: agent.did, scope: AGENT_SCOPES, label: 'Local agent' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })

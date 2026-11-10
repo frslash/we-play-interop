@@ -13,7 +13,7 @@ const setup = (opts = {}) => {
   let t = Date.parse('2026-11-09T12:00:00Z')
   const room = newIdentity(), member = newRoomPersona()
   const desk = new JoinDesk({ room, host: 'host.test', resolver: createResolver(), now: () => t, ...opts })
-  desk.roomName = 'We Play Interop'; desk.seed(member.did)
+  desk.roomName = 'InWove'; desk.seed(member.did)
   const clock = { advance: (ms) => { t += ms }, now: () => t }
   const request = (joiner, token, over = {}) => joinRequest(joiner, { room: room.did, host: 'host.test', token, nonce: desk.challenge(), ...over })
   const invite = (m = member) => desk.invite(invitation(m, { room: room.did, nonce: desk.challenge() }))
@@ -130,8 +130,8 @@ describe('P4 wallet joins (test members only)', () => {
   })
 
   test('9. the join screen names the room and the host domain, and says the code alone lets nobody in', () => {
-    const w = joinScreenWords({ roomName: 'We Play Interop', hostDomain: 'interop.example' })
-    assert.match(w, /We Play Interop/); assert.match(w, /interop\.example/); assert.match(w, /a member of the room has to say yes/)
+    const w = joinScreenWords({ roomName: 'InWove', hostDomain: 'interop.example' })
+    assert.match(w, /InWove/); assert.match(w, /interop\.example/); assert.match(w, /a member of the room has to say yes/)
   })
 
   test('Security must-fix: an invite needs a signed presentation; a bare DID, a wrong key or a replay is refused', async () => {

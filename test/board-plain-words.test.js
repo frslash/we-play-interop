@@ -25,8 +25,8 @@ async function room () {
   const fired = []
   const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, voteMinutes: 10, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }
   const ctx = await createApp(config, { resolver: createResolver(), hostWelcomeMs: null, wakeFetch: async (url, init) => { fired.push(JSON.parse(init.body)); return { ok: true, status: 200 } }, gh: async () => [] })
-  await new Promise((r) => ctx.server.listen(0, r))
-  const base = `http://localhost:${ctx.server.address().port}`
+  await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+  const base = `http://127.0.0.1:${ctx.server.address().port}`
   await ctx.board.refresh()
   ctx.weaver.llm = { configured: false }
   const postDoc = async (doc) => { const r = await fetch(`${base}/api/entries`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc) }); return { status: r.status, body: await r.json() } }

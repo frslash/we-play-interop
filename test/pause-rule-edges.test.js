@@ -23,8 +23,8 @@ const COME_BACK = ['Its card says what it is here to do and whose projects it wo
 async function room (keys) {
   const dir = mkdtempSync(join(tmpdir(), 'wpi-pause-edges-'))
   const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }, { hostWelcomeMs: null })
-  await new Promise((r) => ctx.server.listen(0, r))
-  const base = `http://localhost:${ctx.server.address().port}`
+  await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+  const base = `http://127.0.0.1:${ctx.server.address().port}`
   ctx.weaver.llm = { configured: false }
   const post = async (doc) => { const r = await fetch(`${base}/api/entries`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc) }); return { status: r.status, body: await r.json() } }
   const send = (id, name, payload, extra) => post(signedDocument(id, { type: TYPES[name], payload, ...extra }))

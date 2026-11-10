@@ -31,8 +31,8 @@ describe('see_photo', () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-photo-'))
     const board = { generated: new Date().toISOString().slice(0, 10), projects: [], credentialProfiles: { profiles: {} }, runs: [] }
     ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(board)), llm: { ...baseConfig.llm, apiKey: '', anthropicKey: '', provider: 'openai' } })
-    await new Promise((r) => ctx.server.listen(0, r))
-    base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${ctx.server.address().port}`
     await send(person, 'join', { name: 'Person A' })
     sha = createHash('sha256').update(bytes).digest('hex')
     const up = await fetch(base + '/api/media', { method: 'POST', headers: { 'content-type': 'image/png', 'x-wpi-upload': JSON.stringify(signedDocument(person, { type: TYPES.upload, payload: { sha256: sha, type: 'image/png' } })) }, body: bytes })

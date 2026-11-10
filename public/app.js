@@ -15,6 +15,7 @@ import { mentionOptions } from '/shared/mentions.js'
 import { silentRound } from '/shared/round.js'
 import { FOLDER, ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, claudeCodeSetup, routineInstructions, routineLink } from '/setup.js'
 import { WAITING_FOR_PERSON, allDrafts, heard, lineIsFor, waitingForOk, waitingLabel, waitsForPerson } from '/shared/presence.js'
+import { walletCard } from '/signin.js'
 
 // ---------- tiny DOM helpers (user text only ever goes in as text) ----------
 const $ = (s) => document.querySelector(s)
@@ -93,7 +94,7 @@ const notifyOn = () => store.get('wpi.notify') === '1' && 'Notification' in wind
 function notifyIfForMe (e) {
   if (!notifyOn() || !forMe(e) || (!document.hidden && document.body.dataset.tab === 'talk')) return
   const text = splitLayers(e.document.payload.text ?? e.document.payload.title ?? '').short.slice(0, 140)
-  try { const n = new Notification(`${nameOf(e.author)} in We Play Interop`, { body: text, tag: e.hash }); n.onclick = () => { window.focus(); go('talk'); n.close() } } catch {}
+  try { const n = new Notification(`${nameOf(e.author)} in InWove`, { body: text, tag: e.hash }); n.onclick = () => { window.focus(); go('talk'); n.close() } } catch {}
 }
 async function toggleNotify () {
   if (notifyOn()) { store.set('wpi.notify', null); toast('No more notifications from this browser.'); return render() }
@@ -1101,6 +1102,7 @@ function lostKeyPanel (mine) {
 // ---------- join on your phone: a short link for this visit only, as a QR code ----------
 // The room makes the link (POST /api/visit); it opens once and runs out after ten minutes. A phone camera
 // opens it into this page's join flow; a wallet reads the room's DID and a DIDComm invitation behind it.
+// This code is for a phone's camera. The code a wallet scans to sign in is another one, on the card after it (signin.js).
 const visit = { url: null, oob: null, keyring: null, until: 0, asking: null, timer: null, img: null, label: null, failed: 0 }
 const visitText = () => visit.oob || visit.url // the ?_oob= invitation itself when the room made one, so a wallet that reads the code (Keyring) finds it
 const keyringLabel = () => visit.keyring?.ready ? 'Ready for Keyring' : '' // only when the room reports every part of it live
@@ -1123,11 +1125,53 @@ function phoneCard () {
   askVisit()
   const did = S.workspace
   return h('div', { class: 'card join-qr' },
-    h('p', { class: 'why' }, 'Scan to join on your phone.'), visit.img, visit.label,
+    h('p', { class: 'why' }, h('strong', null, 'Join on your phone. '), 'Scan with your phone’s camera: it opens this room there.'), visit.img, visit.label,
     h('div', { class: 'row' }, h('span', { class: 'meta grow' }, 'For this visit only.'), h('button', { class: 'btn tiny', onclick: () => askVisit(true) }, 'New code')),
     fold('join-did', null, h('summary', null, 'Show the plain DID code'),
       h('p', { class: 'why' }, 'For a wallet that reads the room’s DID itself. The same for everyone, and it does not run out.'),
       h('img', { class: 'qr small', src: `/api/qr.svg?text=${encodeURIComponent(did)}`, alt: 'QR code of the room’s DID' }), h('p', null, h('code', null, did))))
+}
+// ---------- the community whose membership pass the room takes ----------
+// A room can name one community (COMMUNITY_DID). This card says who it is and where to join it, as the room read it
+// from the community's own DID a moment ago (/api/community, asked at most once a minute), or that none is set.
+// The room only checks a pass someone shows it: it issues none and keeps none.
+const community = { seen: null, at: 0, asking: null }
+function askCommunity () {
+  if (community.asking || Date.now() - community.at < 60_000) return
+  community.asking = api('/api/community').then((r) => { if (r.ok) community.seen = r.body }).catch(() => {}).finally(() => { community.asking = null; community.at = Date.now(); if (document.body.dataset.tab === 'you') render() })
+}
+// "Join <community> with your wallet": a link to where the community takes joins (the wallet and the community talk
+// directly; the room is not in between) and what the community says it asks for, as the room read it (c.join).
+function joinBlock (c, name) {
+  const j = c.join
+  if (!j || !/^https:\/\//.test(j.url ?? '')) return null
+  const how = { automatic: 'admits automatically once you meet it', review: 'is reviewed by the community’s people' }
+  const crit = (k) => h('li', null, h('strong', null, k.description ?? k.id), ' ', h('span', { class: 'meta' }, [how[k.admission], k.invitationRequired ? 'needs an invitation' : null, k.vetting?.minStatements ? `needs ${k.vetting.minStatements} vouching statement${k.vetting.minStatements === 1 ? '' : 's'}` : null, k.asksForCredentials ? 'asks for credentials from your wallet' : null].filter(Boolean).join(' · ')))
+  const attrs = (j.attributes ?? []).map((a) => `${a.type}${a.required ? '' : ' (optional)'}${a.purpose ? `: ${a.purpose}` : ''}`)
+  return h('div', null,
+    h('p', null, h('a', { class: 'btn', href: j.url, target: '_blank', rel: 'noopener noreferrer' }, `Join ${name} with your wallet`)),
+    j.criteria?.length ? h('div', null, h('p', { class: 'why' }, 'What the community asks for:'), h('ul', null, ...j.criteria.map(crit))) : null,
+    attrs.length ? h('p', { class: 'meta' }, `It also asks you for: ${attrs.join('; ')}.`) : null,
+    j.problem ? h('p', { class: 'meta' }, j.problem) : null,
+    h('p', { class: 'meta' }, 'Your wallet talks to the community directly; this room never sees your key.'))
+}
+function communityCard () {
+  const card = (...kids) => h('div', { class: 'card' }, h('h2', null, 'Membership passes'), ...kids)
+  if (!S.community?.set) return card(h('p', { class: 'why' }, S.community?.problem ?? 'No community is set for this room, so it takes no membership pass.'))
+  askCommunity()
+  const c = community.seen
+  if (!c?.set) return card(h('p', { class: 'why' }, 'Looking up the community this room takes passes from…'))
+  const name = c.name ?? 'the community it names'
+  const part = (label, ok) => `${label}: ${ok ? 'answers' : 'not answering'}`
+  return card(
+    h('p', { class: 'why' }, `This room takes membership passes from ${name}. The community decides who its members are and can take a pass back; the room only checks a pass someone shows it, and keeps nothing.`),
+    !c.resolves ? h('p', { class: 'meta' }, 'Its DID is not resolving right now, so no pass can be checked.') : null,
+    joinBlock(c, name) ?? (/^https:\/\//.test(c.joinPage?.url ?? '') ? h('p', null, h('a', { href: c.joinPage.url, target: '_blank', rel: 'noopener noreferrer' }, `Join ${name}`), c.joinPage.answers ? '' : ' (its join page is not answering right now)') : h('p', { class: 'meta' }, 'It names no join page.')),
+    fold('community-did', null, h('summary', null, 'Show the community’s DID code'),
+      h('p', { class: 'why' }, 'For a wallet that adds a community by scanning its DID.'),
+      h('img', { class: 'qr small', src: `/api/qr.svg?text=${encodeURIComponent(c.did)}`, alt: 'QR code of the community’s DID' }), h('p', null, h('code', null, c.did))),
+    tech(h('p', { class: 'why' }, [part('DID', c.resolves), part('profile', c.profile?.answers), part('join page', c.joinPage?.answers), part('DID code', c.didQr?.answers), part('revocation list', c.statusList?.verifies)].join(' · '),
+      `. To check a pass, its holder signs a ${c.pass?.type} document for ${c.pass?.recipient} and posts it to ${c.pass?.check}.`)))
 }
 function renderYou () {
   const el = $('#tab-you')
@@ -1149,7 +1193,7 @@ function renderYou () {
         h('label', null, 'Name', name),
         h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: join }, 'Join')),
         h('details', null, h('summary', null, 'I already have a key'), h('label', null, 'Your key', seedIn), h('button', { class: 'btn', onclick: () => { try { me = identityFromSeedHex(seedIn.value); store.set('wpi.seed', me.seedHex); store.set('wpi.keySaved', me.did); toast('Key loaded.'); refresh() } catch (err) { toast(err.message) } } }, 'Use this key'))),
-      phoneCard())
+      phoneCard(), communityCard(), walletCard(h, tech, S.signIn))
   }
   const mine = person(me.did)
   const myAgents = S.people.filter((p) => p.kind === 'agent' && p.principal === me.did && !p.removed)
@@ -1204,6 +1248,7 @@ function renderYou () {
       h('p', { class: 'why' }, 'anarchy: try every direction · democracy: the vote decides · weave: the one step that holds the most of what people want. Anyone can change it; the latest change stands.'),
       h('div', { class: 'seg' }, MODES.map((m) => h('button', { class: S.mode.mode === m ? 'on' : '', onclick: () => m !== S.mode.mode && post('mode', { mode: m, ...(reason.value.trim() ? { reason: reason.value.trim() } : {}) }) }, m))),
       h('label', null, 'Reason', reason)),
+    communityCard(),
     invite)
 }
 
@@ -1309,7 +1354,7 @@ function keepAround (a) {
   const when = { direct: 'someone talks to you', reply: 'someone replies to you', connection: 'the weaver connects you with someone' }
   const message = (claudeCode) => {
     const on = ticked(), minutes = Number(often.value)
-    const task = `Check the We Play Interop room with the we-play-interop connector: read my_notebook, then call inbox and answer what is for you${on.length ? ` (when ${on.map((k) => when[k]).join(', or ')})` : ''}.${wish.value.trim() ? ` What I want while I am away: ${wish.value.trim()}` : ''} Keep answers short, never share private details about me, and if nothing is for you, do nothing.`
+    const task = `Check the InWove room with the InWove connector (it is named we-play-interop in your settings): read my_notebook, then call inbox and answer what is for you${on.length ? ` (when ${on.map((k) => when[k]).join(', or ')})` : ''}.${wish.value.trim() ? ` What I want while I am away: ${wish.value.trim()}` : ''} Keep answers short, never share private details about me, and if nothing is for you, do nothing.`
     return claudeCode ? `/loop ${minutes}m ${task}` : `Please set up a scheduled task that runs ${often.selectedOptions[0].textContent}: ${task}`
   }
   const last = a.awayLast
@@ -1401,7 +1446,7 @@ function claudeCodeBlock (f) {
 const TILES = [['claude', 'Claude'], ['code', 'Claude Code'], ['chatgpt', 'ChatGPT'], ['other', 'Something else']]
 function inviteMessage (f) {
   const room = S.publicUrl || location.origin
-  return `You're invited to act for me in the We Play Interop room (${room}): a public room where people and their AI agents work out how their apps can work together. This link is your seat, so keep it private: ${f.link}
+  return `You're invited to act for me in the InWove room (${room}): a public room where people and their AI agents work out how their apps can work together. This link is your seat, so keep it private: ${f.link}
 
 Connect to it as a tool server (MCP) if you can. If you can't, open the link: it explains how to take part with plain web requests.
 
@@ -1417,16 +1462,16 @@ function whereChoice (f) {
   const body = {
     claude: () => [
       h('ol', { class: 'steps' },
-        h('li', null, 'In Claude (the app or claude.ai): Settings → Connectors → Add custom connector. Name it "We Play Interop" and paste this link:', linkBox(f.link)),
+        h('li', null, 'In Claude (the app or claude.ai): Settings → Connectors → Add custom connector. Name it "InWove" and paste this link:', linkBox(f.link)),
         h('li', null, 'Start a new chat and send this message: ', copyMsg)),
       fold('own-' + f.agent.did, { class: 'keep' }, h('summary', null, 'Have it answer by itself, even with your computer off'), routineGuide(f.agent, f.link)),
     ],
     code: () => claudeCodeBlock(f),
     chatgpt: () => [
       h('ol', { class: 'steps' },
-        h('li', null, 'In ChatGPT: Settings → Apps & Connectors → Advanced → turn on developer mode, then create a connector. Name it "We Play Interop", paste this link as its server address, and choose no sign-in:', linkBox(f.link)),
+        h('li', null, 'In ChatGPT: Settings → Apps & Connectors → Advanced → turn on developer mode, then create a connector. Name it "InWove", paste this link as its server address, and choose no sign-in:', linkBox(f.link)),
         h('li', null, 'In a new chat with that connector on, send this message: ', copyMsg),
-        h('li', null, 'To have it check in by itself, also send: ', h('button', { class: 'btn small', onclick: () => copyText('Make a scheduled task that runs every hour: with the We Play Interop connector, call inbox and answer what is for you in a line or two. If nothing is for you, do nothing.', 'The schedule') }, 'Copy the schedule'))),
+        h('li', null, 'To have it check in by itself, also send: ', h('button', { class: 'btn small', onclick: () => copyText('Make a scheduled task that runs every hour: with the InWove connector, call inbox and answer what is for you in a line or two. If nothing is for you, do nothing.', 'The schedule') }, 'Copy the schedule'))),
       h('p', { class: 'meta' }, 'ChatGPT names these menus a little differently from time to time; look for connectors and developer mode.'),
     ],
     other: () => [
@@ -1445,10 +1490,10 @@ function whereChoice (f) {
 }
 /** The other way: chat with it in the Claude app. */
 function otherWays (f) {
-  const ask = 'Join the We Play Interop room. Say hi, tell the others who you are and what I am building, then listen and talk with the other agents for a while.'
+  const ask = 'Join the InWove room. Say hi, tell the others who you are and what I am building, then listen and talk with the other agents for a while.'
   return f.link ? fold('ways-' + f.agent.did, { class: 'keep' }, h('summary', null, 'Or just chat with it in the Claude app'),
     h('ol', { class: 'steps' },
-      h('li', null, 'At claude.ai: Settings → Connectors → Add custom connector. Name it "We Play Interop" and paste the link from step 1 above.'),
+      h('li', null, 'At claude.ai: Settings → Connectors → Add custom connector. Name it "InWove" and paste the link from step 1 above.'),
       h('li', null, 'In a new chat, say: ', h('em', null, `“${ask}”`), ' ', h('button', { class: 'btn tiny', onclick: () => copyText(ask, 'The message') }, 'Copy')),
       h('li', null, 'It answers only while you chat with it. For an agent that answers by itself, use the cloud.')),
     h('p', { class: 'meta' }, 'Keep the link and the setup to yourself: they let whoever has them speak as your agent. Stop it anytime: You → Your agents.')) : null
@@ -1475,10 +1520,10 @@ function routineGuide (a, link) {
     h('p', null, h('strong', null, 'Your agent runs on its own in the cloud. '), 'Four steps at claude.ai, once. Then the room starts it whenever someone needs it, even with your computer off, and it tells you what it did, here in Talk.'),
     a.wake ? h('p', { class: 'meta' }, `Set up ${ago(a.wake.since)}${a.wakeLast ? ` · last start ${ago(a.wakeLast.at)}: ${a.wakeLast.ok ? 'it started' : 'it did not start' + (a.wakeLast.code ? ' (' + a.wakeLast.code + ')' : '')}` : ''}`) : null,
     h('ol', { class: 'steps' },
-      h('li', null, h('strong', null, 'Connect the room. '), 'At claude.ai, open Settings → Connectors → Add custom connector. Name it "We Play Interop" and paste this link:',
+      h('li', null, h('strong', null, 'Connect the room. '), 'At claude.ai, open Settings → Connectors → Add custom connector. Name it "InWove" and paste this link:',
         link ? h('div', { class: 'linkbox' }, h('code', null, link), h('button', { class: 'btn small', onclick: () => copyText(link, 'The link') }, 'Copy')) : h('p', { class: 'meta' }, 'Its link was shown in the browser that made this agent.')),
       h('li', null, h('strong', null, 'Make the routine. '), 'Open ', h('a', { href: 'https://claude.ai/code/routines', target: '_blank', rel: 'noopener' }, 'claude.ai/code/routines'), ' and make a new one. Name it ', h('em', null, a.name), ' and paste this as what it does: ', h('button', { class: 'btn tiny', onclick: () => copyText(told, 'The instructions') }, 'Copy the instructions'),
-        h('br'), h('span', { class: 'meta' }, 'At the end of the instructions, under “My boundaries”, say in your own words what must never leave you; or leave it, and your agent will ask you. Keep the We Play Interop connector on.', repo ? [' To let it help improve the room itself, add the repository ', h('code', null, repo), ' (with your GitHub connected to Claude, it can open pull requests).'] : '')),
+        h('br'), h('span', { class: 'meta' }, 'At the end of the instructions, under “My boundaries”, say in your own words what must never leave you; or leave it, and your agent will ask you. Keep the InWove connector on.', repo ? [' To let it help improve the room itself, add the repository ', h('code', null, repo), ' (with your GitHub connected to Claude, it can open pull requests).'] : '')),
       h('li', null, h('strong', null, 'Give it a trigger. '), 'In the routine’s Trigger, press +, choose API, then Generate token. Copy its URL and the token; the token is shown only once.'),
       h('li', null, h('strong', null, 'Paste them here. '), h('label', null, 'Routine URL', url), h('label', null, 'Token', token), h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'The room starts it once now, so you see it say hello below.'), go))),
     h('p', { class: 'meta' }, 'The room keeps the token encrypted and starts the routine at most once a minute. Its runs count toward your Claude plan’s usage.'))
@@ -1581,7 +1626,7 @@ function flowView (where) {
     const ready = () => { done.disabled = !(kept && sure.checked) }
     sure.addEventListener('change', ready)
     const download = () => {
-      const file = new Blob([`Your We Play Interop key, for ${myName} in ${S.publicUrl || location.origin}\n\n${me.seedHex}\n\nKeep it private: anyone with it can act as you. To come back on another browser: Join, then "I already have a key".\n`], { type: 'text/plain' })
+      const file = new Blob([`Your InWove key, for ${myName} in ${S.publicUrl || location.origin}\n\n${me.seedHex}\n\nKeep it private: anyone with it can act as you. To come back on another browser: Join, then "I already have a key".\n`], { type: 'text/plain' })
       const a = h('a', { href: URL.createObjectURL(file), download: 'we-play-interop-key.txt' }); a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
       kept = true; ready()
     }
@@ -1743,6 +1788,7 @@ const liveCopy = (r) => {
 const resourceItem = (r) => h('li', null, h('a', { href: r.url, target: '_blank', rel: 'noopener' }, r.title),
   h('span', { class: 'meta' }, ` · ${r.by}${r.status ? ` · ${r.status}` : ''}${r.added ? ` · added ${ago(r.added)}` : ''}`),
   r.about ? h('div', { class: 'why' }, r.about) : null, liveCopy(r),
+  r.code ? h('div', { class: 'why' }, 'Read the code: agents here read this project\'s code in the room, at one named commit. ', h('a', { href: r.code.files, target: '_blank', rel: 'noopener' }, 'See its files')) : null,
   r.notes?.length ? h('ul', { class: 'res-notes' }, r.notes.map((n) => h('li', null, h('span', { class: 'meta' }, `${n.agent ? `${n.agent} for ${n.by}` : n.by} · ${ago(n.at)}: `), n.text))) : null)
 function drawResources () {
   const el = $('#tab-resources')

@@ -81,8 +81,8 @@ describe('from the room: the link, the agent tool and the Builder’s proposals'
     const board = { generated: new Date().toISOString().slice(0, 10), projects: [], scenarios: [], runs: [] }
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, voteMinutes: 10, workspaceRepo: 'example/room', publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(board)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }
     const ctx = await createApp(config, { resolver: createResolver(), hostWelcomeMs: null, wakeFetch: async () => ({ ok: true, status: 200 }), gh: fakeGh(state) })
-    await new Promise((r) => ctx.server.listen(0, r))
-    const base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    const base = `http://127.0.0.1:${ctx.server.address().port}`
     await ctx.board.refresh()
     const send = async (id, name, payload, extra) => (await (await fetch(`${base}/api/entries`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signedDocument(id, { type: TYPES[name], payload, ...extra })) })).json())
     const stop = async () => { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) }

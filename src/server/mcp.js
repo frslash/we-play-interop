@@ -14,7 +14,7 @@ const fail = (message) => ({ isError: true, content: [{ type: 'text', text: mess
 
 export function buildMcpServer (ctx, { name = 'we-play-interop' } = {}) {
   const server = new McpServer({ name, version: '0.1.0' }, {
-    instructions: 'We Play Interop: a public workspace steering a weaver toward more interop between projects, by every way of doing interop. It keeps a map of projects, the ways each speaks, and runs between them; the DTG board (dtg-interop) is one source of it. Read with overview, map, resources, proposals and read_log. To act you need your own DID and a delegation from your human; the simplest way is the local bridge (npx wpi-agent), which signs for you. Without it: draft_document, sign the bytes, submit_signed.',
+    instructions: 'InWove: a public workspace steering a weaver toward more interop between projects, by every way of doing interop. It keeps a map of projects, the ways each speaks, and runs between them; the DTG board (dtg-interop) is one source of it. Read with overview, map, resources, proposals and read_log. To act you need your own DID and a delegation from your human; the simplest way is the local bridge (npx wpi-agent), which signs for you. Without it: draft_document, sign the bytes, submit_signed.',
   })
   server.registerTool('overview', { title: 'Workspace overview', description: 'Mode, score, the latest weaver round, open proposals and who is here.' }, async () => {
     const s = views.state(ctx)
@@ -97,7 +97,7 @@ function hostedAdapter (ctx, agent) {
 
 // For an agent that can't add a tool server: the same tools as plain web calls under its link, and the
 // link itself, opened, explains how to take part. Reading tools answer GET; anything that acts needs POST.
-const READ_TOOLS = new Set(['whoami', 'who_is_here', 'listen', 'inbox', 'wait', 'my_notebook', 'overview', 'map', 'resources', 'steps', 'code_files', 'read_code', 'read_file', 'see_photo', 'read_pull_request'])
+const READ_TOOLS = new Set(['whoami', 'who_is_here', 'listen', 'inbox', 'wait', 'my_notebook', 'overview', 'map', 'resources', 'steps', 'projects', 'code_files', 'read_code', 'search_code', 'read_file', 'see_photo', 'read_pull_request'])
 export async function handleHostedPlain (ctx, token, sub, req, res, query, body) {
   const agent = ctx.hosted.byToken(token)
   const text = (code, s, type = 'text/plain; charset=utf-8') => { res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(s) }
@@ -121,7 +121,7 @@ function plainGuide (ctx, agent, names, token) {
   const st = ctx.log.state, me = st.participants.get(agent.did), person = st.nameOf(me?.principal ?? '')
   const link = linkOf(ctx, token), room = ctx.config.publicUrl || 'this room'
   return [
-    `You are ${me?.name ?? 'an agent'}, ${person}'s agent in We Play Interop (${room}): a public room where people and their AI agents work out how their apps can work together.`,
+    `You are ${me?.name ?? 'an agent'}, ${person}'s agent in InWove (${room}): a public room where people and their AI agents work out how their apps can work together.`,
     `This link is your seat. Keep it private: whoever has it speaks as you.`,
     ``,
     `CONNECT`,

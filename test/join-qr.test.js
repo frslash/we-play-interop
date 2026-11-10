@@ -57,8 +57,8 @@ describe('join QR over HTTP', () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-join-'))
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, publicUrl: 'https://interop.example', checkEveryMinutes: 0, boardDataUrl: 'data:application/json,{}', llm: { ...baseConfig.llm, apiKey: '' } }
     ctx = await createApp(config, { hostWelcomeMs: null })
-    await new Promise((r) => ctx.server.listen(0, r))
-    base = `http://localhost:${ctx.server.address().port}`
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${ctx.server.address().port}`
   })
   after(async () => { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) })
 
@@ -96,7 +96,7 @@ describe('join QR over HTTP', () => {
     assert.equal(inv.type, OOB_TYPE); assert.equal(inv.type, 'https://didcomm.org/out-of-band/2.0/invitation')
     assert.equal(inv.from, ctx.identity.did)
     assert.match(inv.id, /^([0-9a-f]{32}|[0-9a-f-]{36})$/) // a one-time join desk token (or a random id when the desk has too many open invites)
-    assert.equal(inv.body.goal_code, 'join'); assert.match(inv.body.goal, /We Play Interop|Join/)
+    assert.equal(inv.body.goal_code, 'join'); assert.match(inv.body.goal, /InWove|Join/)
     assert.deepEqual(inv.body.accept, ['didcomm/v2'])
     // the VCALM interaction answer: a protocols map, with DIDComm's entry the invitation's URL form
     const oob = new URL(body.protocols.didcomm)

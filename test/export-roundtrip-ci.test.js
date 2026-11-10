@@ -22,8 +22,8 @@ const roomConfig = (dataDir) => ({ ...baseConfig, dataDir, databaseUrl: '', work
 async function liveRoom () {
   const roomDir = mkdtempSync(join(tmpdir(), 'wpi-ert-room-'))
   const ctx = await createApp(roomConfig(roomDir), { awayGatherMs: 0, hostWelcomeMs: null })
-  await new Promise((r) => ctx.server.listen(0, r))
-  const base = `http://localhost:${ctx.server.address().port}`, person = newIdentity()
+  await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+  const base = `http://127.0.0.1:${ctx.server.address().port}`, person = newIdentity()
   const send = async (name, payload) => (await fetch(`${base}/api/entries`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signedDocument(person, { type: TYPES[name], payload })) })).json()
   await send('join', { name: 'Person A' })
   await send('card', { goals: ['interop'], workingOn: 'a thing', lookingFor: 'partners' })

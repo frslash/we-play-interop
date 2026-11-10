@@ -1,7 +1,9 @@
-// We Play Interop: one small server. Reads are public; every write is a signed
+// InWove: one small server. Reads are public; every write is a signed
 // Trust Task document, verified and appended to the hash-chained log.
 import { handleRoomDid, ensureRoomDid, growRoomDid } from './roomdid.js'
 import { JoinRoute } from './join-route.js'
+import { Door, serveRoomTasks } from './door.js'
+import { Community } from './community.js'
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -33,12 +35,17 @@ import { Media } from './media.js'
 import { Changes, MAX_PATCH } from './changes.js'
 import { Workshop } from './workshop.js'
 import { Sources } from './sources.js'
+import { Shelf, namedRepos, pinsFromCommunity } from './shelf.js'
+import { RESOURCES as CURATED_RESOURCES } from '../../public/resources.js'
 import { Cursors } from './cursors.js'
 import { AGREED } from './rules.js'
 import { ActivityPub } from './activitypub.js'
 import { CODE_RE, Visits, interaction, visitLocation } from './visits.js'
+import { SignIn, registerSignIn } from './signin.js'
+import { callerOf } from './caller.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
+import { MAX_DOCUMENT_BYTES } from '../shared/trusttask.js'
 import { createResolver } from './resolver.js'
 import * as views from './views.js'
 import { Weaver } from './weaver.js'
@@ -48,6 +55,8 @@ import { Builder } from './builder.js'
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const MAX_BODY = 64 * 1024
 const MAX_HOSTED = 5 // a person's own assistants, not a crowd of puppets
+const DOOR_PATHS = new Set(['/trust-tasks', '/v1/trust-tasks']) // the Trust Task door; some clients put /v1 after a bare origin, and both are the one door
+const DOOR_READ_MAX = 1024 * 1024 // a body past the door's 64 KiB is refused whatever its size: counting stops here, so the refusal can go out while a huge upload is still arriving
 /** A wait's answer as one line: "woke <seq> <reasons>", "quiet <seq>", "replaced <seq>", "busy <seq>" or "stop <why>". */
 function waitLine (a) {
   const seq = a.head?.seq ?? -1
@@ -113,7 +122,7 @@ function workspaceIdentity (config) {
   return id
 }
 
-export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, apFetch, awayGatherMs, hostWelcomeMs = 3000, sources } = {}) {
+export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, apFetch, communityFetch, awayGatherMs, hostWelcomeMs = 3000, sources, shelf } = {}) {
   const identity = workspaceIdentity(config)
   const db = await openDb(config)
   const log = new Log({ db, identity, resolver, config })
@@ -141,9 +150,20 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.media = new Media({ dataDir: config.dataDir })
   ctx.cursors = new Cursors({ dataDir: config.dataDir })
   ctx.sources = new Sources({ dataDir: config.dataDir, ...sources }) // `sources` lets tests point it at a fake server; the app passes none
+  // the projects shelf: every project's public code at one named commit, for agents to list, read and search (never fetched with the room's token)
+  ctx.shelf = new Shelf({ dataDir: config.dataDir, maxBytes: (config.shelfMaxMb ?? 300) * 1024 * 1024, own: config.workspaceRepo, pins: pinsFromCommunity(root), named: () => namedRepos(ctx, CURATED_RESOURCES), ...shelf }) // `shelf` lets tests play GitHub from a local server; the app passes none
   ctx.visits = new Visits() // join links for one visit each, in memory
   ctx.join = new JoinRoute({ identity, config, resolver }) // the join desk at /didcomm, for the test community only
   await ctx.join.refresh(true)
+  // the Trust Task door (door.js): other projects' software hands the room standard signed documents here. Made early, so any part of the room made after it can add its own tasks with ctx.door.register()
+  ctx.door = serveRoomTasks(new Door({ ctx }), ctx)
+  // the community whose membership pass the room takes (COMMUNITY_DID); it answers as the DID the join desk speaks as
+  ctx.community = new Community({ config, resolver, identity, room: () => ctx.join.desk.room, ...(communityFetch ? { fetch: communityFetch } : {}) })
+  // ── wallet sign-in (auth/oob/*, src/server/signin.js). This and the one line marked the same way in route() are all of it here.
+  ctx.signIn = new SignIn({ identity, config, resolver, log, door: () => ctx.door })
+  registerSignIn(ctx.door, ctx) // its six tasks go on the room's Trust Task door, beside discovery, ping and the log's lines
+  await ctx.signIn.refresh(true)
+  // ── end wallet sign-in
   ctx.types = TYPES
   ctx.changes = new Changes({ ctx, dataDir: config.dataDir })
   log.on('entry', (e) => ctx.changes.onEntry(e))
@@ -164,6 +184,37 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   log.on('entry', (e) => ctx.notNamed.onEntry(e).catch(() => {}))
   ctx.builder = new Builder({ ctx }) // builds what the board hands it, from a routine with only this repository
 
+  /**
+   * A signed line for the log, and what the room does besides appending it (a hosted agent made, what it held for
+   * someone who leaves deleted). POST /api/entries and the Trust Task door both come here, so they check, refuse and
+   * act alike. Returns { entry, duplicate, hosted? } or throws a TaskError.
+   */
+  ctx.acceptEntry = async (doc, { ip = '', origin = config.publicUrl } = {}) => {
+    if (NAME_OF[doc?.type] === 'wake') throw new TaskError('malformedRequest', 'send wake settings to /api/wake, with the link')
+    const isHost = NAME_OF[doc?.type] === 'host'
+    if (isHost && hosted.liveFor(doc.issuer, log.state) >= MAX_HOSTED) throw new TaskError('permissionDenied', `you already have ${MAX_HOSTED} hosted agents; stop one first`, { status: 403 })
+    const { entry, duplicate } = await log.accept(doc, { ip })
+    if (isHost && !duplicate) {
+      // the workspace makes and holds the agent's key, and says so in the log
+      const agent = await hosted.create(entry.author, doc.payload.label)
+      await log.appendAsWorkspace('hosted', { agent: agent.did, for: entry.author, label: doc.payload.label, request: entry.hash })
+      return { entry, duplicate, hosted: { did: agent.did, connector: `${origin}/mcp/a/${agent.token}` } }
+    }
+    if (NAME_OF[doc.type] === 'leave' && !duplicate) {
+      // leaving deletes what the room holds privately for the person and their agents; the public record stays
+      for (const a of [...log.state.participants.values()].filter((p) => p.kind === 'agent' && p.principal === entry.author)) {
+        await hosted.delete(a.did); await ctx.notebooks.delete(a.did); await waker.set(a.did, null)
+        for (const d of ctx.drafts.list(a.did)) await ctx.drafts.drop(a.did, d.id)
+      }
+      await ctx.never.set(entry.author, [])
+    }
+    if (NAME_OF[doc.type] === 'remove' && !duplicate) {
+      // removing an agent deletes what the room holds for it: its key, its notebook, its wake link
+      await hosted.delete(doc.payload.agent); await ctx.notebooks.delete(doc.payload.agent); await waker.set(doc.payload.agent, null)
+    }
+    return { entry, duplicate }
+  }
+
   const release = releaseOf(STATIC.map(([, dir]) => dir))
   const page = versioned(readFileSync(join(root, 'public/index.html'), 'utf8'), release, readdirSync(join(root, 'public')).filter((n) => n.endsWith('.js')).sort())
   const importMap = /<script type="importmap">([\s\S]*?)<\/script>/.exec(page)?.[1] ?? ''
@@ -177,14 +228,39 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     res.writeHead(status, { 'content-type': json ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8', 'access-control-allow-origin': '*', ...headers })
     res.end(json ? JSON.stringify(body, null, 2) : body)
   }
+  /** A document's body, at most 64 KB: the cap keeps one careless or hostile sender from filling the room's memory, so past it nothing more is kept, the rest is read and thrown away, and the caller answers a real 413 (destroying the socket would swallow that answer). */
   const readBody = (req) => new Promise((resolve, reject) => {
-    let size = 0; const chunks = []
-    req.on('data', (c) => { size += c.length; if (size > MAX_BODY) { reject(new TaskError('malformedRequest', 'a document is at most 64 KB', { status: 413 })); req.destroy() } else chunks.push(c) })
+    let size = 0, over = false; const chunks = []
+    req.on('data', (c) => {
+      size += c.length
+      if (over) { if (size > 16 * MAX_BODY) req.destroy(); return } // read and thrown away, up to a point: past 1 MB the sender is only holding the room's connection open, and the 413 has long been sent
+      if (size > MAX_BODY) { over = true; chunks.length = 0; reject(new TaskError('malformedRequest', 'a document is at most 64 KB', { status: 413 })) } else chunks.push(c)
+    })
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
     req.on('error', reject)
   })
-  const ipOf = (req) => String(req.headers['fly-client-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim()
-  const baseOf = (req) => config.publicUrl || `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`
+  /** A document for the door: its bytes as they arrived. One chunk past the cap is kept at most (enough for the door to say "too large" in a signed refusal), the rest is counted and thrown away. */
+  const readDoorBody = (req) => new Promise((resolve, reject) => {
+    let bytes = 0, kept = 0; const chunks = []
+    const done = (cut) => resolve({ raw: Buffer.concat(chunks), bytes, cut })
+    req.on('data', (c) => {
+      bytes += c.length
+      if (kept <= MAX_DOCUMENT_BYTES) { chunks.push(c); kept += c.length }
+      if (bytes > DOOR_READ_MAX) { req.removeAllListeners('data'); req.resume(); done(true) }
+    })
+    req.on('end', () => done(false))
+    req.on('error', reject)
+  })
+  /** The door's answer: a signed document as JSON, or nothing at all for 202, 204 and 429. Open to any origin, like the room's other public routes. */
+  const sendDoor = (res, out) => {
+    res.writeHead(out.status, { 'access-control-allow-origin': '*', 'cache-control': 'no-store', ...(out.body ? { 'content-type': 'application/json' } : {}), ...out.headers })
+    res.end(out.body)
+  }
+  /** Who is calling (caller.js decides; nothing here reads a forwarding header). */
+  const callerFor = (req) => callerOf(req, { env: config })
+  /** The address as a limit key: one the room could not confirm is marked, so it still limits but is never taken for a real network (sign-in's "same network" says unknown for it). */
+  const ipOf = (req) => { const c = callerFor(req); return c.trusted ? c.ip : 'untrusted:' + c.ip }
+  const baseOf = (req) => config.publicUrl || `${callerFor(req).https ? 'https' : 'http'}://${req.headers.host}`
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
 
   /** A join link opened: a browser goes to the page's join flow, a wallet asking for JSON gets what the room offers. Once. */
@@ -215,6 +291,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     const path = url.pathname, q = Object.fromEntries(url.searchParams)
     if (req.method === 'OPTIONS') return send(res, 204, '', { 'access-control-allow-methods': 'GET, POST', 'access-control-allow-headers': 'content-type, accept, mcp-protocol-version' })
     // the room is updating itself: say so the standard way (503 with Retry-After), so callers try again soon instead of failing
+    if (ctx.waits.stopping && DOOR_PATHS.has(path) && req.method === 'POST') return sendDoor(res, ctx.door.busy(ctx.waits.restarting().retryAfter))
     if (ctx.waits.stopping) { const a = ctx.waits.restarting(); return send(res, 503, path === '/api/wait' && q.as === 'text' ? waitLine(a) : { error: a.reason, retryAfter: a.retryAfter }, { 'retry-after': String(a.retryAfter) }) }
 
     if (path.startsWith('/mcp/a/')) {
@@ -237,9 +314,16 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     }
     if (handleRoomDid(req, res, path, { dataDir: config.dataDir, file: config.didLogFile })) return
     if (await ctx.join.handle(req, res, path, readBody, send)) return
+    if (DOOR_PATHS.has(path)) { // the Trust Task door: a signed standard document in, a signed answer out
+      if (req.method !== 'POST') return send(res, 405, { error: 'POST a signed Trust Task document here (application/json). /api/info says what this door serves and which DID to address.' }, { allow: 'POST' })
+      const { raw, bytes, cut } = await readDoorBody(req)
+      return sendDoor(res, await ctx.door.handle(raw, { origin: String(req.headers.origin ?? '').slice(0, 300), base: baseOf(req), host: String(req.headers.host ?? ''), ip: ipOf(req), userAgent: String(req.headers['user-agent'] ?? '').slice(0, 300), https: callerFor(req).https, bytes, cut }))
+    }
+    if (await ctx.community.handle(req, res, path, readBody, send)) return
+    if (await ctx.signIn.handle(req, res, path, q, send)) return // ── wallet sign-in: what a page reads to start one, and what the room holds for a browser key (reads only)
     if (path === '/.well-known/webfinger' || path.startsWith('/ap/')) return ctx.activitypub.handle(req, res, url)
     if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
-    if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), keyring: ctx.join.readiness({ oob: true }) }) }
+    if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), keyring: ctx.join.readiness({ oob: true }), door: ctx.door.info(baseOf(req)) }) }
     if (path === '/api/state') return send(res, 200, views.state(ctx))
     if (path === '/api/steps') return send(res, 200, ctx.facilitator.view())
     if (path === '/api/map' || path === '/api/board') return send(res, 200, views.mapView(ctx))
@@ -333,6 +417,10 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     }
     if (path.startsWith('/api/files/')) { const r = await views.fileText(ctx, path.slice(11), q); return r ? send(res, 200, r) : send(res, 404, { error: 'no file in this room has that sha256, or it has no text (a photo). The path is /api/files/<the sha256 a message lists under files>' }) }
     if (path.startsWith('/api/photos/')) { const r = views.photo(ctx, path.slice(12)); return r ? send(res, 200, r) : send(res, 404, { error: 'no photo in this room has that sha256' }) }
+    if (path === '/api/shelf' || path.startsWith('/api/shelf/')) { // other projects' public code, each at one commit: list, read, search
+      if (req.method !== 'GET') return send(res, 405, { error: 'GET only' })
+      try { return send(res, 200, await views.shelf(ctx, path, q)) } catch (err) { if (!err.status) console.error('shelf:', err); return send(res, err.status ?? 500, { error: err.status ? err.message : 'the shelf could not answer' }, err.status === 429 ? { 'retry-after': '60' } : {}) }
+    }
     if (path === '/api/sources') return send(res, 200, ctx.sources.view())
     if (path.startsWith('/api/sources/')) { // the cached copy, exactly as the source sent it
       const body = ctx.sources.body(decodeURIComponent(path.slice(13)))
@@ -417,30 +505,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       let doc
       try {
         doc = JSON.parse(await readBody(req))
-        if (NAME_OF[doc?.type] === 'wake') throw new TaskError('malformedRequest', 'send wake settings to /api/wake, with the link')
-        const isHost = NAME_OF[doc?.type] === 'host'
-        if (isHost && hosted.liveFor(doc.issuer, log.state) >= MAX_HOSTED) throw new TaskError('permissionDenied', `you already have ${MAX_HOSTED} hosted agents; stop one first`, { status: 403 })
-        const { entry, duplicate } = await log.accept(doc, { ip: ipOf(req) })
-        if (isHost && !duplicate) {
-          // the workspace makes and holds the agent's key, and says so in the log
-          const agent = await hosted.create(entry.author, doc.payload.label)
-          await log.appendAsWorkspace('hosted', { agent: agent.did, for: entry.author, label: doc.payload.label, request: entry.hash })
-          const base = config.publicUrl || `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`
-          return send(res, 201, { ...entry, hosted: { did: agent.did, connector: `${base}/mcp/a/${agent.token}` } })
-        }
-        if (NAME_OF[doc.type] === 'leave' && !duplicate) {
-          // leaving deletes what the room holds privately for the person and their agents; the public record stays
-          for (const a of [...log.state.participants.values()].filter((p) => p.kind === 'agent' && p.principal === entry.author)) {
-            await hosted.delete(a.did); await ctx.notebooks.delete(a.did); await waker.set(a.did, null)
-            for (const d of ctx.drafts.list(a.did)) await ctx.drafts.drop(a.did, d.id)
-          }
-          await ctx.never.set(entry.author, [])
-        }
-        if (NAME_OF[doc.type] === 'remove' && !duplicate) {
-          // removing an agent deletes what the room holds for it: its key, its notebook, its wake link
-          await hosted.delete(doc.payload.agent); await ctx.notebooks.delete(doc.payload.agent); await waker.set(doc.payload.agent, null)
-        }
-        return send(res, duplicate ? 200 : 201, entry)
+        const { entry, duplicate, hosted: made } = await ctx.acceptEntry(doc, { ip: ipOf(req), origin: baseOf(req) })
+        return send(res, duplicate ? 200 : 201, made ? { ...entry, hosted: made } : entry)
       } catch (err) { return refuse(res, err, doc) }
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method not allowed' })
@@ -474,7 +540,21 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     send(res, 404, 'not found')
   }
 
-  const server = createServer((req, res) => route(req, res).catch((err) => { console.error(err); if (!res.headersSent) send(res, 500, { error: 'internal error' }) }))
+  /**
+   * A body that is not all in within `bodyTimeoutMs` of the request's start is answered 408 and the connection closed, before
+   * any route (the door included) is waiting on it. It protects the room's connections and memory from one slow sender that
+   * trickles a body to hold a socket and its buffered bytes open. Only requests that carry a body; a long-lived GET is not one.
+   */
+  const bodyMs = config.bodyTimeoutMs ?? 30_000
+  const guardBody = (req, res) => {
+    if (!['POST', 'PUT', 'PATCH'].includes(req.method) || !(bodyMs > 0)) return
+    const timer = setTimeout(() => {
+      if (!res.headersSent) { res.writeHead(408, { 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': '*', connection: 'close' }); res.end(JSON.stringify({ error: 'the request body did not arrive in time' })) }
+      res.once('finish', () => req.destroy()); setTimeout(() => req.destroy(), 1000).unref() // let the 408 out first; the room never waits on a sender longer than that
+    }, bodyMs)
+    timer.unref(); req.once('end', () => clearTimeout(timer)); req.once('close', () => clearTimeout(timer))
+  }
+  const server = createServer((req, res) => { guardBody(req, res); route(req, res).catch((err) => { console.error(err); if (!res.headersSent) send(res, 500, { error: 'internal error' }) }) })
 
   const timers = []
   ctx.start = async () => {
@@ -491,7 +571,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     ctx.sources.start()
     timers.push(setInterval(() => closeVotes(ctx).catch((e) => console.error('closing votes:', e)), 30_000))
   }
-  ctx.stop = async () => { ctx.waits.stop(); timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.sources.stop(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { ctx.waits.stop(); ctx.signIn.stop(); timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.sources.stop(); ctx.shelf.flush(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }

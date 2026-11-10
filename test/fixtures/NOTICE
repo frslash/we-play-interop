@@ -1,0 +1,15 @@
+Files under test/fixtures/ that come from other projects, copied unchanged so the room's tests can check its reader
+against credentials another project's code made. Each keeps its own licence.
+
+test/fixtures/rltp/encounter-cards.json
+test/fixtures/rltp/dtg-vrc-foreign.json
+  From the Real Life Trust Protocol (RLTP), https://github.com/real-life-org/trust-protocol,
+  commit 48c5efb9f9d968dc746c52b6c77be7c706f723e0, paths vectors/encounter-cards.json and
+  vectors/dtg-vrc-foreign.json. Licensed under the Apache License, Version 2.0 (test/fixtures/rltp/LICENSE is that
+  repository's LICENSE file). Not modified. All keys in them are test keys made for the vectors.
+  encounter-cards.json holds the credentials another project's verifier read at the interopathon of 9 November 2026
+  (Project-Weave-Tech/interopathon, rltp-geb/README.md, "Direction 2").
+
+Not copied, because their repositories state no licence that allows it (the tests read them from a path you give):
+  Project-Weave-Tech/interopathon rltp-geb/geb-vrcs.json and rltp-naoms/*.json   set INTEROPATHON_DIR
+  a credential made by TrustStackers' p2p-trust-stack (GPL-3.0-only)             set TRUSTSTACKERS_CREDENTIAL

@@ -88,7 +88,7 @@ export class Executor {
   provenance (pr) {
     const st = this.log.state, base = this.config.publicUrl || '(this workspace)'
     return [
-      `Proposed in the We Play Interop workspace ${base} and approved there.`,
+      `Proposed in the InWove workspace ${base} and approved there.`,
       `- proposal: log entry \`${pr.hash}\` by ${st.nameOf(pr.principal)} (${pr.principal})`,
       `- approved by: ${st.holding(pr).dids.map((d) => `${st.nameOf(d)} (${d})${pr.approvals.get(d).sha ? ` for commit ${pr.approvals.get(d).sha}` : ''}`).join(', ')}`,
       `- votes: ${JSON.stringify(st.tally(pr))}; mode ${st.mode.mode}`,
