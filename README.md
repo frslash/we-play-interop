@@ -536,7 +536,7 @@ Check a running room's door with `LIVE_ROOM_URL=https://<workspace> node --test 
 
 ## Credentials the room reads
 
-The projects around this room all issue one family of credential: **DTG credentials**, W3C Verifiable Credentials (VC 2.0) with a Data Integrity proof (`eddsa-jcs-2022`), typed `DTGCredential` plus what they are. The room reads that family (`src/shared/dtg.js`, which also runs in the page and in agents). It issues none of them, and nothing here puts anyone's key on the room's server.
+The projects around this room all issue one family of credential: **DTG credentials**, W3C Verifiable Credentials (VC 2.0) with a Data Integrity proof (`eddsa-jcs-2022`), typed `DTGCredential` plus what they are. The room reads that family (`src/shared/dtg.js`, which also runs in the page and in agents). The one it issues is the room's own membership pass (below); nothing here puts anyone's key on the room's server.
 
 | Kind | `type` | Who issues it here | What the room does with it |
 |---|---|---|---|
@@ -555,6 +555,10 @@ What "verifies" means, and where the projects differ:
 - **Keys** come from the issuer's DID: `did:key`, `did:peer:2` (Geb, relationship DIDs), `did:peer:4` and `did:webvh`. `did:scid:vh` (TrustStackers) is not resolved yet, so such a credential is reported as *not checked*.
 
 **Known answers.** The tests check the reader against credentials other projects' code made: RLTP's published vectors (`test/fixtures/rltp`, Apache-2.0, see `test/fixtures/NOTICE`), including the encounter credentials Geb's verifier read at the interopathon of 9 November 2026. Geb's own credentials from that day are not copied (their repository states no licence): `INTEROPATHON_DIR=<a checkout of Project-Weave-Tech/interopathon> node --test test/dtg.test.js` reads them in place and checks the room signs over the same bytes Geb did.
+
+### The room's own membership pass
+
+A signed-in member can download a pass from `GET /api/me/pass` (`inwove-pass.json`): a DTG `MembershipCredential` the room signs with its own key (`<room DID>#room`, `assertionMethod`), with the member's DID as its subject, in force for 90 days. It proves one thing: the room says this DID is a member, as of the day it was made. It does not prove the person is still a member tomorrow. There is no status list: the room's own record is the status, so ask the room. To check one, run it through the reader the room itself uses: `verifyDtgCredential(pass, { keyFor, kinds: ['membership'] })` from `src/shared/dtg.js`, with `keyFor` from a resolver that can read the room's DID (`createResolver().keyFor`); it checks the room's signature and the dates.
 
 ### A community's membership pass
 
