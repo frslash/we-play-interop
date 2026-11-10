@@ -2,15 +2,11 @@
 // registering a passkey, signing out, an invite's page lookup, and the membership pass. The gate (gate.js) decides
 // which of them need a session; this file does what each one does. Nothing here writes to the log, and nothing it
 // answers or prints carries a cookie, a challenge, a code, a wrapped seed (except to the passkey that opens it) or a key.
-import { DTG_TYPE, VC_V2 } from '../shared/dtg.js'
-import { DTG_CONTEXT } from '../shared/dtg-context.js'
-import { sign } from '../shared/proof.js'
-import { uuid } from '../shared/types.js'
+import { servePass } from './pass.js'
 import { TaskError } from './log.js'
 import { PasskeyError, Passkeys, prfSaltOf, rpOf, userHandleOf, verifyRegistration, verifySignIn } from './passkey.js'
 import { Challenges, Limiter, Sessions, setCookie, tokenFromCookie } from './session.js'
 
-const PASS_DAYS = 90
 const ALGS = [-7, -8, -257]
 const REASONS = { 'inviter gone': 'inviter-left' }
 
@@ -34,14 +30,6 @@ export async function createAccess (ctx, { send: sendIt, readBody, refuse: refus
   async function begin (res, did, body) {
     const { token } = await sessions.create(did)
     return send(res, 200, body, { 'set-cookie': setCookie(token), 'cache-control': 'no-store' })
-  }
-
-  /** The room's membership pass for a member: a DTG membership credential the room signs, as the room's own key. */
-  async function pass (did) {
-    await ctx.join.refresh()
-    const room = ctx.join.room, now = Date.now(), iso = (t) => new Date(t).toISOString()
-    const credential = { '@context': [VC_V2, DTG_CONTEXT], type: ['VerifiableCredential', DTG_TYPE, 'MembershipCredential'], id: `urn:uuid:${uuid()}`, issuer: room.did, issuerScope: 'public', validFrom: iso(now), validUntil: iso(now + PASS_DAYS * 86400_000), credentialSubject: { id: did, name: nameOf(did) } }
-    return sign(credential, { seed: room.seed, verificationMethod: room.verificationMethod, created: iso(now), proofPurpose: 'assertionMethod' })
   }
 
   /** Handles one request; false when the path is not this module's. */
@@ -113,9 +101,7 @@ export async function createAccess (ctx, { send: sendIt, readBody, refuse: refus
         await passkeys.add(rec)
         return send(res, 200, { ok: true, id: rec.id }, { 'cache-control': 'no-store' })
       }
-      if (path === '/api/me/pass' && req.method === 'GET') {
-        return send(res, 200, await pass(me), { 'content-disposition': 'attachment; filename="inwove-pass.json"', 'cache-control': 'no-store' })
-      }
+      if (path === '/api/me/pass' && req.method === 'GET') { await servePass(ctx, req, res); return true } // pass.js: the room signs a DTG membership credential for a current member
       return send(res, 405, { error: 'method not allowed' })
     } catch (err) {
       if (err instanceof PasskeyError) return send(res, err.status, { error: err.message }, { 'cache-control': 'no-store' })
