@@ -1,29 +1,61 @@
-# Local or single-box: the workspace and its Postgres.
-#   cp .env.example .env   (set WORKSPACE_KEY: npm run keygen)
-#   docker compose up --build
-# For encryption at rest, keep the pgdata volume on an encrypted disk.
+# The room on one ordinary Linux server: the room's container behind Caddy, which ends HTTPS itself.
+# How to set the server up, step by step: docs/hosting.md. Short form, on the server, in this folder:
+#   cp .env.example .env     (then fill it in: PUBLIC_HOST, WORKSPACE_KEY and the rest; never commit it)
+#   docker compose up -d --build
+# This one file replaces the old local compose file (the room plus a Postgres with a fixed password): the room keeps
+# its record in its own embedded Postgres inside the one volume below, so there is nothing else to run or to secure.
+name: inwove
+
 services:
-  app:
+  room:
     build: .
+    image: inwove-room
     env_file: .env
     environment:
-      DATABASE_URL: postgres://wpi:wpi@db:5432/wpi
       NODE_ENV: production
-    ports: ["3000:3000"]
-    depends_on:
-      db: { condition: service_healthy }
+      PORT: "3000"
+      DATA_DIR: /data
+      # The room's address is the one public name; people reach it by https only (Caddy sees to that).
+      PUBLIC_URL: https://${PUBLIC_HOST:?set PUBLIC_HOST in .env}
+      # Embedded storage in the volume. To use an outside Postgres instead, delete this line and set DATABASE_URL in .env.
+      DATABASE_URL: ""
+      # The caller's address, for the per-address limits and sign-in's "same network" hint (src/server/caller.js).
+      # Caddy sets this header (deploy/Caddyfile). SAFE ONLY WHILE THIS SERVICE PUBLISHES NO PORT: the header is
+      # believed because the only way to reach the room is through Caddy. Publish the room's port, or put anything
+      # between the internet and Caddy that is not on a header Caddy overwrites, and anyone can choose their own address.
+      TRUSTED_CLIENT_IP_HEADER: x-forwarded-for
+    # No ports: here on purpose. The room answers only on the compose network, to Caddy.
+    volumes:
+      - room-data:/data
+    healthcheck: # the Dockerfile has one too; stated here so this file shows what "up" means
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "5" } }
     restart: unless-stopped
-  db:
-    image: postgres:17-alpine
+
+  caddy:
+    # Pinned by digest, which is the multi-architecture index of the official image's 2.11.9 tag. Digest read on
+    # 10 November 2026 from Docker Hub's registry (registry-1.docker.io, library/caddy, manifest 2.11.9, header
+    # Docker-Content-Digest). To move it: read the new tag's digest the same way, and change both here.
+    image: caddy:2.11.9@sha256:0c2243efcf437ab7f7a978f1027fcf0d4f9be8a75df27b1b3fbc5dbe0ffa8cf0
     environment:
-      POSTGRES_USER: wpi
-      POSTGRES_PASSWORD: wpi
-      POSTGRES_DB: wpi
-    volumes: ["pgdata:/var/lib/postgresql/data"]
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U wpi -d wpi"]
-      interval: 5s
-      retries: 10
+      PUBLIC_HOST: ${PUBLIC_HOST:?set PUBLIC_HOST in .env}
+    ports: # the only ports this server publishes besides ssh
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # Caddy's certificate and account: keep it, or Let's Encrypt is asked again at every rebuild
+      - caddy-config:/config
+    depends_on:
+      room: { condition: service_healthy }
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "5" } }
     restart: unless-stopped
+
 volumes:
-  pgdata:
+  room-data: # the room's record, keys kept beside it and everything else it writes: lives on the encrypted disk (docs/hosting.md)
+  caddy-data:
+  caddy-config:

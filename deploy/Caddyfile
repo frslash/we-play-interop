@@ -1,0 +1,16 @@
+# Caddy ends HTTPS for the room and passes plain requests to it over the compose network.
+# {$PUBLIC_HOST} is the room's public name (for example inwove.example), read from the environment the compose file
+# gives Caddy. Caddy fetches and renews its own Let's Encrypt certificate for it: that needs ports 80 and 443 open to
+# the internet and the name's DNS record pointing at this server (Cloudflare "DNS only", no proxy).
+{$PUBLIC_HOST} {
+	reverse_proxy room:3000 {
+		# The two headers the room believes (src/server/caller.js). Caddy SETS them, replacing anything the caller sent,
+		# so the last entry is always what Caddy itself saw. The caller's address goes in X-Forwarded-For, which the
+		# compose file names in TRUSTED_CLIENT_IP_HEADER; the scheme goes in X-Forwarded-Proto.
+		# Do not add trusted_proxies here: it would let an earlier proxy's word stand in for Caddy's own.
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		# live updates (server-sent events) must not be held back in a buffer
+		flush_interval -1
+	}
+}
