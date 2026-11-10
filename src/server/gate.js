@@ -63,6 +63,7 @@ export function createGate ({ sessions, members, hosted, config, openRoom = fals
     if (PLAIN_READS.has(path) || (config.activitypub && (path === '/.well-known/webfinger' || path.startsWith('/ap/')))) res.inwoveCors = true
     // who is asking
     if (path.startsWith('/mcp/a/')) {
+      res.setHeader('referrer-policy', 'no-referrer') // whatever answers: a hosted agent's link carries its secret in the path, so no page or response may hand it on in a Referer
       let token = ''
       try { token = decodeURIComponent(path.slice(7).split('/')[0]) } catch { /* not a link */ }
       const agent = token ? hosted.byToken(token) : null

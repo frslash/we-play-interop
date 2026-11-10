@@ -2,7 +2,7 @@
 // for that request only, by an agent with a live permission. The public /mcp takes a session or that header and nothing
 // else. The real bridge (agent/bridge.js) is run end to end against the room, through an MCP client over stdio.
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { after, before, describe, test } from 'node:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -137,5 +137,37 @@ describe('the bridge itself, end to end', () => {
       assert.ok(room.ctx.agentReads.stats.allowed >= 2)
     } finally { await client.close() }
     void said
+  })
+})
+
+describe('a hosted agent\'s link', () => {
+  let room, a
+  before(async () => { room = await startRoom(); a = await room.firstMember('Person A'); assert.equal((await room.linkGithub(a)).status, 201) })
+  after(() => room.stop())
+
+  test('a hosted agent\'s link: every answer under it says no-referrer, the token is kept only as a hash, and removing the agent stops the link', async () => {
+    const made = await room.say(a.id, 'host', { label: 'Linked', repos: ['acme/app'] })
+    assert.equal(made.status, 201, made.text)
+    const link = new URL(made.body.hosted.connector).pathname, token = link.split('/').pop(), did = made.body.hosted.did
+    // every response on the link, whatever it is: the guide, a tool list, a tool call, an unknown tool, a wrong method, the MCP seat, an unknown link
+    const answers = [
+      await room.call(link), await room.call(link + '/tools'), await room.call(link + '/call/whoami'), await room.call(link + '/call/nothing'),
+      await room.call(link + '/call/say'), await room.call(link, { method: 'POST', headers: MCP, body: listTools }),
+      await room.call('/mcp/a/not-a-real-link/tools'), await room.call('/mcp/a/'), await room.call('/mcp/a/' + token + 'x', { method: 'POST', headers: MCP, body: listTools }),
+    ]
+    for (const r of answers) assert.equal(r.headers.get('referrer-policy'), 'no-referrer', `${r.status} ${r.url}`)
+    assert.equal(answers[1].status, 200)
+    // hash only at rest: the secret is in no table, and the stored value is its hash
+    const { rows: tables } = await room.ctx.db.query("select table_name from information_schema.tables where table_schema = 'public'")
+    for (const { table_name: t } of tables) assert.ok(!JSON.stringify((await room.ctx.db.query(`select * from "${t}"`)).rows).includes(token), `the link's secret is not in ${t}`)
+    const row = (await room.ctx.db.query('select token_hash from hosted_agents where did = $1', [did])).rows[0]
+    assert.equal(row.token_hash, createHash('sha256').update(token).digest('hex'))
+    assert.ok(!JSON.stringify(room.ctx.hosted.byTokenHash.values().next().value).includes(token) && ![...room.ctx.hosted.byTokenHash.keys()].includes(token), 'nor in memory, as a key')
+    // removing the agent stops the link
+    assert.equal((await room.say(a.id, 'delegate', { delegate: did, scope: ['note'], repos: ['acme/app'] }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })).status, 201, 'its person switches it on')
+    assert.equal((await room.call(link + '/tools')).status, 200)
+    const rm = await room.say(a.id, 'remove', { agent: did }); assert.equal(rm.status, 201, rm.text)
+    for (const r of [await room.call(link + '/tools'), await room.call(link), await room.call(link, { method: 'POST', headers: MCP, body: listTools })]) { assert.equal(r.status, 404); assert.equal(r.headers.get('referrer-policy'), 'no-referrer') }
+    assert.equal((await room.ctx.db.query('select 1 from hosted_agents where did = $1', [did])).rows.length, 0)
   })
 })
