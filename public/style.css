@@ -431,3 +431,23 @@ label.check { display: flex; gap: 8px; align-items: center; }
 .task-toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); margin: 0 0 6px 6px; cursor: pointer; }
 .task-toggle[hidden] { display: none; }
 .task-toggle input { width: 16px; height: 16px; accent-color: var(--accent); }
+
+/* the door: until someone is signed in, only the welcome screen shows (welcome.js takes "gated" off the body) */
+.gated > :not(#welcome):not(noscript) { display: none !important; }
+body.gated { padding-bottom: 0; }
+.gate { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+.gate-card { width: 100%; max-width: 440px; padding: 20px; }
+.gate-card .brand { margin-bottom: 14px; }
+.gate-card h1 { font-size: 22px; line-height: 1.25; margin: 0 0 8px; letter-spacing: -0.01em; }
+.gate-actions { display: flex; flex-direction: column; gap: 8px; margin: 14px 0 8px; }
+.gate-actions .btn { width: 100%; }
+.gate-card label { display: block; margin: 10px 0; font-size: 14px; color: var(--muted); }
+.gate-card label input[type="text"] { display: block; width: 100%; margin-top: 4px; }
+.gate-card label.check { display: flex; align-items: center; gap: 6px; color: var(--ink); }
+.gate-card details { margin-top: 12px; }
+.gate-card pre.key { white-space: pre-wrap; word-break: break-all; padding: 10px; border-radius: 10px; background: var(--soft); font: 13px/1.4 var(--mono); user-select: all; }
+.gate-error { margin: 8px 0; padding: 8px 10px; border-radius: 10px; background: var(--bad-soft); color: var(--bad); font-size: 14px; }
+/* invitation links made in You */
+.invite-made { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.invite-made input[type="text"] { width: 100%; margin-bottom: 6px; font: 13px var(--mono); }
+.invite-made .qr.small { margin-top: 8px; }
