@@ -190,29 +190,49 @@ age -d -i inwove-backup-key.txt ~/inwove-backups/room-20261110T0300Z.tar.age | s
 
 Then run the checks in section 4. Do a trial restore on a spare server once, before you need it.
 
-The room's public record can also be saved without any key: `docker run --rm inwove-room node agent/export-log.js https://inwove.example > room-export.json` (what the public log shows; not notebooks, drafts or keys).
+The room's record can also be saved by a member: put your key in a file (see section 7) and run `docker run --rm -e WPI_MEMBER_KEY_FILE=/k -v "$PWD/member-key:/k:ro" inwove-room node agent/export-log.js https://inwove.example > room-export.json`. A member reads people-only lines too, so a member's export is the whole record (not notebooks, drafts, wake links or keys, which are not in the log). Without a key a members-only room answers every read with 401, and the tool says what to set.
 
 ## 7. Moving the record from the old room
 
+Both rooms are members-only, so every read of a room's log needs a member's session. The tools sign in with a member's own key, taken from `WPI_MEMBER_KEY_FILE` (a file holding the key: 64 hex characters) or `WPI_MEMBER_KEY`, never from a command-line argument, which would show in the process list and the shell's history. They never print or write the key. The same person must be a member of **both** rooms (the same key is a member's key in each; if you are new to the new room, the new room's owner invites you the usual way before the check below).
+
+A member sees people-only lines, so an export made with a member's key is the whole record. Without a key you cannot export a members-only room at all. Whoever exports holds every people-only line: keep the file private and delete it when the move is done.
+
 The existing commands, as `HANDOVER.md` has them, run inside the room's own image. Do this before the first start, with the room's data volume empty. (To rehearse, use another name in `PUBLIC_HOST`, then throw the rehearsal away with `docker compose down -v`: that deletes the volume.)
+
+First the key file, made so only you can read it, and deleted when you are finished (paste your key, then press Ctrl-D):
 
 ```bash
 cd /srv/inwove
+(umask 077; cat > member-key)            # your 64-hex key, then Ctrl-D
+```
+
+Then the export, the empty volume and the import:
+
+```bash
 docker compose up --no-start --build         # builds the image and makes the empty volume; starts nothing
-docker run --rm inwove-room node agent/export-log.js https://OLD-ROOM > room-export.json
+docker run --rm -e WPI_MEMBER_KEY_FILE=/k -v "$PWD/member-key:/k:ro" inwove-room node agent/export-log.js https://OLD-ROOM > room-export.json
 docker run --rm -v "$PWD/room-export.json:/in/room-export.json:ro" -v inwove_room-data:/data inwove-room node agent/import-log.js /in/room-export.json /data
 ```
 
-It refuses unless the whole chain verifies and the head matches. To keep the room's DID, also put its public log in the volume now (copy `did.jsonl` from the old room's data folder to this server's `/root/did.jsonl` first). If there is none, the room makes a rehearsal DID on its first start.
+The export prints `exported N entries, head SEQ HASH` on stderr; keep that line. The import refuses unless the whole chain verifies and the head matches. To keep the room's DID, also put its public log in the volume now (copy `did.jsonl` from the old room's data folder to this server's `/root/did.jsonl` first). If there is none, the room makes a rehearsal DID on its first start.
 
 ```bash
 docker run --rm -v /root/did.jsonl:/in/did.jsonl:ro -v inwove_room-data:/data inwove-room sh -c 'cp /in/did.jsonl /data/did.jsonl && chmod 600 /data/did.jsonl'
 docker compose up -d
-docker run --rm inwove-room node agent/verify-log.js https://inwove.example
-docker run --rm inwove-room node agent/verify-log.js https://OLD-ROOM
+docker run --rm -e WPI_MEMBER_KEY_FILE=/k -v "$PWD/member-key:/k:ro" inwove-room node agent/verify-log.js https://inwove.example
+docker run --rm -e WPI_MEMBER_KEY_FILE=/k -v "$PWD/member-key:/k:ro" inwove-room node agent/verify-log.js https://OLD-ROOM
 ```
 
-In the two reports, `"ok"` must be `true` and `"head"` (its `seq` and `hash`) the same. Cut over (DNS to this server, then tell the room) only after that.
+In the two reports, `"ok"` must be `true` and `"head"` (its `seq` and `hash`) the same. That is the proof the new room holds the same record, line for line. If you cannot sign in to the new room yet, the weaker check is the open `/healthz`: `curl -s https://inwove.example/healthz` shows `entries`, which must equal the export's `N` (and, if the old room has had no new lines since, `curl -s https://OLD-ROOM/healthz` shows the same). It proves the count only, not that the lines are the same; the import has already checked the chain and head, so use it only as a second look, and run the two `verify-log.js` checks as soon as you can sign in.
+
+When you are done, delete what holds the key and the record:
+
+```bash
+rm -f member-key room-export.json
+```
+
+Cut over (DNS to this server, then tell the room) only after the checks pass.
 
 ## 8. The room's identity
 
