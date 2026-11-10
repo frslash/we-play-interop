@@ -274,8 +274,8 @@ body[data-view="tech"] .plain-only { display: none !important; }
   .watch-grid .loom-wrap { height: calc(100vh - 230px); min-height: 520px; max-height: none; }
   .watch-grid .caps-card { margin: 0; height: calc(100vh - 230px); min-height: 520px; overflow-y: auto; }
   .watch-about { text-align: left; margin-left: 4px; }
-  #tab-talk { max-width: 860px; margin: 0 auto; }
-  #tab-talk.on.has-tasks { max-width: 1180px; display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 16px; align-items: start; }
+  #tab-talk { max-width: 1240px; margin: 0 auto; }
+  #tab-talk.on.has-tasks { max-width: 1240px; display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 16px; align-items: start; }
   #tab-talk.on.has-tasks .tasks-side { display: block; position: sticky; top: 110px; max-height: calc(100vh - 140px); overflow-y: auto; margin: 0; }
   .chat { max-height: calc(100vh - 290px); min-height: 50vh; }
   .msg { max-width: 72%; }
@@ -389,22 +389,30 @@ label.check { display: flex; gap: 8px; align-items: center; }
 .waiting-strip .waiting-head { margin-bottom: 6px; }
 @media (max-width: 420px) { .tabs .ok-count { margin-left: 2px; padding: 0 4px; font-size: 10px; } }
 
-/* Talk side by side (wide screens): people's own lines on the left, agents' on the right, one shared timeline. The
-   weaver's notices sit in the middle across both, and room events (joins, proposals, results) span the full width. */
-.chat > .lane-head { display: none; }
-@media (min-width: 900px) {
-  .chat.lanes { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 28px; row-gap: 8px; align-items: start; }
-  .chat.lanes > .lane-head { display: block; position: sticky; top: 0; z-index: 2; background: var(--bg); color: var(--muted); font-size: 12px; letter-spacing: .02em; padding: 2px 4px 6px; border-bottom: 1px solid var(--line); }
-  .chat.lanes > .lane-people { grid-column: 1; justify-self: start; max-width: 100%; }
-  .chat.lanes > .lane-people.mine { justify-self: end; }
-  .chat.lanes > .lane-agents { grid-column: 2; justify-self: start; max-width: 100%; }
-  .chat.lanes > .lane-head.lane-people, .chat.lanes > .lane-head.lane-agents { justify-self: stretch; } /* the headings cover the whole row, gap included, so lines scrolling under them don't show around the words */
-  .chat.lanes > .lane-head.lane-people { margin-right: -28px; padding-right: 32px; max-width: none; }
-  .chat.lanes > .msg.weaver { grid-column: 1 / -1; justify-self: center; max-width: min(620px, 60%); }
-  .chat.lanes > .sys, .chat.lanes > .empty { grid-column: 1 / -1; justify-self: center; }
+/* Talk's two windows: "People only" (no AI can read it) on the left, "People and AIs" on the right. Under 760px they are
+   two tabs at the top of Talk, and one shows at a time. */
+.talk-windows { display: block; }
+.talk-win h2 { font-size: 16px; margin: 0 0 2px; }
+.talk-win .win-note { margin: 0 0 6px; }
+.talk-pane-tabs { display: flex; margin: 0 0 8px; }
+.talk-pane-tabs button { flex: 1 1 0; }
+.talk-windows[data-pane="people"] .win-all, .talk-windows[data-pane="all"] .win-people { display: none; }
+@media (min-width: 760px) {
+  .talk-pane-tabs { display: none; }
+  .talk-windows, .talk-windows[data-pane] { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  .talk-windows[data-pane] .talk-win { display: block; }
+  .talk-win { min-width: 0; }
+  .talk-win .msg { max-width: 92%; }
+  #tab-talk { max-width: none; }
 }
-.lanes-toggle { margin: 0 0 6px; }
-@media (max-width: 899px) { .lanes-toggle { display: none; } }
+.win-people .chat-people { border-left: 3px solid var(--accent); padding-left: 8px; }
+.win-people .composer textarea { background: var(--soft); }
+.msg .grip { cursor: grab; user-select: none; opacity: 0.6; padding: 0 2px; font-size: 14px; line-height: 1; }
+.msg .grip:hover, .msg .grip:focus-visible { opacity: 1; }
+.msg .grip:active { cursor: grabbing; }
+.badge.shared { background: var(--good-soft); color: var(--good); font-size: 11px; padding: 0 6px; }
+.talk-win.sharing { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: var(--radius); }
+.talk-win.sharing::before { content: 'Drop to share with the AIs'; display: block; text-align: center; color: var(--accent); font-size: 13px; margin-bottom: 4px; }
 /* a photo or file dragged over Talk: show where it will land */
 #tab-talk.dropping .composer { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: var(--radius); }
 #tab-talk.dropping .composer::before { content: 'Drop to add it to your message'; display: block; text-align: center; color: var(--accent); font-size: 13px; margin-bottom: 4px; }
