@@ -43,6 +43,8 @@ export const TYPES = {
   vouch: T('member/vouch'),
   replace: T('member/replace'),
   resource: T('map/resource'),
+  invite: T('member/invite'),
+  sessionKey: T('session/key'),
 }
 export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v, k]))
 
@@ -50,7 +52,7 @@ export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => 
 export const WHO = {
   genesis: 'workspace', round: 'workspace', step: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', forYou: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
   link: 'human', vouch: 'human', replace: 'human', // a lost key: people only, never agents (room lines 772-821)
-  join: 'human', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
+  join: 'human', invite: 'human', sessionKey: 'private', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone', resource: 'anyone',
 }
 /** What a human can let an agent do (delegation scope). Approving, vetoing and delegating stay human. */
@@ -211,7 +213,15 @@ export function checkPayload (name, doc) {
       if (!str(p.name, 1, 60)) return 'name: 1 to 60 characters'
       if (p.projects !== undefined && (!Array.isArray(p.projects) || p.projects.length > 5 || !p.projects.every((s) => SLUG_RE.test(s)))) return 'projects: up to 5 board project slugs'
       if (!optStr(p.about, 280)) return 'about: at most 280 characters'
+      if (p.invite !== undefined && !(typeof p.invite === 'string' && /^[A-Za-z0-9_-]{22,64}$/.test(p.invite))) return 'invite: the code from your invite link (22 to 64 characters)'
       return null
+    case 'invite': { // one code that lets one newcomer join: the log holds only its hash, the member holds the code
+      if (!HASH_RE.test(p.codeHash ?? '')) return 'codeHash: the SHA-256 (64 hex characters) of the invite code'
+      if (!RFC3339.test(p.expiresAt ?? '')) return 'expiresAt: an RFC 3339 timestamp'
+      const ahead = Date.parse(p.expiresAt) - Date.parse(doc.issuedAt)
+      return ahead > 0 && ahead <= 14 * 86400000 ? null : 'expiresAt: after issuedAt and within 14 days'
+    }
+    case 'sessionKey': return /^[A-Za-z0-9_-]{43}$/.test(p.challenge ?? '') ? null : 'challenge: the one the room gave you (43 characters)'
     case 'delegate': {
       if (!DID_RE.test(p.delegate ?? '')) return 'delegate: the agent DID'
       if (!Array.isArray(p.scope) || !p.scope.length || !p.scope.every((s) => AGENT_SCOPES.includes(s))) return `scope: some of ${AGENT_SCOPES.join(', ')}`

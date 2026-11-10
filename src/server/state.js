@@ -1,5 +1,6 @@
 // The workspace's current state, folded from the log entry by entry.
 // Nothing here is stored on its own: restart, replay the log, same state.
+import { createHash } from 'node:crypto'
 import { checkPermissionCredential, claimsOf, grantMismatch } from '../shared/credential.js'
 import { DEFAULT_MODE, NAME_OF, resourceKey } from '../shared/types.js'
 
@@ -38,6 +39,7 @@ export class State {
     this.lastRoundAt = 0
     this.score = null // latest score snapshot payload
     this.scoreHistory = [] // compact score history from every snapshot
+    this.invites = new Map() // sha256 hex of an invite code -> { hash, by, at, expiresAt, usedBy, usedAt }: who may come in, and the ones already used up
     this.mapProjects = new Map() // slug -> project the workspace added or extended
     this.links = new Map() // hash -> a request to link an old name to a new key: { hash, from, old, why, at, vouches: Map(person -> { at, hash }), replacedAt }
     this.tasks = new Map() // task line hash -> { hash, for, by, from, text, at, thread, doneAt, doneBy, doneText }: what someone was asked to do, until they say they did
@@ -70,6 +72,22 @@ export class State {
   membersOf (slug) { return [...this.participants.values()].filter((p) => p.kind === 'human' && p.projects?.includes(slug)) }
   isAgent (did) { return this.participants.get(did)?.kind === 'agent' }
   isHuman (did) { return this.participants.get(did)?.kind === 'human' }
+  /** Whether this DID is a member now: a person who joined, has not left and has not been replaced by a new key. */
+  isCurrentMember (did) { const p = this.participants.get(did); return p?.kind === 'human' && !p.left && !p.replacedBy }
+  /** The people in the room now (the room itself and agents are not counted). */
+  humanCount () { let n = 0; for (const p of this.participants.values()) if (p.kind === 'human' && !p.left && !p.replacedBy) n++; return n }
+  /**
+   * Whether an invite code lets someone in right now: { ok: true, invite } or { ok: false, reason }. The code must be one
+   * a current member (or the room) wrote, still in date and not used. Reasons: unknown, expired, used, inviter gone.
+   */
+  inviteFor (code, now = Date.now()) {
+    const inv = typeof code === 'string' ? this.invites.get(createHash('sha256').update(code, 'utf8').digest('hex')) : null
+    if (!inv) return { ok: false, reason: 'unknown' }
+    if (inv.usedBy) return { ok: false, reason: 'used' }
+    if (Date.parse(inv.expiresAt) <= now) return { ok: false, reason: 'expired' }
+    if (inv.by !== this.workspace && !this.isCurrentMember(inv.by)) return { ok: false, reason: 'inviter gone' }
+    return { ok: true, invite: inv }
+  }
   nameOf (did) { return this.participants.get(did)?.name ?? (did === this.workspace ? 'the weaver' : did.slice(0, 18) + '…') }
 
   /** The live delegation a given agent holds, if any. */
@@ -93,9 +111,14 @@ export class State {
         break
       case 'join': {
         const prev = this.participants.get(e.author)
+        if (p.invite && !(prev?.kind === 'human' && !prev.left && !prev.replacedBy)) { // a newcomer's join uses its invite up
+          const inv = this.invites.get(createHash('sha256').update(p.invite, 'utf8').digest('hex'))
+          if (inv && !inv.usedBy) { inv.usedBy = e.author; inv.usedAt = e.timestamp }
+        }
         this.participants.set(e.author, { ...prev, left: undefined, did: e.author, kind: 'human', name: p.name, projects: p.projects ?? [], about: p.about ?? '', since: prev?.since ?? e.timestamp })
         break
       }
+      case 'invite': this.invites.set(p.codeHash, { hash: e.hash, by: e.author, at: e.timestamp, expiresAt: p.expiresAt, usedBy: null, usedAt: null }); break
       case 'delegate': {
         this.delegations.set(e.hash, { hash: e.hash, issuer: e.author, delegate: p.delegate, scope: p.scope, ask: p.ask ?? [], label: p.label ?? '', expiresAt: doc.expiresAt, revoked: false, endedBy: null, seq: e.seq, credential: credentialOf(doc, this.workspace) })
         const prev = this.participants.get(p.delegate)
