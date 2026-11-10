@@ -1,6 +1,6 @@
 # Blocked: the pause rule is already in pull request #107
 
-Step bd5204aebbad asks Faolan's side or Builder to open a pull request that adds the pause rule. Faolan's side opened
+Step bd5204aebbad asks the founder's side or Builder to open a pull request that adds the pause rule. the founder's side opened
 it already: **#107, "Pause someone by a vote of the room, with a why and a proven way back"** (branch
 `feature/pause-by-vote`, commit a141f2a). A second pull request with the same rule would split the votes, so Builder
 did not build one.

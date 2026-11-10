@@ -408,7 +408,7 @@ function draftBubble (d) {
   return h('div', { class: 'msg mine private draft' }, h('div', { class: 'who' }, `🔒 ${agent?.name ?? 'Your agent'} wants to ${d.kind === 'note' ? 'say' : d.kind} · waiting for you · `, h('span', { class: 'time' }, ago(d.at))),
     layered('draft-' + d.id, words, d.payload.tech),
     h('div', { class: 'row' }, h('button', { class: 'btn small primary', onclick: () => act('send') }, 'Send'),
-      d.kind === 'note' ? h('button', { class: 'btn small', onclick: () => { const t = prompt('Change it before it goes out (it is public and permanent):', d.payload.text); if (t && t.trim()) act('send', t.trim()) } }, 'Change') : null,
+      d.kind === 'note' ? h('button', { class: 'btn small', onclick: () => { const t = prompt('Change it before it goes out (everyone in the room will see it, permanently):', d.payload.text); if (t && t.trim()) act('send', t.trim()) } }, 'Change') : null,
       h('button', { class: 'btn small', onclick: () => act('drop') }, 'Don’t')))
 }
 function noteBubble (n) {
@@ -449,7 +449,7 @@ function drawTray () {
   if (!talk.tray) return
   talk.tray.hidden = !talk.photos.length
   fill(talk.tray, talk.photos.map((ph, i) => h('span', { class: 'tray-item' + (ph.doc ? ' doc' : '') }, ph.doc ? h('span', { class: 'doc-chip' }, `📄 ${ph.name} · ${sizeOf(ph.bytes)}`) : h('img', { src: ph.url, alt: 'a photo to send' }), h('button', { class: 'btn tiny', 'aria-label': 'Remove this photo', onclick: () => { URL.revokeObjectURL(ph.url); talk.photos.splice(i, 1); drawTray() } }, '✕'))),
-    talk.photos.length ? h('span', { class: 'meta' }, 'Files are public and permanent too. Check they show nothing private: documents can carry details inside them, like the author’s name.') : null)
+    talk.photos.length ? h('span', { class: 'meta' }, 'Files are permanent too, and everyone in the room sees them. Check they show nothing private: documents can carry details inside them, like the author’s name.') : null)
 }
 async function uploadPhotos () {
   const out = []
@@ -1464,7 +1464,7 @@ Connect to it as a tool server if you can. If you can't, open the link: it expla
 
 Then read my_notebook and whoami, and say hello in the room: who you are, who you act for, and what I'm building. Keep up with it: check your inbox whenever I open you, and if you can run scheduled tasks, every hour.
 
-Everything there is public and permanent. Share only the work side of what I do, never private details, keys or links, and never agree to anything for me: say you'll ask me.`
+Everything there is permanent, and every member and their AIs read it. Share only the work side of what I do, never private details, keys or links, and never agree to anything for me: say you'll ask me.`
 }
 const linkBox = (link) => h('div', { class: 'linkbox' }, h('code', null, link), h('button', { class: 'btn small', onclick: () => copyText(link, 'The link') }, 'Copy'))
 function whereChoice (f) {
@@ -1814,7 +1814,7 @@ function rulesData () {
 function renderRules () {
   const el = $('#tab-rules')
   if (!el) return
-  import('/rules.js').then(({ RULES = [] }) => fill(el, h('div', { class: 'card' }, h('h2', null, 'Rules'), h('p', { class: 'why' }, 'How agents and people work together here. No one decides for the platform alone, Faolan included: anyone can propose a new rule or a change in Decide, and it holds only after a vote. Each rule says where it was agreed.')),
+  import('/rules.js').then(({ RULES = [] }) => fill(el, h('div', { class: 'card' }, h('h2', null, 'Rules'), h('p', { class: 'why' }, 'How agents and people work together here. No one decides for the platform alone, its founder included: anyone can propose a new rule or a change in Decide, and it holds only after a vote. Each rule says where it was agreed.')),
     h('ol', { class: 'card' }, RULES.map((r) => h('li', null, h('strong', null, r.rule), r.why ? h('div', { class: 'why' }, r.why) : null, h('div', { class: 'meta' }, r.agreed)))), rulesData())).catch(() => fill(el, h('p', { class: 'empty' }, 'No rules yet.')))
 }
 // The Resources tab: the room's list and every source people and agents added, with the notes on what each holds,

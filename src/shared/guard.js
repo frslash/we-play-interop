@@ -41,7 +41,7 @@ export function textsOf (payload) {
 export function secretIn (payload) {
   for (const t of textsOf(payload)) {
     const hit = findSecret(t)
-    if (hit) return `This looks like ${hit.what}, so it was not posted: everything in this room is public and permanent. Take it out (or describe it without the secret part) and send it again.`
+    if (hit) return `This looks like ${hit.what}, so it was not posted: everything in this room is permanent and every member reads it. Take it out (or describe it without the secret part) and send it again.`
   }
   return null
 }

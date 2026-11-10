@@ -1,7 +1,7 @@
 // Photos in the room. A photo is stored once, under the sha256 of its bytes, and a message carries only
 // that hash (and its size), so the signed record stays small and still proves which picture was meant.
 // Pages re-encode a photo before sending it, which drops its location and camera data; the room refuses a
-// JPEG that still carries Exif data. Photos are public and permanent like everything else here.
+// JPEG that still carries Exif data. Photos are permanent and seen by every member, like everything else here.
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'

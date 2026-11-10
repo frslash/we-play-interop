@@ -652,7 +652,7 @@ describe('the workspace, end to end', () => {
     const call = (link, name, args) => fetch(link, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) }).then((r) => r.json())
     // the guard: a key, a token or a private link is refused with words for its author
     const leak = await send(human, 'note', { text: 'my key is sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123', kind: 'message' })
-    assert.equal(leak.status, 422); assert.match(leak.body.payload.message, /looks like an API key.*public and permanent/)
+    assert.equal(leak.status, 422); assert.match(leak.body.payload.message, /looks like an API key.*permanent and every member reads it/)
     assert.equal((await send(human, 'note', { text: 'connect with https://room.example/mcp/a/AbCdEfGhIjKlMnOpQrStUv', kind: 'message' })).status, 422)
     assert.equal((await send(human, 'note', { text: 'An ordinary line about keys and tokens.', kind: 'message' })).status, 201)
     // a never-say list: the browser sends salted hashes; the room refuses that person's lines with it, names where, not what

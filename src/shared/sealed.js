@@ -1,6 +1,6 @@
 // P2, sealed notebooks: the client side. One room per person; the host keeps ciphertext only.
 // TEST MEMBERS AND TEST VALUES ONLY until Security's gate opens (Railroad step 3, a second
-// implementation, Security's code read, Faolan's call on lost keys). Key distribution between
+// implementation, Security's code read, the founder's call on lost keys). Key distribution between
 // members (MLS, T1/T2) is NOT here: `Notebook` takes the epoch keys it is handed.
 // Uses WebCrypto (AES-256-GCM); on plain http a browser has no crypto.subtle, so this runs
 // where the page is served over https (Security condition 12 asks for that anyway).
