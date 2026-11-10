@@ -1670,17 +1670,21 @@ function flowView (where) {
       h('p', { class: 'meta' }, 'Whoever runs this server needs to create a GitHub app for it: the hosting guide, “Linking GitHub”.'),
       bring.again ? h('button', { class: 'btn', onclick: () => { bring.again = false; renderFlows(true) } }, 'Back') : null,
     ]
-    const linked = person(me.did).repos ?? [], have = new Set(linked.map((r) => r.name.toLowerCase())), pend = GH.pending
+    // the room trusts what GitHub said for ten minutes (github-link.js); past that the page says so and asks to link again, instead of failing on Make
+    const linked = person(me.did).repos ?? [], have = new Set(linked.map((r) => r.name.toLowerCase())), ranOut = Boolean(GH.pending && Date.parse(GH.pending.expiresAt) <= Date.now()), pend = ranOut ? null : GH.pending
+    clearTimeout(bring.lapse); if (pend) bring.lapse = setTimeout(() => { if (bring.open || watch.welcome) renderFlows(true) }, Math.max(0, Date.parse(pend.expiresAt) - Date.now()) + 500)
     const rows = linked.map((r) => ({ name: r.name, how: r.verified ? 'on GitHub' : 'you said' }))
     for (const n of pend?.repos ?? []) if (!have.has(n.toLowerCase())) rows.push({ name: n, how: 'on GitHub' })
     for (const n of bring.typed) if (!rows.some((r) => r.name.toLowerCase() === n.toLowerCase())) rows.push({ name: n, how: 'you said' })
     const shown = (pend ?? linked.length) ? rows : []
+    if (shown.length === 1 && !bring.repos.size) bring.repos.add(shown[0].name.toLowerCase()) // one repository: ticked for them
     const chosen = () => shown.map((r) => r.name).filter((n) => bring.repos.has(n.toLowerCase()))
     const label = keep(h('input', { type: 'text', maxlength: 60 }), 'bring.label')
     if (drafts['bring.label'] === undefined) label.value = `${myName}'s Claude`
     const priv = keep(h('input', { type: 'text', maxlength: 201, placeholder: 'owner/name', autocomplete: 'off' }), 'bring.private')
     const make = h('button', { class: 'btn primary', onclick: (ev) => makeAgent(ev.currentTarget) }, 'Make my agent')
-    const ready = () => { make.disabled = !chosen().length }
+    const hint = h('p', { class: 'meta', hidden: true }, 'Tick at least one repository above, then make your agent.')
+    const ready = () => { hint.hidden = chosen().length > 0 } // the button stays pressable; this says what is missing
     async function makeAgent (btn) {
       const picked = chosen(), nameIt = label.value.trim() || `${myName}'s Claude`
       if (!picked.length) return toast('Tick at least one repository.')
@@ -1688,7 +1692,7 @@ function flowView (where) {
       try {
         const fresh = picked.filter((n) => !have.has(n.toLowerCase()))
         if (fresh.length) { // somewhere new: the room records them first (it checks them against what GitHub just said)
-          if (!pend) return toast('Link your GitHub again first, then add them.')
+          if (!pend || Date.parse(pend.expiresAt) <= Date.now()) { renderFlows(true); return toast('Your GitHub link ran out (it lasts ten minutes). Link your GitHub again, then make your agent.') }
           const listed = new Set(pend.repos.map((n) => n.toLowerCase()))
           const all = [...linked.map((r) => ({ name: r.name, verified: r.verified })), ...fresh.map((n) => ({ name: n, verified: listed.has(n.toLowerCase()) && !bring.typed.some((t) => t.toLowerCase() === n.toLowerCase()) }))]
           if (all.length > 30) return toast('That is more than 30 repositories linked; leave some out.')
@@ -1721,16 +1725,17 @@ function flowView (where) {
       h('h3', null, '1. Link your GitHub'),
       pend || linked.length
         ? h('p', { class: 'why' }, `✓ Linked as ${pend?.login ?? person(me.did).github}. `, linkBtn)
-        : [h('p', { class: 'why' }, 'An agent joins only for repositories you work on, so the room asks GitHub who you are and which public repositories you have. It sees nothing else, never your password, and keeps nothing GitHub gives it beyond that list.'), linkBtn],
-      shown.length ? [
+        : [ranOut ? h('p', { class: 'gate-error', role: 'alert' }, 'Your GitHub link ran out: it lasts ten minutes. Link your GitHub again to go on.') : h('p', { class: 'why' }, 'An agent joins only for repositories you work on, so the room asks GitHub who you are and which public repositories you have. It sees nothing else, never your password, and keeps nothing GitHub gives it beyond that list.'), linkBtn],
+      pend || linked.length ? [
         h('h3', null, '2. Which of your repositories does this agent work on?'),
-        h('div', { class: 'checks' }, boxes),
+        shown.length ? h('div', { class: 'checks' }, boxes) : h('p', { class: 'why' }, 'GitHub lists no public repositories for you. If this agent works on a private one, add it by its name here.'),
         h('div', { class: 'row' }, priv, h('button', { class: 'btn small', onclick: addPrivate }, 'Add a private repository')),
         h('p', { class: 'meta' }, 'Everyone in the room can see the repositories you link, and which of them GitHub lists for you.'),
         h('h3', null, '3. Name it'),
         h('label', null, 'Its name in the room', label),
         h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'It starts on Ask me first: each line waits for your OK in Talk until you let it talk on its own (You → Your agents). Its permission lasts 90 days unless you stop it sooner.'),
           bring.again ? h('button', { class: 'btn', onclick: () => { bring.again = false; renderFlows(true) } }, 'Back') : null, make),
+        hint,
       ] : bring.again ? h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn', onclick: () => { bring.again = false; renderFlows(true) } }, 'Back')) : null,
     ]
   }

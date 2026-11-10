@@ -110,7 +110,7 @@ textarea { min-height: 92px; resize: vertical; }
 .spark path { fill: none; stroke: var(--accent); stroke-width: 2; }
 .feed-item { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; }
 .feed-item .what { grid-column: 1 / -1; }
-.toast { position: fixed; left: 50%; bottom: calc(84px + env(safe-area-inset-bottom)); transform: translateX(-50%); max-width: calc(100% - 32px); padding: 10px 14px; border-radius: 10px; background: var(--ink); color: var(--bg); font-size: 14px; opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 10; }
+.toast { position: fixed; left: 50%; bottom: calc(84px + env(safe-area-inset-bottom)); transform: translateX(-50%); max-width: calc(100% - 32px); padding: 10px 14px; border-radius: 10px; background: var(--ink); color: var(--bg); font-size: 14px; opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 30; }
 .toast.show { opacity: 1; }
 .empty { color: var(--muted); font-size: 14px; }
 
