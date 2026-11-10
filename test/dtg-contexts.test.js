@@ -75,8 +75,9 @@ describe('the room reads, names and counts the three addresses', () => {
 })
 
 test('nothing the room or the agent bridge writes uses an older address', () => {
-  // every place the two older addresses appear, outside the reader (src/shared/dtg.js), tests and fixtures, docs and the README
+  // every place the two older addresses appear, outside the two readers (src/shared/dtg.js for other projects' credentials,
+  // src/shared/dtg-context.js for the room's own), tests and fixtures, docs and the README
   let out = ''
-  try { out = execFileSync('git', ['grep', '-nE', 'firstperson\\.network/credentials|trustoverip\\.org/dtg/credentials', '--', 'src', 'agent', 'public', ':!src/shared/dtg.js'], { cwd: root, encoding: 'utf8' }) } catch (e) { if (e.status !== 1) throw e } // status 1: no match
+  try { out = execFileSync('git', ['grep', '-nE', 'firstperson\\.network/credentials|trustoverip\\.org/dtg/credentials', '--', 'src', 'agent', 'public', ':!src/shared/dtg.js', ':!src/shared/dtg-context.js'], { cwd: root, encoding: 'utf8' }) } catch (e) { if (e.status !== 1) throw e } // status 1: no match
   assert.equal(out, '', `an older DTG context address is written outside the reader:\n${out}`)
 })
