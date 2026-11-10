@@ -1,0 +1,215 @@
+# Running the room on one server
+
+For whoever hosts the room. One Linux server runs the room and Caddy, which fetches and renews the https certificate. Members' data is encrypted on the wire (https) and on the disk (an encrypted volume). You, the host, can read it: nothing here hides it from you.
+
+Names used below are placeholders: `inwove.example` is your room's public name, `OLD-ROOM` is the address of the room you are moving from. Replace them. The commands assume you are logged in to the server as `root` (Hetzner's default with an SSH key). Lines that start with `#` are comments, not commands.
+
+## 1. The server and the name
+
+1. In the Hetzner Cloud console, create a server: Ubuntu 26.04, any type with 2 vCPU and 4 GB of memory, your SSH key added, no backups add-on needed (section 6 does its own).
+2. Create a **Volume** of 10 GB (the smallest) in the same location and attach it to the server. When asked, choose **not** to format or mount it: section 2 does that, encrypted.
+3. Create a **Firewall** that allows inbound TCP 22, 80 and 443 and nothing else, and apply it to the server. (Docker's published ports go around the server's own `ufw`, so the firewall is Hetzner's, not `ufw`.)
+4. In Cloudflare, add an `A` record for `inwove.example` pointing at the server's IPv4 address (and an `AAAA` record for its IPv6 address). Set **Proxy status: DNS only** (the grey cloud). Caddy ends https itself; see "Never" at the end for why.
+5. Log in and bring the system up to date:
+
+```bash
+ssh root@inwove.example
+apt-get update && apt-get -y upgrade && apt-get -y install git
+```
+
+## 2. An encrypted disk for the room's data
+
+The volume is encrypted with LUKS. Docker's whole data folder (images, the room's volume, container logs) is then kept on it.
+
+```bash
+apt-get -y install cryptsetup
+VOL=$(ls /dev/disk/by-id/scsi-0HC_Volume_* | head -n 1); echo "$VOL"   # must print exactly one device
+openssl rand -base64 33                                                  # a passphrase: put it in your password manager now
+cryptsetup luksFormat --type luks2 "$VOL"                                # type YES, then paste the passphrase twice
+cryptsetup open "$VOL" roomdata
+mkfs.ext4 -L roomdata /dev/mapper/roomdata
+mkdir -p /mnt/roomdata
+chattr +i /mnt/roomdata                                                  # nothing can be written here while the disk is not mounted
+mount /dev/mapper/roomdata /mnt/roomdata
+cryptsetup luksHeaderBackup "$VOL" --header-backup-file /root/roomdata-luks-header.img
+```
+
+Copy `/root/roomdata-luks-header.img` to your own computer (`scp root@inwove.example:/root/roomdata-luks-header.img .`), keep it with the passphrase, and delete it from the server. Without the passphrase, the volume cannot be read by anyone, you included.
+
+**Where the unlock key is kept, and what happens on a reboot.** The passphrase lives in your password manager (and a second copy somewhere your people can reach), never on the server. So after every reboot the room stays down until a person logs in and runs one command, `room-unlock`, which asks for the passphrase, mounts the disk and starts Docker (the room and Caddy then start by themselves). Make that command now:
+
+```bash
+cat > /usr/local/sbin/room-unlock <<'EOF'
+#!/bin/sh
+set -eu
+VOL=$(ls /dev/disk/by-id/scsi-0HC_Volume_* | head -n 1)
+[ -e /dev/mapper/roomdata ] || cryptsetup open "$VOL" roomdata
+mountpoint -q /mnt/roomdata || mount /dev/mapper/roomdata /mnt/roomdata
+systemctl start docker
+echo "The room's disk is unlocked and Docker is running."
+EOF
+chmod 700 /usr/local/sbin/room-unlock
+```
+
+If you would rather the server come back alone after a reboot, you can put the passphrase in a file on the server and unlock from `/etc/crypttab`. Then the volume is protected if it is detached, copied or thrown away on its own, but not from someone who holds the whole server, and the key sits on a disk that is not encrypted. That trade is yours to make; this guide does not set it up.
+
+## 3. Docker and the room
+
+Docker's own repository (the commands are from Docker's Ubuntu install page; if `apt-get update` says it has no release file for this Ubuntu version, read that page for the current instructions):
+
+```bash
+apt-get -y install ca-certificates curl
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+tee /etc/apt/sources.list.d/docker.sources <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+apt-get update
+apt-get -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+Put Docker's data on the encrypted disk, and stop it starting before the disk is unlocked:
+
+```bash
+systemctl stop docker.service docker.socket
+rm -rf /var/lib/docker                       # nothing is in it yet
+mkdir -p /mnt/roomdata/docker
+echo '{ "data-root": "/mnt/roomdata/docker" }' > /etc/docker/daemon.json
+systemctl disable docker.service docker.socket
+systemctl start docker
+docker info | grep "Docker Root Dir"         # must say /mnt/roomdata/docker
+```
+
+Copy the room's repository and write its settings:
+
+```bash
+git clone https://github.com/Project-Weave-Tech/we-play-interop.git /srv/inwove
+cd /srv/inwove
+cp .env.example .env && chmod 600 .env
+sed -i "s|^PUBLIC_HOST=.*|PUBLIC_HOST=inwove.example|" .env
+sed -i "s|^WORKSPACE_KEY=.*|WORKSPACE_KEY=$(openssl rand -hex 32)|" .env
+grep '^WORKSPACE_KEY=' .env                  # copy this line into your password manager: it is the room's signing key, for the life of its record
+nano .env                                    # fill in the rest (below), save
+```
+
+In `.env`, besides those two: `ANTHROPIC_API_KEY` (or `LLM_API_KEY`), the model account the weaver uses; `GITHUB_TOKEN` if the room may act on GitHub (leave empty otherwise); `ROOM_DID_UPDATE_KEY` (section 8). Every setting has a comment in the file. Leave `PUBLIC_URL` empty: the compose file sets it from `PUBLIC_HOST`. `.env` holds secrets: it is never committed and never put in chat, email or a shared drive.
+
+If you are **moving an existing record**, do section 7 now, before the first start. Otherwise:
+
+```bash
+cd /srv/inwove
+docker compose up -d --build
+```
+
+Updating later: `cd /srv/inwove && git pull && docker compose up -d --build`. The room's data stays in its volume.
+
+## 4. Check it works
+
+```bash
+cd /srv/inwove
+docker compose ps                             # room: healthy, caddy: running
+curl -fsS https://inwove.example/healthz      # {"ok":true,"db":"pglite","entries":...}
+curl -sSI https://inwove.example | head -n 1  # HTTP/2 200
+docker compose logs caddy | tail -n 20        # the first start gets its certificate; this can take a minute
+```
+
+And from **another computer**, check the room's own port is not reachable (this must fail, by refusing or timing out):
+
+```bash
+curl -sS --max-time 5 http://inwove.example:3000/healthz
+```
+
+## 5. What is on the disk
+
+Everything the room writes is in one Docker volume, `inwove_room-data`, mounted at `/data` in the room: its record (embedded Postgres, in `/data/pg`), its DID log (`/data/did.jsonl`), the update key file if the host holds one, the shelf of other projects' code, and uploads. Caddy's certificate is in `inwove_caddy-data`; losing it costs only a new certificate. Both are under `/mnt/roomdata/docker`, so both are encrypted.
+
+## 6. Encrypted backups, and how to restore
+
+Backups are encrypted with `age` to a **public** key, so the server can write them but never read them. The private key stays with you.
+
+On your own computer (install `age`: `brew install age`, or `apt-get install age`):
+
+```bash
+age-keygen -o inwove-backup-key.txt     # prints "Public key: age1..."; keep this file in your password manager, off every server
+```
+
+On the server (use the `age1...` public key it printed):
+
+```bash
+apt-get -y install age
+mkdir -p /etc/inwove /var/backups/inwove
+echo "age1...your public key..." > /etc/inwove/backup.pub
+cat > /usr/local/sbin/room-backup <<'EOF'
+#!/bin/bash
+# Stops the room for a few seconds so its database is copied whole, then starts it again.
+set -euo pipefail
+cd /srv/inwove
+trap 'docker compose start room' EXIT
+docker compose stop room
+out=/var/backups/inwove/room-$(date -u +%Y%m%dT%H%MZ).tar.age
+docker run --rm --user root --entrypoint tar -v inwove_room-data:/data:ro inwove-room -C /data -cf - . | age -R /etc/inwove/backup.pub -o "$out" || { rm -f "$out"; exit 1; }
+chmod 644 "$out"
+find /var/backups/inwove -name 'room-*.tar.age' -mtime +14 -delete
+EOF
+chmod 700 /usr/local/sbin/room-backup
+echo '0 3 * * * root /usr/local/sbin/room-backup' > /etc/cron.d/inwove-backup
+room-backup && ls -l /var/backups/inwove
+```
+
+That keeps 14 days on the server. A backup that sits only on the server's own disk is not a backup: pull them to your own computer or a Hetzner Storage Box regularly, for example `scp 'root@inwove.example:/var/backups/inwove/*.tar.age' ~/inwove-backups/`.
+
+**Restore** (into the same server or a new one set up as above, through section 3). On your computer:
+
+```bash
+age -d -i inwove-backup-key.txt ~/inwove-backups/room-20261110T0300Z.tar.age | ssh root@inwove.example 'cd /srv/inwove && docker compose stop room && docker run --rm --user root --entrypoint find -v inwove_room-data:/data inwove-room /data -mindepth 1 -delete && docker run -i --rm --user root --entrypoint tar -v inwove_room-data:/data inwove-room -C /data -xf - && docker compose start room'
+```
+
+Then run the checks in section 4. Do a trial restore on a spare server once, before you need it.
+
+The room's public record can also be saved without any key: `docker run --rm inwove-room node agent/export-log.js https://inwove.example > room-export.json` (what the public log shows; not notebooks, drafts or keys).
+
+## 7. Moving the record from the old room
+
+The existing commands, as `HANDOVER.md` has them, run inside the room's own image. Do this before the first start, with the room's data volume empty. (To rehearse, use another name in `PUBLIC_HOST`, then throw the rehearsal away with `docker compose down -v`: that deletes the volume.)
+
+```bash
+cd /srv/inwove
+docker compose up --no-start --build         # builds the image and makes the empty volume; starts nothing
+docker run --rm inwove-room node agent/export-log.js https://OLD-ROOM > room-export.json
+docker run --rm -v "$PWD/room-export.json:/in/room-export.json:ro" -v inwove_room-data:/data inwove-room node agent/import-log.js /in/room-export.json /data
+```
+
+It refuses unless the whole chain verifies and the head matches. To keep the room's DID, also put its public log in the volume now (copy `did.jsonl` from the old room's data folder to this server's `/root/did.jsonl` first). If there is none, the room makes a rehearsal DID on its first start.
+
+```bash
+docker run --rm -v /root/did.jsonl:/in/did.jsonl:ro -v inwove_room-data:/data inwove-room sh -c 'cp /in/did.jsonl /data/did.jsonl && chmod 600 /data/did.jsonl'
+docker compose up -d
+docker run --rm inwove-room node agent/verify-log.js https://inwove.example
+docker run --rm inwove-room node agent/verify-log.js https://OLD-ROOM
+```
+
+In the two reports, `"ok"` must be `true` and `"head"` (its `seq` and `hash`) the same. Cut over (DNS to this server, then tell the room) only after that.
+
+## 8. The room's identity
+
+The room's DID (`did:webvh`, at its own address, `/.well-known/did.jsonl`) can be changed only by whoever holds its **update key**. Two settings in `.env` name keys, and both hold **public** keys (`z6Mk...`):
+
+- `ROOM_DID_UPDATE_KEY`: the key that may change the DID. Its private half must be held by the owner's people, **never on this server**.
+- `ROOM_DID_NEXT_KEY`: a recovery key, kept apart from the first, committed in the log ahead of time (see the README's table). Optional.
+
+Make a key on **your own computer** (Node 22, the repository, `npm ci`): `node agent/keygen.js`. The `WORKSPACE_KEY=` line it prints is the secret half: put it in your password manager. The text after `did:key:` in its first line is the public key for `.env`. Set it before the first start.
+
+If `ROOM_DID_UPDATE_KEY` is empty, the room keeps a key of its own in `/data/update-key.txt` (in the volume, so in every backup) until you set it. That file is the DID's secret: the update power has to move to the new owner (how is not settled yet: see `HANDOVER.md`), and it must not sit in a shared place: not in the repository, a chat, a ticket or a shared folder.
+
+## What the owner must never do
+
+- **Publish the room's port.** No `ports:` on the `room` service, no `network_mode: host`. The room trusts `x-forwarded-for` (the `TRUSTED_CLIENT_IP_HEADER` in `docker-compose.yml`) only because the room can be reached through Caddy alone. If the port is open, anyone can choose the address the room limits and logs them by.
+- **Turn on the Cloudflare proxy (orange cloud) without changing the caller setting.** Caddy would then see Cloudflare's address for everyone, so every person would share one limit. Behind the proxy the room must read `cf-connecting-ip` instead, and Caddy must pass it on; change `TRUSTED_CLIENT_IP_HEADER` and the Caddyfile together, and only after reading `src/server/caller.js`. Cloudflare would also see everything members send, and this guide promises that only the host can read it.
+- **Commit `.env`**, paste it anywhere, or put `WORKSPACE_KEY` or the DID's secret key in a shared place.
+- **Let Docker start before the disk is unlocked**, or move Docker's data back to `/var/lib/docker`: the room's data would then sit on the unencrypted disk.
+- **Run two copies of the room on one record.** One instance only.

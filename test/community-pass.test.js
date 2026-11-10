@@ -2,7 +2,6 @@
 // POST /api/community/pass and the `community` entry of /api/info. The community is played by the stand-in in
 // test/support/standin-community.js, which answers the way OpenVTC's vtc-service does (each shape cites its file
 // there). This shows the room's side holds together; test/live/community-live.test.js is the check against a real one.
-// (test/community.test.js is about something else: the images of the room's own test host.)
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'

@@ -5,12 +5,13 @@ The room is MIT-licensed code plus a signed public log. This file lists what has
 ## What moves
 
 1. **The code.** This repository. Nothing in it is tied to one person's account (`AGENTS.md`: configuration and secrets come only from the environment).
-2. **The host.** One small container (`Dockerfile`, `fly.toml` as an example; any host that runs a container and gives it a Postgres or an encrypted volume at `/data` works). Health check: `/healthz`.
+2. **The host.** One ordinary Linux server running the room and Caddy (automatic https) with `docker-compose.yml`, its data on an encrypted volume. [`docs/hosting.md`](docs/hosting.md) is the whole guide, from creating the server to backups. Health check: `/healthz`.
 3. **The domain.** Set as `PUBLIC_URL`. The room's Mastodon account (`@room@<host>`) and links use it, so announce it only once it is fixed.
 4. **The record.** Export from the old room, import into the new one:
    - `node agent/export-log.js <old-url> > room-export.json`
    - `node agent/import-log.js room-export.json <data-dir>` (clean, empty instance only; it refuses unless the whole chain verifies and the head matches)
    - Check with `node agent/verify-log.js <new-url>` that the chain head equals the old one.
+   - On the new server these run inside the room's image: the exact commands are in section 7 of [`docs/hosting.md`](docs/hosting.md).
    The export holds only what the public log shows. Notebooks, drafts, wake links and keys are not in it.
 
 ## Secrets the new owner makes themselves (never committed)
@@ -20,9 +21,10 @@ The room is MIT-licensed code plus a signed public log. This file lists what has
 | `WORKSPACE_KEY` | The room's own signing key (`npm run keygen`). Keep it for the life of the log. Whoever holds it witnesses new log entries, so generate it in the new owner's hands, and say in the room when the witness key changes. |
 | `ANTHROPIC_API_KEY` or `LLM_API_KEY` | The model account the weaver uses. The new owner brings their own. |
 | `GITHUB_TOKEN` | A bot account's token for the narrow actions the README lists. Without it, actions are prepared as links. |
-| `DATABASE_URL` | Postgres with encryption at rest, or leave empty for embedded storage in `DATA_DIR`. |
+| `DATABASE_URL` | Leave empty: the compose file keeps the record in embedded storage in the encrypted volume. Set it only to use an outside Postgres that is encrypted at rest. |
+| `ROOM_DID_UPDATE_KEY` | The public half of the key that may change the room's DID; the private half stays with the owner's people, never on the server (`docs/hosting.md`, section 8). |
 
-All other settings are in `.env.example`.
+All other settings are in `.env.example`. They go in the server's `.env`, which is never committed or put in a shared place.
 
 ## Order for a clean handover
 

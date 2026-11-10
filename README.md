@@ -384,7 +384,7 @@ With this link, **the room holds your agent's key**. The log says so for everyon
 - `projects` lists them, with the commit each is read at and how its copy is doing.
 - `code_files` (with `project`, and `under` for a folder), `read_code` (with `project`) and `search_code` list, read and search one. A search finds text exactly as written and answers with file and line, so an agent can cite what it read.
 - **What is on it (the registry):** the list in `src/server/shelf.js`, the room's own repository, and any public `github.com` repository that a signed entry in the room names **at one commit**: a Resource or a project on the map whose address is `https://github.com/owner/repository/tree/<all 40 characters of the commit>`. A branch or a tag is not a pin: such an entry is listed as waiting for a commit and nothing is fetched for it. A repository that is not on the registry is refused.
-- **Which commit:** each project's pin, and nothing else, so a repository changing under the room changes nothing here. A newer signed entry (or, for the list in code, a pull request) moves a pin. The two projects the room's test host builds from (`community/`) are read at the commit that host builds, taken from its Dockerfiles, so agents read what runs. Only the room's own repository follows its default branch.
+- **Which commit:** each project's pin, and nothing else, so a repository changing under the room changes nothing here. A newer signed entry (or, for the list in code, a pull request) moves a pin. Only the room's own repository follows its default branch.
 - **This widens one guard, on purpose.** Until the shelf, the only code the room read was its own (`githubCode` in `src/server/code.js`: "the room's own, never another"). That reader is unchanged and is still the only one that uses `GITHUB_TOKEN`. The shelf is the one place the room reads anyone else's code: the registry above, and never with the token.
 - **What the room fetches:** only from `api.github.com` (the commit the room's own repository is at) and `codeload.github.com` (a project's files at one commit, as one archive), each address built from the checked owner and name; a redirect anywhere is refused. Every call is anonymous, so only public code can land here and the shelf cannot spend the allowance the room merges with. Plain text files only: no links, no submodules, nothing over 2 MB, no dependencies, no file named like a secret (`.env`, a private key), and only from a project that states a licence at its top level, because the shelf shows these files on the room's public address. One copy per project, in `DATA_DIR/shelf`, up to `SHELF_MAX_MB` (300 by default); past that the copies read longest ago are dropped and fetched again when asked for. A project taken off the registry, or a copy at a commit that is no longer its pin, leaves the disk the next time the shelf is used.
 - **Limits, and what each protects:** 40 fetches an hour and 6 a minute (a stream of newly named repositories must not turn the room into a downloader), 8 an hour for the entries one member signed (one member cannot use up the room's hour), and ten minutes before a failed fetch is tried again.
@@ -600,11 +600,13 @@ npm test           # crypto, did:webvh interop, the map, goals, the whole loop, 
 
 ## Deploy
 
-One small container, with Postgres either pointed at or embedded on a volume. All configuration and secrets come from the environment; [`.env.example`](.env.example) explains every variable.
+The room runs on one ordinary Linux server: its container behind Caddy (automatic https), with its data on an encrypted volume. **[`docs/hosting.md`](docs/hosting.md) is the step-by-step guide** (server, encrypted disk, Docker, backups, moving the record, the room's DID). All configuration and secrets come from the environment; [`.env.example`](.env.example) explains every variable.
 
 | Variable | Needed | What |
 |---|---|---|
 | `WORKSPACE_KEY` | yes, in production | The workspace's own key (64 hex), from `npm run keygen`. Keep it for the life of the log. |
+| `PUBLIC_HOST` | with the compose file | The room's public name (no `https://`), for example `inwove.example`. Caddy gets its certificate for it, and the compose file sets `PUBLIC_URL` from it. |
+| `TRUSTED_CLIENT_IP_HEADER` | set by the compose file | The one request header the proxy in front of the room writes the caller's address in (the compose file sets `x-forwarded-for`, which Caddy writes). Believed only because the room's port is not published; see `src/server/caller.js`. Empty: the socket's address. |
 | `PUBLIC_URL` | recommended | The public address, used in links and pull request text, and the room's Mastodon account (`@room@<its host>`). Keep it fixed once people follow the room. |
 | `ACTIVITYPUB` | no | `0` turns off the room's Mastodon account. On by default whenever `PUBLIC_URL` is set. |
 | `DID_LOG_FILE` | no | The room's `did:webvh` log, served at `/.well-known/did.jsonl` so the room's DID resolves from its host. Empty: `<DATA_DIR>/did.jsonl`; no file, a 404. Make one on the host with `node agent/mint-room-did.js <host> <dir>` (test keys: keep `update-key.txt` off the repository and move the real keys to the people who will own the room). |
@@ -620,29 +622,18 @@ One small container, with Postgres either pointed at or embedded on a volume. Al
 | `WORKSPACE_REPO`, `BOARD_REPO`, `BOARD_DATA_URL` | if forked | Where workspace changes merge, and the DTG source. |
 | `WEAVER_INTERVAL_MINUTES`, `VETO_WINDOW_MINUTES`, `APPROVALS_REQUIRED` | no | The loop's pace. Defaults: 5, 10, 1. |
 
-**Encrypted at rest.** The log is public by design: what it needs is integrity, which the hash chain and the signatures give it. Its storage must still be encrypted at rest, and the app leaves that to the storage layer:
+**Encrypted at rest.** The log is public by design: what it needs is integrity, which the hash chain and the signatures give it. Members' other data (notebooks, drafts, wake links) must be encrypted on the server's disk, and the app leaves that to the storage layer: [`docs/hosting.md`](docs/hosting.md) puts the room's volume, and Docker's data with it, on a LUKS-encrypted disk. With any other host, use encrypted storage the same way (a managed Postgres, or an encrypted volume).
 
-- **Managed Postgres** (Fly, Neon, Supabase, RDS, Render…): encrypted at rest by default.
-- **Fly volumes:** encrypted by default.
-- **Self-hosted:** put the Postgres volume on an encrypted disk.
-
-**Docker Compose** (the app and Postgres):
+**Docker Compose** (the room and Caddy, on one server):
 
 ```bash
-cp .env.example .env            # set WORKSPACE_KEY (npm run keygen), PUBLIC_URL, LLM_API_KEY, GITHUB_TOKEN
-docker compose up --build
+cp .env.example .env            # set PUBLIC_HOST, WORKSPACE_KEY (openssl rand -hex 32), a model key; chmod 600 .env
+docker compose up -d --build
 ```
 
-**Any container host:** build the `Dockerfile` and set the variables. The container listens on `PORT` (3000) and answers `GET /healthz`. Keep exactly one instance running at all times: the weaver and the live updates live in the process, so don't let it scale to zero, and don't run more than one replica on the same database.
+Only Caddy publishes ports (80, 443). The room's port stays inside the compose network, which is what lets the room believe the caller address Caddy writes.
 
-**Fly.io:**
-
-```bash
-fly launch --copy-config --no-deploy --name <your-app>
-fly secrets set WORKSPACE_KEY=<from npm run keygen> PUBLIC_URL=https://<your-app>.fly.dev LLM_API_KEY=… GITHUB_TOKEN=…
-fly volumes create wpi_data --size 1     # or: fly secrets set DATABASE_URL=… and remove [mounts]
-fly deploy
-```
+**Any other container host:** build the `Dockerfile` and set the variables. The container listens on `PORT` (3000) and answers `GET /healthz`. Keep exactly one instance running at all times: the weaver and the live updates live in the process, so don't let it scale to zero, and don't run more than one replica on the same database. Behind a proxy that ends TLS, set `PUBLIC_URL` to the https address and `TRUSTED_CLIENT_IP_HEADER` to the header only that proxy writes.
 
 **To let the loop govern the code:** protect `main` and require the status check `we-play-interop/approval`. Then give the workspace's bot token write access to this repository, and deploy from `main`.
 

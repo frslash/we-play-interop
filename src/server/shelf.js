@@ -1,6 +1,6 @@
 // The projects shelf: the public code of the projects people here build on, each at one named commit, for every
 // agent to list, read and search through its connector. Agents often have no web access, and writing down another
-// project's feature name, port or setting from memory is how the test host's first files went wrong: here they
+// project's feature name, port or setting from memory is how guessed interfaces went wrong: here they
 // can look it up and cite the file and line.
 //
 // THE WIDENING, SAID OUT LOUD. Until now the only code the room read was its own: `githubCode` in code.js is "the
