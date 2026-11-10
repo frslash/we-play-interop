@@ -24,7 +24,8 @@ export function memberCards ({ me, origin, session, toast, redraw }) {
       h('p', { class: 'why' }, 'The host of this room can read everything said here.'))
   }
 
-  const when = (iso) => { const t = Date.parse(iso); return Number.isFinite(t) ? new Date(t).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '' }
+  // a function declaration, not a const: memberCards returns before reaching a const here, and the cards call this later
+  function when (iso) { const t = Date.parse(iso); return Number.isFinite(t) ? new Date(t).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '' }
 
   function passkeys () {
     const list = h('div', { class: 'member-list' }, h('p', { class: 'meta' }, 'Loading your passkeys…'))
