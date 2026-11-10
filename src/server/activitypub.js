@@ -11,6 +11,7 @@
 // What it keeps, in the data folder: its RSA key (made once, never in the repository), its followers,
 // and a record of every delivery and every inbox request (when, what, the other server's host, status
 // and timing; never anyone's words). ACTIVITYPUB=0 turns it off.
+import { isPeopleOnly } from './audience.js'
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomUUID, sign, verify } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -100,7 +101,7 @@ export class ActivityPub {
 
   /** A line everyone sees in Talk: a note to the whole room, not to one person, not the room check's, not from someone who has left. */
   isPublic (e) {
-    if (NAME_OF[e.type] !== 'note' || e.document.recipient) return false
+    if (NAME_OF[e.type] !== 'note' || e.document.recipient || isPeopleOnly(e)) return false // a people-only line is never published
     const skip = this.ctx.check?.dids() ?? []
     if (skip.includes(e.author) || skip.includes(e.onBehalfOf)) return false
     return !this.ctx.log.state.participants.get(e.onBehalfOf)?.left

@@ -7,6 +7,7 @@
 // It is an add-on to rounds: nothing waits for it, and proposals keep closing on their own schedule.
 // Its state is its own two lines in the log (state.js folds them), so a restart brings it back as it was.
 import { NAME_OF } from '../shared/types.js'
+import { forAgents } from './audience.js'
 
 const clip = (s, n) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s }
 // A few rounds at most. Three of the weaver's rounds (about half an hour at its default pace) leave time for each
@@ -38,7 +39,7 @@ export function splits (st, skip = []) {
 /** What was said about a dive since it opened: replies in its thread, and for a proposal, in the proposal's thread too. */
 function threadOf (log, d) {
   const st = log.state, other = d.proposal ? log.byHash.get(d.proposal)?.document.id : null
-  return log.entries.slice(d.seq + 1).filter((e) => NAME_OF[e.type] === 'note' && e.author !== st.workspace && (e.document.threadId === d.thread || (other && e.document.threadId === other)))
+  return log.entries.slice(d.seq + 1).filter((e) => forAgents(e) && NAME_OF[e.type] === 'note' && e.author !== st.workspace && (e.document.threadId === d.thread || (other && e.document.threadId === other)))
 }
 
 /** For the model: the open dives (the point, the sides and their votes, how far along, the thread) and the last few that ended. */

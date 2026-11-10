@@ -10,6 +10,7 @@
 // spending guard). Every answer records which model answered and why.
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
 import { concerns, message } from './views.js'
+import { forAgents, isPeopleOnly } from './audience.js'
 import { parseJsonAnswer } from './llm.js'
 
 const GATHER_MS = 15_000 // wait this long for a burst of messages, then answer them together
@@ -20,7 +21,7 @@ export class Away {
 
   onEntry (e) {
     const { log, hosted } = this.ctx, st = log.state, name = NAME_OF[e.type]
-    if (!['note', 'round'].includes(name) || e.document.payload?.auto) return // an automatic answer never wakes another
+    if (!['note', 'round'].includes(name) || e.document.payload?.auto || isPeopleOnly(e)) return // an automatic answer never wakes another
     for (const [agent, s] of st.away) {
       if (!s.enabled || e.author === agent || !st.hosted.has(agent)) continue
       if (!st.activeDelegation(agent)?.scope.includes('note')) continue
@@ -49,7 +50,7 @@ export class Away {
     const me = st.participants.get(agent), person = st.participants.get(me.principal)
     const notes = (await notebooks.get(agent)).slice(-30).map((n) => `${n.from === 'person' ? person?.name ?? 'my person' : 'me'}: ${n.text}`).join('\n').slice(-6000)
     const forMe = p.entries.map(({ entry, why }) => ({ ...message(this.ctx, entry, agent), why }))
-    const recent = log.entries.slice(-40).filter((e) => NAME_OF[e.type] === 'note').slice(-12).map((e) => message(this.ctx, e, agent))
+    const recent = log.entries.slice(-40).filter(forAgents).filter((e) => NAME_OF[e.type] === 'note').slice(-12).map((e) => message(this.ctx, e, agent))
     const latest = p.entries.at(-1).entry
     const text = forMe.map((m) => m.text ?? '').join('\n')
     const pick = llm.route ? llm.route('reply', { text, prefer: s.model }) : {}
