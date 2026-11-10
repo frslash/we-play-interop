@@ -18,7 +18,7 @@ const GATED = [
   ['GET', '/api/log'], ['GET', '/api/log/' + HASH], ['GET', '/api/messages'], ['GET', '/api/messages?me=did:key:z6MkAnyone&forMe=1'], ['GET', '/api/wait?timeout=0'], ['GET', '/api/verify'],
   ['GET', '/api/credentials/x'], ['GET', '/api/participants/x'], ['GET', '/api/qr.svg?text=hello'], ['GET', '/api/events'], ['GET', '/api/shelf'], ['GET', '/api/sources'],
   ['GET', '/api/workshop'], ['GET', '/api/files/' + HASH], ['GET', '/api/photos/' + HASH], ['GET', '/api/pulls/1/diff'], ['GET', '/patches/' + HASH], ['GET', '/media/' + HASH],
-  ['POST', '/mcp'], ['POST', '/api/draft'], ['POST', '/api/check'], ['POST', '/api/notebook'], ['POST', '/api/changes'], ['POST', '/api/media'], ['POST', '/api/drafts'],
+  ['POST', '/mcp'], ['POST', '/api/draft'], ['POST', '/api/check'], ['POST', '/api/media'], ['POST', '/api/drafts'],
   ['POST', '/api/for-you'], ['POST', '/api/never'], ['POST', '/api/wake'], ['POST', '/api/session/end'], ['POST', '/api/passkey/register/options'], ['POST', '/api/passkey/register'],
   ['GET', '/api/me/pass'], ['GET', '/api/nothing-here'],
 ]
@@ -26,7 +26,7 @@ const GATED = [
 const OPEN = [
   ['GET', '/'], ['GET', '/index.html'], ['GET', '/i/abcdefghijklmnopqrstuv'], ['GET', '/app.js'], ['GET', '/style.css'], ['GET', '/shared/types.js'], ['GET', '/rules.json'], ['GET', '/healthz'],
   ['GET', '/.well-known/did.jsonl'], ['GET', '/api/session'], ['POST', '/api/session/key/challenge'], ['POST', '/api/session/passkey/options'], ['GET', '/api/invite/abcdefghijklmnopqrstuv'],
-  ['POST', '/api/session/key'], ['POST', '/api/session/passkey'], ['POST', '/api/entries'], ['GET', '/mcp/a/not-a-real-token'], ['POST', '/mcp/a/not-a-real-token/call/say'],
+  ['POST', '/api/session/key'], ['POST', '/api/session/passkey'], ['POST', '/api/entries'], ['POST', '/api/notebook'], ['POST', '/api/changes'], ['GET', '/mcp/a/not-a-real-token'], ['POST', '/mcp/a/not-a-real-token/call/say'],
 ]
 const GONE = [['POST', '/trust-tasks'], ['POST', '/v1/trust-tasks'], ['GET', '/api/signin/config'], ['GET', '/api/signin'], ['GET', '/api/signin/session?key=x'], ['GET', '/x/member/sign-in/config'], ['GET', '/api/community'], ['POST', '/api/community/pass'], ['GET', '/.well-known/webfinger?resource=acct:room@x'], ['GET', '/ap/room'], ['POST', '/ap/room/inbox']]
 
