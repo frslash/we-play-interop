@@ -1,9 +1,11 @@
-// InWove: one small server. Reads are public; every write is a signed
-// Trust Task document, verified and appended to the hash-chained log.
+// InWove: one small server for members. Every request meets the gate first (gate.js): the page, the sign-in calls and
+// a few plain reads are open, everything else needs a member's session. Every write is a signed Trust Task document,
+// verified and appended to the hash-chained log.
 import { handleRoomDid, ensureRoomDid, growRoomDid, roomDidDiffers } from './roomdid.js'
 import { RoomDidWatch } from './room-did-watch.js'
-import { Door, serveRoomTasks } from './door.js'
-import { Community } from './community.js'
+import { createGate } from './gate.js'
+import { createAccess } from './access.js'
+import { ensureFirstInvite } from './invites.js'
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -40,11 +42,9 @@ import { RESOURCES as CURATED_RESOURCES } from '../../public/resources.js'
 import { Cursors } from './cursors.js'
 import { AGREED } from './rules.js'
 import { ActivityPub } from './activitypub.js'
-import { SignIn, registerSignIn } from './signin.js'
 import { callerOf } from './caller.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
-import { MAX_DOCUMENT_BYTES } from '../shared/trusttask.js'
 import { createResolver } from './resolver.js'
 import * as views from './views.js'
 import { Weaver } from './weaver.js'
@@ -54,8 +54,6 @@ import { Builder } from './builder.js'
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const MAX_BODY = 64 * 1024
 const MAX_HOSTED = 5 // a person's own assistants, not a crowd of puppets
-const DOOR_PATHS = new Set(['/trust-tasks', '/v1/trust-tasks']) // the Trust Task door; some clients put /v1 after a bare origin, and both are the one door
-const DOOR_READ_MAX = 1024 * 1024 // a body past the door's 64 KiB is refused whatever its size: counting stops here, so the refusal can go out while a huge upload is still arriving
 /** A wait's answer as one line: "woke <seq> <reasons>", "quiet <seq>", "replaced <seq>", "busy <seq>" or "stop <why>". */
 function waitLine (a) {
   const seq = a.head?.seq ?? -1
@@ -121,10 +119,14 @@ function workspaceIdentity (config) {
   return id
 }
 
-export async function createApp (config = defaultConfig, { resolver = createResolver(), gh, wakeFetch, apFetch, communityFetch, awayGatherMs, hostWelcomeMs = 3000, sources, shelf } = {}) {
+/**
+ * `openRoom` is for tests only: no gate (every request is a person, with no DID) and a join needs no invite. It is an
+ * argument, never read from the environment or a file, so a running room cannot be started open.
+ */
+export async function createApp (config = defaultConfig, { openRoom = false, resolver = createResolver(), gh, wakeFetch, apFetch, awayGatherMs, hostWelcomeMs = 3000, sources, shelf } = {}) {
   const identity = workspaceIdentity(config)
   const db = await openDb(config)
-  const log = new Log({ db, identity, resolver, config })
+  const log = new Log({ db, identity, resolver, config, openRoom: openRoom === true })
   await log.load()
   const llm = config.llm.provider === 'anthropic' ? new ClaudeLlm(config.llm) : new Llm(config.llm)
   const board = new Board({ config, log })
@@ -133,7 +135,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   log.boardSlugs = () => board.projectSlugs()
   const hosted = new HostedAgents({ db, identity })
   await hosted.load()
-  const ctx = { config, log, board, llm, weaver, executor, identity, db, hosted }
+  const ctx = { config, log, board, llm, weaver, executor, identity, db, hosted, openRoom: openRoom === true }
   const waker = new Waker({ ctx, db, sealer: hosted, ...(wakeFetch ? { fetch: wakeFetch } : {}) })
   await waker.load()
   ctx.waker = waker
@@ -153,21 +155,13 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.shelf = new Shelf({ dataDir: config.dataDir, maxBytes: (config.shelfMaxMb ?? 300) * 1024 * 1024, own: config.workspaceRepo, named: () => namedRepos(ctx, CURATED_RESOURCES), ...shelf }) // `shelf` lets tests play GitHub from a local server; the app passes none
   ctx.join = new RoomDidWatch({ identity, config }) // what the room's DID says and who the room answers as; the name is the one door.js reads
   await ctx.join.refresh(true)
-  // the Trust Task door (door.js): other projects' software hands the room standard signed documents here. Made early, so any part of the room made after it can add its own tasks with ctx.door.register()
-  ctx.door = serveRoomTasks(new Door({ ctx }), ctx)
-  // the community whose membership pass the room takes (COMMUNITY_DID); it answers as the DID the room speaks as
-  ctx.community = new Community({ config, resolver, identity, room: () => ctx.join.room, ...(communityFetch ? { fetch: communityFetch } : {}) })
-  // ── wallet sign-in (auth/oob/*, src/server/signin.js). This and the one line marked the same way in route() are all of it here.
-  ctx.signIn = new SignIn({ identity, config, resolver, log, door: () => ctx.door })
-  registerSignIn(ctx.door, ctx) // its six tasks go on the room's Trust Task door, beside discovery, ping and the log's lines
-  await ctx.signIn.refresh(true)
-  // ── end wallet sign-in
+  // (the Trust Task door, the community's membership pass and wallet sign-in are not started: the room is for members, and those routes are gone. Their modules stay.)
   ctx.types = TYPES
   ctx.changes = new Changes({ ctx, dataDir: config.dataDir })
   log.on('entry', (e) => ctx.changes.onEntry(e))
   ctx.workshop = new Workshop({ ctx, gh: (...a) => executor.gh(...a) })
   log.on('entry', (e) => ctx.host.onEntry(e))
-  // the room's public lines, followable from Mastodon and the rest of the fediverse (read only: nothing flows back in)
+  // the room's public lines, followable from Mastodon and the rest of the fediverse (read only: nothing flows back in). Off unless ACTIVITYPUB=1.
   ctx.activitypub = new ActivityPub({ ctx, dataDir: config.dataDir, ...(apFetch ? { fetch: apFetch } : {}) })
   log.on('entry', (e) => ctx.activitypub.onEntry(e))
   ctx.drafts = new Drafts({ db, sealer: hosted })
@@ -205,7 +199,9 @@ export async function createApp (config = defaultConfig, { resolver = createReso
         for (const d of ctx.drafts.list(a.did)) await ctx.drafts.drop(a.did, d.id)
       }
       await ctx.never.set(entry.author, [])
+      await ctx.access.forget(entry.author) // and their sessions and passkeys: a cookie of someone who left opens nothing
     }
+    if (NAME_OF[doc.type] === 'replace' && !duplicate) { const old = log.state.links.get(doc.payload.request)?.old; if (old) await ctx.access.forget(old) } // a replaced key stops opening the room
     if (NAME_OF[doc.type] === 'remove' && !duplicate) {
       // removing an agent deletes what the room holds for it: its key, its notebook, its wake link
       await hosted.delete(doc.payload.agent); await ctx.notebooks.delete(doc.payload.agent); await waker.set(doc.payload.agent, null)
@@ -218,12 +214,12 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   const importMap = /<script type="importmap">([\s\S]*?)<\/script>/.exec(page)?.[1] ?? ''
   const csp = `default-src 'self'; script-src 'self' 'sha256-${createHash('sha256').update(importMap).digest('base64')}'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`
 
-  const sse = new Set()
-  log.on('entry', (e) => { const msg = `event: entry\ndata: ${JSON.stringify(e)}\n\n`; for (const res of sse) res.write(msg) })
+  const sse = new Map() // a live connection -> the DID of the member it belongs to (null in an open test room)
+  log.on('entry', (e) => { const msg = `event: entry\ndata: ${JSON.stringify(e)}\n\n`; for (const res of sse.keys()) res.write(msg) })
 
   const send = (res, status, body, headers = {}) => {
     const json = typeof body !== 'string'
-    res.writeHead(status, { 'content-type': json ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8', 'access-control-allow-origin': '*', ...headers })
+    res.writeHead(status, { 'content-type': json ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8', ...(res.inwoveCors ? { 'access-control-allow-origin': '*' } : {}), ...headers }) // no cross-origin permission, except the few plain reads the gate marks
     res.end(json ? JSON.stringify(body, null, 2) : body)
   }
   /** A document's body, at most 64 KB: the cap keeps one careless or hostile sender from filling the room's memory, so past it nothing more is kept, the rest is read and thrown away, and the caller answers a real 413 (destroying the socket would swallow that answer). */
@@ -237,23 +233,6 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
     req.on('error', reject)
   })
-  /** A document for the door: its bytes as they arrived. One chunk past the cap is kept at most (enough for the door to say "too large" in a signed refusal), the rest is counted and thrown away. */
-  const readDoorBody = (req) => new Promise((resolve, reject) => {
-    let bytes = 0, kept = 0; const chunks = []
-    const done = (cut) => resolve({ raw: Buffer.concat(chunks), bytes, cut })
-    req.on('data', (c) => {
-      bytes += c.length
-      if (kept <= MAX_DOCUMENT_BYTES) { chunks.push(c); kept += c.length }
-      if (bytes > DOOR_READ_MAX) { req.removeAllListeners('data'); req.resume(); done(true) }
-    })
-    req.on('end', () => done(false))
-    req.on('error', reject)
-  })
-  /** The door's answer: a signed document as JSON, or nothing at all for 202, 204 and 429. Open to any origin, like the room's other public routes. */
-  const sendDoor = (res, out) => {
-    res.writeHead(out.status, { 'access-control-allow-origin': '*', 'cache-control': 'no-store', ...(out.body ? { 'content-type': 'application/json' } : {}), ...out.headers })
-    res.end(out.body)
-  }
   /** Who is calling (caller.js decides; nothing here reads a forwarding header). */
   const callerFor = (req) => callerOf(req, { env: config })
   /** The address as a limit key: one the room could not confirm is marked, so it still limits but is never taken for a real network (sign-in's "same network" says unknown for it). */
@@ -262,12 +241,16 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   /** A link someone already holds (/j/<code>, from the old "Join on your phone" code, taken out in November 2026): the room's page, whatever the code. The code is never read. */
   const redirectOldLink = (res) => { res.writeHead(303, { location: '/', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }); res.end() }
 
+  // who is signed in, sign-in with a key or a passkey, invites, the membership pass (access.js); `sessions` is read by the gate
+  const access = ctx.access = await createAccess(ctx, { send, readBody, refuse, ipOf })
+  access.sessions.onEnd = (did) => { for (const [res, d] of sse) if (d === did) res.end() } // a person's live connections close with their sessions
+  ctx.ensureFirstInvite = (opts) => ensureFirstInvite(ctx, opts)
+
   async function route (req, res) {
     const url = new URL(req.url, 'http://local')
     const path = url.pathname, q = Object.fromEntries(url.searchParams)
-    if (req.method === 'OPTIONS') return send(res, 204, '', { 'access-control-allow-methods': 'GET, POST', 'access-control-allow-headers': 'content-type, accept, mcp-protocol-version' })
+    if (req.method === 'OPTIONS') return send(res, 204, '', res.inwoveCors ? { 'access-control-allow-methods': 'GET, POST', 'access-control-allow-headers': 'content-type, accept, mcp-protocol-version' } : {}) // the page is the same origin and never asks; no one else is given leave
     // the room is updating itself: say so the standard way (503 with Retry-After), so callers try again soon instead of failing
-    if (ctx.waits.stopping && DOOR_PATHS.has(path) && req.method === 'POST') return sendDoor(res, ctx.door.busy(ctx.waits.restarting().retryAfter))
     if (ctx.waits.stopping) { const a = ctx.waits.restarting(); return send(res, 503, path === '/api/wait' && q.as === 'text' ? waitLine(a) : { error: a.reason, retryAfter: a.retryAfter }, { 'retry-after': String(a.retryAfter) }) }
 
     if (path.startsWith('/mcp/a/')) {
@@ -289,22 +272,16 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       return handleMcp(ctx, req, res, body)
     }
     if (handleRoomDid(req, res, path, { dataDir: config.dataDir, file: config.didLogFile })) return
-    if (DOOR_PATHS.has(path)) { // the Trust Task door: a signed standard document in, a signed answer out
-      if (req.method !== 'POST') return send(res, 405, { error: 'POST a signed Trust Task document here (application/json). /api/info says what this door serves and which DID to address.' }, { allow: 'POST' })
-      const { raw, bytes, cut } = await readDoorBody(req)
-      return sendDoor(res, await ctx.door.handle(raw, { origin: String(req.headers.origin ?? '').slice(0, 300), base: baseOf(req), host: String(req.headers.host ?? ''), ip: ipOf(req), userAgent: String(req.headers['user-agent'] ?? '').slice(0, 300), https: callerFor(req).https, bytes, cut }))
-    }
-    if (await ctx.community.handle(req, res, path, readBody, send)) return
-    if (await ctx.signIn.handle(req, res, path, q, send)) return // ── wallet sign-in: what a page reads to start one, and what the room holds for a browser key (reads only)
-    if (path === '/.well-known/webfinger' || path.startsWith('/ap/')) return ctx.activitypub.handle(req, res, url)
+    if (await access.handle(req, res, path)) return // who is signed in, signing in, passkeys, invites, the membership pass
+    if (config.activitypub && (path === '/.well-known/webfinger' || path.startsWith('/ap/'))) return ctx.activitypub.handle(req, res, url)
     if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
-    if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), join: { via: config.communityDid ? 'community' : 'none' }, roomDid: { differs: roomDidDiffers(ctx.join.status.document) }, door: ctx.door.info(baseOf(req)) }) }
+    if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), join: { via: 'invite' }, roomDid: { differs: roomDidDiffers(ctx.join.status.document) } }) }
     if (path === '/api/state') return send(res, 200, views.state(ctx))
     if (path === '/api/steps') return send(res, 200, ctx.facilitator.view())
     if (path === '/api/map' || path === '/api/board') return send(res, 200, views.mapView(ctx))
     if (path === '/api/resources') return send(res, 200, views.resourcesView(ctx, q))
     if (path === '/api/log') return send(res, 200, views.entries(ctx, q))
-    if (path === '/api/messages') return send(res, 200, views.messages(ctx, q))
+    if (path === '/api/messages') return send(res, 200, views.messages(ctx, req.inwoveViewer?.did ? { ...q, me: req.inwoveViewer.did } : openRoom ? q : { ...q, me: undefined, forMe: undefined })) // a caller is only ever themselves: the lines meant for you are the signed-in member's, whatever ?me= says
     if (path === '/api/wait') { // held open until something is for this agent, or the timeout
       const a = await ctx.waits.wait(q)
       const status = a.restarting ? 503 : 200, headers = a.restarting ? { 'retry-after': String(a.retryAfter) } : {} // a wait cut off by a restart
@@ -322,9 +299,9 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (path.startsWith('/j/') && (req.method === 'GET' || req.method === 'HEAD')) return redirectOldLink(res)
     if (path === '/api/events') {
       // no-transform and no buffering, so proxies and tunnels pass each event on at once; the padding pushes past buffers that wait for a first chunk
-      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no', connection: 'keep-alive', 'access-control-allow-origin': '*' })
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no', connection: 'keep-alive' })
       res.write(`:${' '.repeat(2048)}\n\nevent: hello\ndata: ${JSON.stringify(log.head())}\n\n`)
-      sse.add(res)
+      sse.set(res, req.inwoveViewer?.did ?? null)
       const beat = setInterval(() => res.write(': keep-alive\n\n'), 25_000)
       req.on('close', () => { clearInterval(beat); sse.delete(res) })
       return
@@ -389,7 +366,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (path.startsWith('/api/sources/')) { // the cached copy, exactly as the source sent it
       const body = ctx.sources.body(decodeURIComponent(path.slice(13)))
       if (!body) return send(res, 404, { error: 'no such source, or its first copy has not been fetched yet' })
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': '*', 'x-content-type-options': 'nosniff' }); return res.end(body)
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'x-content-type-options': 'nosniff' }); return res.end(body)
     }
     if (path === '/rules.json') return send(res, 200, AGREED) // the room's rules as plain data, for anyone to read and check
     if (path === '/api/workshop') return send(res, 200, ctx.workshop.view()) // every change to the room's own code, in public
@@ -406,7 +383,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       const m = /^\/media\/([0-9a-f]{64})$/.exec(path), got = m && ctx.media.get(m[1])
       if (!got) return send(res, 404, { error: 'no photo with that hash' })
       const isImage = got.type.startsWith('image/'), name = String(q.name ?? 'file').replace(/[^\w.\- ]+/g, '_').slice(0, 120)
-      res.writeHead(200, { 'content-type': got.type, 'cache-control': 'public, max-age=31536000, immutable', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; sandbox", 'access-control-allow-origin': '*', ...(isImage ? {} : { 'content-disposition': `attachment; filename="${name}"` }) })
+      res.writeHead(200, { 'content-type': got.type, 'cache-control': 'private, max-age=31536000, immutable', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; sandbox", ...(isImage ? {} : { 'content-disposition': `attachment; filename="${name}"` }) })
       return res.end(got.bytes)
     }
     if (path === '/api/drafts' && req.method === 'POST') { // an agent's lines waiting for its person: list, send (maybe changed) or drop
@@ -483,27 +460,35 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     return send(res, e.status, log.errorDocument(e, doc))
   }
 
-  function serveStatic (path, res) {
-    if (path === '/' || path === '/index.html') {
-      res.writeHead(200, { 'content-type': TYPES_OF['.html'], 'content-security-policy': csp, 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'cache-control': 'no-cache' }) // always re-checked: it names the release to load
-      return res.end(page)
-    }
+  /** The file the page has at this path (the shared core, a vendored library, a page file), or null. */
+  function findStatic (path) {
     const r = /^\/r\/([0-9a-f]{12})(\/.*)$/.exec(path)
     const forGood = Boolean(r && r[1] === release) // this release's address: its files never change under it
     if (r) path = r[2] // an older release's address still answers, with today's files, re-checked
     for (const [prefix, dir] of STATIC) {
       if (!path.startsWith(prefix)) continue
-      const rel = normalize(decodeURIComponent(path.slice(prefix.length))).replace(/^(\.\.[/\\])+/, '')
+      let rel; try { rel = normalize(decodeURIComponent(path.slice(prefix.length))).replace(/^(\.\.[/\\])+/, '') } catch { continue }
       const file = join(dir, rel)
       const ext = rel.slice(rel.lastIndexOf('.'))
       if (!file.startsWith(dir) || !TYPES_OF[ext] || !existsSync(file)) continue
       if (prefix.startsWith('/vendor/') && ext !== '.js') continue
-      res.writeHead(200, { 'content-type': TYPES_OF[ext], 'x-content-type-options': 'nosniff', 'cache-control': forGood ? 'public, max-age=31536000, immutable' : prefix.startsWith('/vendor/') ? 'public, max-age=3600' : 'no-cache' })
-      return res.end(readFileSync(file))
+      return { file, ext, prefix, forGood }
     }
-    send(res, 404, 'not found')
+    return null
   }
 
+  function serveStatic (path, res) {
+    if (path === '/' || path === '/index.html' || path.startsWith('/i/')) { // /i/<code> is the page too: it reads the code from its own address
+      res.writeHead(200, { 'content-type': TYPES_OF['.html'], 'content-security-policy': csp, 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'cache-control': 'no-cache' }) // always re-checked: it names the release to load
+      return res.end(page)
+    }
+    const f = findStatic(path)
+    if (!f) return send(res, 404, 'not found')
+    res.writeHead(200, { 'content-type': TYPES_OF[f.ext], 'x-content-type-options': 'nosniff', 'cache-control': f.forGood ? 'public, max-age=31536000, immutable' : f.prefix.startsWith('/vendor/') ? 'public, max-age=3600' : 'no-cache' })
+    return res.end(readFileSync(f.file))
+  }
+
+  const gate = createGate({ sessions: ctx.sessions, members: () => log.state, hosted, config, openRoom: openRoom === true, isStatic: (p) => Boolean(findStatic(p)) })
   /**
    * A body that is not all in within `bodyTimeoutMs` of the request's start is answered 408 and the connection closed, before
    * any route (the door included) is waiting on it. It protects the room's connections and memory from one slow sender that
@@ -513,12 +498,12 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   const guardBody = (req, res) => {
     if (!['POST', 'PUT', 'PATCH'].includes(req.method) || !(bodyMs > 0)) return
     const timer = setTimeout(() => {
-      if (!res.headersSent) { res.writeHead(408, { 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': '*', connection: 'close' }); res.end(JSON.stringify({ error: 'the request body did not arrive in time' })) }
+      if (!res.headersSent) { res.writeHead(408, { 'content-type': 'application/json; charset=utf-8', connection: 'close' }); res.end(JSON.stringify({ error: 'the request body did not arrive in time' })) }
       res.once('finish', () => req.destroy()); setTimeout(() => req.destroy(), 1000).unref() // let the 408 out first; the room never waits on a sender longer than that
     }, bodyMs)
     timer.unref(); req.once('end', () => clearTimeout(timer)); req.once('close', () => clearTimeout(timer))
   }
-  const server = createServer((req, res) => { guardBody(req, res); route(req, res).catch((err) => { console.error(err); if (!res.headersSent) send(res, 500, { error: 'internal error' }) }) })
+  const server = createServer((req, res) => { guardBody(req, res); if (!gate(req, res)) return; route(req, res).catch((err) => { console.error(err); if (!res.headersSent) send(res, 500, { error: 'internal error' }) }) })
 
   const timers = []
   ctx.start = async () => {
@@ -535,7 +520,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     ctx.sources.start()
     timers.push(setInterval(() => closeVotes(ctx).catch((e) => console.error('closing votes:', e)), 30_000))
   }
-  ctx.stop = async () => { ctx.waits.stop(); ctx.signIn.stop(); timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.sources.stop(); ctx.shelf.flush(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); for (const r of sse) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { ctx.waits.stop(); timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.sources.stop(); ctx.shelf.flush(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); for (const r of sse.keys()) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }
@@ -544,6 +529,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const ctx = await createApp()
   await ensureRoomDid({ dataDir: defaultConfig.dataDir, file: defaultConfig.didLogFile, publicUrl: defaultConfig.publicUrl })
   await growRoomDid({ dataDir: defaultConfig.dataDir, file: defaultConfig.didLogFile, publicUrl: defaultConfig.publicUrl, roomPublicKey: ctx.identity.publicKey, updateKey: defaultConfig.roomDidUpdateKey, nextKey: defaultConfig.roomDidNextKey })
+  await ctx.ensureFirstInvite() // a room with no members yet makes one invite for its first member and says it once
   ctx.server.listen(defaultConfig.port, () => {
     console.log(`${defaultConfig.workspaceName} on :${defaultConfig.port} · workspace ${ctx.identity.did} · ${ctx.db.kind} · ${ctx.log.entries.length} entries`)
     console.log(ctx.llm.configured ? `weaver model: ${ctx.llm.model ?? 'picked at the first round'} via ${ctx.llm.endpoint ?? defaultConfig.llm.baseUrl}` : 'No model key (ANTHROPIC_API_KEY or LLM_API_KEY) is set: the weaver runs its built-in tally instead of a model, and every round says so.')
