@@ -55,6 +55,28 @@ create table if not exists hosted_agents (
   seed_enc   text not null,
   created    timestamptz not null
 );
+create table if not exists sessions (
+  token_hash text primary key,
+  did        text not null,
+  created_ms bigint not null,
+  expires_ms bigint not null
+);
+create index if not exists sessions_did on sessions (did);
+create table if not exists passkeys (
+  id           text primary key,
+  did          text not null,
+  public_key   text not null,
+  alg          integer not null,
+  counter      bigint not null,
+  transports   text not null,
+  prf          boolean not null,
+  wrapped_seed text,
+  label        text not null,
+  user_verified boolean not null,
+  created_ms   bigint not null,
+  last_used_ms bigint
+);
+create index if not exists passkeys_did on passkeys (did);
 `
 
 export async function openDb ({ databaseUrl, dataDir }) {
