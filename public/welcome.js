@@ -68,7 +68,7 @@ export async function gate () {
       const here = held ? h('button', { class: 'btn', onclick: async (ev) => {
         const done = busy(ev.currentTarget, 'Signing in…'); say('')
         const r = await keySignIn(held); done()
-        r.ok ? finish() : say(r.error)
+        r.ok ? offerPasskey(held) : say(r.error)
       } }, 'Continue on this browser') : null
       const keyIn = h('input', { type: 'text', placeholder: '64 letters and numbers', autocomplete: 'off', spellcheck: 'false' })
       const withKey = h('button', { class: 'btn', onclick: async (ev) => {
@@ -77,7 +77,7 @@ export async function gate () {
         const done = busy(ev.currentTarget, 'Signing in…'); say('')
         const r = await keySignIn(me); done()
         if (!r.ok) return say(r.error)
-        store.set('wpi.seed', me.seedHex); store.set('wpi.keySaved', me.did); finish()
+        store.set('wpi.seed', me.seedHex); store.set('wpi.keySaved', me.did); offerPasskey(me)
       } }, 'Sign in with this key')
       card(h('h1', null, `Welcome to ${room}`),
         h('p', { class: 'why' }, 'This room is for members. Sign in with your passkey, or open the invitation link a member sent you.'),
@@ -86,6 +86,27 @@ export async function gate () {
         passkeysAvailable() ? null : h('p', { class: 'meta' }, 'This browser cannot use passkeys. If you have your saved key, use it below.'),
         msg,
         h('details', null, h('summary', null, 'Use my saved key'), h('label', null, 'Your key', keyIn), withKey))
+    }
+
+    // ---- signed in with a key and no passkey yet: offer one for next time (new members are offered one when they join)
+    async function offerPasskey (me) {
+      let s = null
+      try { s = await call('/api/session') } catch {}
+      if (!passkeysAvailable() || !s?.ok || !s.body?.signedIn || s.body.passkeys !== 0) return finish()
+      const nm = s.body.name
+      const msg = h('p', { class: 'gate-error', role: 'alert', hidden: true }), say = problem(msg)
+      const make = h('button', { class: 'btn primary', onclick: async () => {
+        const done = busy(make, 'Waiting for your passkey…'); say('')
+        const r = await registerPasskey({ seed: me.seed, did: me.did, label: 'First device' }); done()
+        if (!r.ok) return say(r.error)
+        if (r.wrapped) { store.set('wpi.keySaved', me.did); return finish() } // the passkey can bring the key back on another device
+        card(h('h1', null, 'Your passkey is saved'),
+          h('p', { class: 'why' }, 'It signs you in, but it cannot carry your key to another device, so keep your saved key as well.'),
+          h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: finish }, 'Continue')))
+      } }, 'Make a passkey')
+      card(h('h1', null, nm ? `Welcome back, ${nm}` : 'Welcome back'),
+        h('p', { class: 'why' }, 'Make a passkey so you can sign in next time with your fingerprint, your face or your screen lock. No password.'),
+        msg, h('div', { class: 'row' }, h('button', { class: 'btn', onclick: finish }, 'Not now'), h('span', { class: 'grow' }), make))
     }
 
     // ---- an invitation
