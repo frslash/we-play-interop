@@ -129,6 +129,9 @@ export const MAX_REPLACES = 10
 export const SUBJECT_KINDS = ['credential', 'task', 'ceremony', 'basic']
 export const OUTCOMES = ['pass', 'fail', 'partial']
 
+export const SIGN_IN_STATEMENT = 'Sign in to InWove'
+/** What a browser (or a tool) signs to sign in: the room's origin, the room's challenge, the words, and two minutes. */
+export const signInPayload = (origin, challenge, now = Date.now()) => ({ challenge, origin, statement: SIGN_IN_STATEMENT, expiresAt: new Date(now + 110_000).toISOString() })
 export const HASH_RE = /^[0-9a-f]{64}$/
 export const DID_RE = /^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$/
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
@@ -236,7 +239,14 @@ export function checkPayload (name, doc) {
     }
     case 'agentRead': // an agent with its own key asking the room a question: it signs the method and the exact path, fresh, once (gate.js)
       return ['GET', 'HEAD', 'POST'].includes(p.method) && typeof p.path === 'string' && /^\/[^\s]{0,2000}$/.test(p.path) ? null : 'method: GET | HEAD | POST, path: the request path with its query'
-    case 'sessionKey': return /^[A-Za-z0-9_-]{43}$/.test(p.challenge ?? '') ? null : 'challenge: the one the room gave you (43 characters)'
+    case 'sessionKey': { // what a browser signs to sign in: the room's origin, the one-time challenge, a short expiry and the words it means (the room checks the origin and the expiry against its own clock)
+      if (!/^[A-Za-z0-9_-]{43}$/.test(p.challenge ?? '')) return 'challenge: the one the room gave you (43 characters)'
+      if (typeof p.origin !== 'string' || p.origin.length > 200) return 'origin: the room\'s own address'
+      if (p.statement !== SIGN_IN_STATEMENT) return `statement: ${SIGN_IN_STATEMENT}`
+      if (!RFC3339.test(p.expiresAt ?? '')) return 'expiresAt: an RFC 3339 timestamp'
+      const ahead = Date.parse(p.expiresAt) - Date.parse(doc.issuedAt)
+      return ahead > 0 && ahead <= 120000 ? null : 'expiresAt: after issuedAt and within 2 minutes'
+    }
     case 'delegate': {
       if (!DID_RE.test(p.delegate ?? '')) return 'delegate: the agent DID'
       if (!Array.isArray(p.scope) || !p.scope.length || !p.scope.every((s) => AGENT_SCOPES.includes(s))) return `scope: some of ${AGENT_SCOPES.join(', ')}`

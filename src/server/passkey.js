@@ -14,6 +14,9 @@
 //   counter             a counter that does not rise is refused when either side is non-zero (a cloned authenticator)
 import { constants, createHash, createPublicKey, verify } from 'node:crypto'
 
+// RS256 (-257) stays on purpose. Windows Hello passkeys sign with RSA and offer no other algorithm, so refusing it would
+// lock those members out of passkeys. The security review allows it where a real authenticator needs it, with a floor on
+// the key: keyFrom below refuses any RSA key under 2048 bits (and over 8192, which only makes a request slow to check).
 export const ALGS = { '-7': 'ES256', '-8': 'EdDSA', '-257': 'RS256' }
 export const MAX_PER_PERSON = 10
 const TRANSPORTS = ['usb', 'nfc', 'ble', 'internal', 'hybrid', 'smart-card']
@@ -179,6 +182,22 @@ export class Passkeys {
     const p = this.byId.get(id); if (!p) return
     p.counter = counter; p.userVerified = uv; p.lastUsedAt = this.now()
     await this.db.query('update passkeys set counter = $2, user_verified = $3, last_used_ms = $4 where id = $1', [id, counter, uv, p.lastUsedAt])
+  }
+
+  /** What a person may see of their own passkeys: never the key, the counter or the wrapped seed, only whether it can restore their key. */
+  listFor (did) {
+    return this.list(did).sort((a, b) => b.createdAt - a.createdAt).map((p) => ({
+      id: p.id, label: p.label, createdAt: new Date(p.createdAt).toISOString(), lastUsedAt: p.lastUsedAt == null ? null : new Date(p.lastUsedAt).toISOString(), canRestoreKey: Boolean(p.wrappedSeed),
+    }))
+  }
+
+  /** Remove one of a person's own passkeys, and with it the seed it wrapped (the same row). True when it was theirs and is gone. */
+  async delete (did, id) {
+    const p = typeof id === 'string' ? this.byId.get(id) : null
+    if (!p || p.did !== did) return false
+    await this.db.query('delete from passkeys where id = $1 and did = $2', [id, did])
+    this.byId.delete(id)
+    return true
   }
 
   /** A person left or was replaced: their passkeys go. */

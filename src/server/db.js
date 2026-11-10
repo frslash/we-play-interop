@@ -61,6 +61,7 @@ create table if not exists sessions (
   created_ms bigint not null,
   expires_ms bigint not null
 );
+alter table sessions add column if not exists last_seen_ms bigint;
 create index if not exists sessions_did on sessions (did);
 create table if not exists passkeys (
   id           text primary key,
