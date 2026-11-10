@@ -3,7 +3,7 @@
 //
 //   node agent/import-workspace-key.js init <dir>
 //       Makes a one-time X25519 pair. The private half goes to <dir>/wrap-key (mode 0600, never overwritten); prints the public
-//       half (base64url) and its fingerprint (first 8 hex characters of the SHA-256 of the public bytes). Nothing else.
+//       half (base64url) and its fingerprint (first 24 hex characters of the SHA-256 of the public bytes). Nothing else.
 //   node agent/import-workspace-key.js open <dir> <file> --env-file <path>
 //       (--into is the same as --env-file. Node itself reads an --env-file after the script name and stops when that file is
 //       missing; --into does not, so it is the one to use for a file that does not exist yet.)
@@ -47,6 +47,7 @@ function open (rest) {
   }
   if (pos.length !== 2 || !envFile) throw new WrapError(USAGE)
   const [dir, file] = pos
+  if (existsSync(envFile) && (statSync(envFile).mode & 0o077)) throw new WrapError('the env file can be read by someone other than its owner: make it readable only by its owner (chmod 600) and run this again; nothing was written')
   const wrapKey = join(dir, 'wrap-key')
   const privText = readText(wrapKey, 'the wrapping key (it is gone once a file has been opened)').trim()
   if (!/^[A-Za-z0-9_-]{43}$/.test(privText)) throw new WrapError('the wrapping key file is damaged')

@@ -2,6 +2,8 @@
 
 For whoever hosts the room. One Linux server runs the room and Caddy, which fetches and renews the https certificate. Members' data is encrypted on the wire (https) and on the disk (an encrypted volume). You, the host, can read it: nothing here hides it from you.
 
+Until the room moves to the server this guide describes, it runs on its founder's own computer, so its data, its settings and that computer's backups hold everything the room holds.
+
 Names used below are placeholders: `inwove.example` is your room's public name, `OLD-ROOM` is the address of the room you are moving from. Replace them. The commands assume you are logged in to the server as `root` (Hetzner's default with an SSH key). Lines that start with `#` are comments, not commands.
 
 ## 1. The server and the name

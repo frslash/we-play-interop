@@ -24,8 +24,8 @@ const fromB64u = (s) => {
   return Buffer.from(s, 'base64url')
 }
 
-/** First 8 hex characters of the SHA-256 of the public bytes. */
-export const fingerprint = (publicBytes) => createHash('sha256').update(publicBytes).digest('hex').slice(0, 8)
+/** First 24 hex characters (96 bits) of the SHA-256 of the public bytes: long enough that a swapped public half cannot be made to match. */
+export const fingerprint = (publicBytes) => createHash('sha256').update(publicBytes).digest('hex').slice(0, 24)
 
 /** The key's public fingerprint: the room's did:key for that seed (public, never a piece of the secret). */
 export const keyDid = (seedHex) => identityFromSeedHex(seedHex).did

@@ -6,11 +6,13 @@
 //
 // The key comes from the environment (WORKSPACE_KEY), or from the one WORKSPACE_KEY line of the file --env-file names. It is never
 // an argument. Prints the file name, the wrapping key's fingerprint and the key's public fingerprint (its did:key), and nothing else.
-// With --recovery, a second file, <out file>.recovery, is wrapped to the recovery public half (the recovery sitting itself is not built here).
+// The wrapping fingerprint it prints is that of the public half it was given: the person here compares it, by voice on a call, with what the new host showed.
+// With --recovery, a second file, <out file>.recovery, is wrapped to the recovery public half. Do not write a recovery file anywhere
+// until the 2-of-3 recovery sitting exists and has proved it opens (the sitting itself is not built here).
 import { existsSync, writeFileSync } from 'node:fs'
 import { WrapError, fingerprint, keyDid, readText, refuseKeyInArguments, run, workspaceKeyLine, wrapSeed } from './workspace-key-wrap.js'
 
-const USAGE = 'usage: export-workspace-key.js <public half> <out file> [--env-file <path>] [--recovery <public half>]'
+const USAGE = 'usage: export-workspace-key.js <public half> <out file> [--env-file <path>] [--recovery <public half>]\n  --recovery: do not write a recovery file anywhere until the 2-of-3 recovery sitting exists and has proved it opens'
 
 function parse (argv) {
   const pos = []

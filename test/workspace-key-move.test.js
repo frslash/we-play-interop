@@ -2,7 +2,7 @@
 // processes, the way a person would run them. Every key here is a throwaway made in the test.
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, describe, test } from 'node:test'
@@ -40,7 +40,7 @@ const walk = (d) => readdirSync(d, { withFileTypes: true, recursive: true }).fil
 describe('the round trip', () => {
   test('the same key ends in the env file, and both sides print the same public fingerprint', () => {
     const s = scene()
-    assert.match(s.initOut, /fingerprint: [0-9a-f]{8}\n/)
+    assert.match(s.initOut, /fingerprint: [0-9a-f]{24}\n/)
     assert.equal(mode(join(s.dir, 'wrap-key')), 0o600)
     const ex = exportTo(s)
     assert.equal(ex.status, 0, ex.stderr)
@@ -56,12 +56,12 @@ describe('the round trip', () => {
 
   test('the key comes from the environment too; an existing env file keeps its other lines and its mode', () => {
     const s = scene()
-    writeFileSync(s.newEnv, 'A=1\nWORKSPACE_KEY=old\nB=2\n', { mode: 0o640 })
+    writeFileSync(s.newEnv, 'A=1\nWORKSPACE_KEY=old\nB=2\n', { mode: 0o600 })
     const ex = run(EXPORT, [s.pub, s.file], { WORKSPACE_KEY: s.id.seedHex })
     assert.equal(ex.status, 0, ex.stderr)
     assert.equal(openIt(s).status, 0)
     assert.equal(readFileSync(s.newEnv, 'utf8'), `A=1\nWORKSPACE_KEY=${s.id.seedHex}\nB=2\n`)
-    assert.equal(mode(s.newEnv), 0o640)
+    assert.equal(mode(s.newEnv), 0o600)
   })
 
   test('--recovery writes a second file that only the recovery key opens', () => {
@@ -110,11 +110,28 @@ describe('what fails, and fails cleanly', () => {
     failsWithNothingWritten(s, openIt(s))
   })
 
+  test('an env file that anyone but its owner can read is refused and left alone; an owner-only one works', () => {
+    const s = scene()
+    exportTo(s)
+    writeFileSync(s.newEnv, 'A=1\n', { mode: 0o644 })
+    chmodSync(s.newEnv, 0o644)
+    const r = openIt(s)
+    assert.notEqual(r.status, 0)
+    assert.match(r.stderr, /readable only by its owner/)
+    assert.equal(readFileSync(s.newEnv, 'utf8'), 'A=1\n')
+    assert.equal(mode(s.newEnv), 0o644)
+    assert.ok(existsSync(s.file))
+    chmodSync(s.newEnv, 0o600)
+    const ok = openIt(s)
+    assert.equal(ok.status, 0, ok.stderr)
+    assert.equal(readFileSync(s.newEnv, 'utf8'), `A=1\nWORKSPACE_KEY=${s.id.seedHex}\n`)
+  })
+
   test('a wrong fingerprint', () => {
     const s = scene()
     exportTo(s)
     const f = JSON.parse(readFileSync(s.file, 'utf8'))
-    writeFileSync(s.file, JSON.stringify({ ...f, to: '00000000' }))
+    writeFileSync(s.file, JSON.stringify({ ...f, to: '0'.repeat(24) }))
     const r = openIt(s)
     failsWithNothingWritten(s, r)
     assert.match(r.stderr, /different public half/)

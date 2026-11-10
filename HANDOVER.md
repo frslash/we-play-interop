@@ -33,14 +33,15 @@ host). The key is never typed as an argument; the commands refuse one. Each prin
    old room is stopped.
 3. **The new host makes a one-time wrapping key** (Project Weave). `node agent/import-workspace-key.js init /root/key-move` makes a
    fresh pair, keeps the private half in `/root/key-move/wrap-key` (readable only by its owner; it never leaves that host), and prints
-   the public half and an 8-character fingerprint. *Done when:* those two lines are on the screen.
+   the public half and a 24-character fingerprint. *Done when:* those two lines are on the screen.
 4. **Carry the public half to the old host** (Project Weave to the founder; a public value, so any route will do). On the old host:
    `node agent/export-workspace-key.js <public half> /root/wrapped-key --env-file <the old room's env file>`. It reads the key from
    the room's own settings, writes only ciphertext, and prints the file's name, the wrapping fingerprint and the key's public
    fingerprint (the room's `did:key`). *Done when:* the file exists and the two fingerprints are printed.
 5. **Copy the file host to host, and compare** (the founder, with one person from Project Weave). Copy `/root/wrapped-key` to the new
-   host with `scp` or `rsync` over SSH, key only: not by chat, not by email. Then say both public fingerprints to each other on a
-   second channel (a call); they are public, so saying them is safe. *Done when:* the wrapping fingerprint matches what step 3 printed,
+   host with `scp` or `rsync` over SSH, key only: not by chat, not by email. The old host prints the fingerprint of the public half
+   it was given; the person at the old host compares it, **by voice on a call**, with the fingerprint the new host showed (or both read
+   out the whole public half). Do not compare by text or chat. The fingerprints are public, so saying them is safe. *Done when:* the wrapping fingerprint matches what step 3 printed,
    and both people have heard the key's `did:key` from the old host.
 6. **The new host unwraps and seals** (Project Weave). Make the new room's env file readable only by its owner
    (`umask 077; touch /srv/inwove/.env`, if it is not there yet), then
@@ -57,8 +58,9 @@ host). The key is never typed as an argument; the commands refuse one. Each prin
    host: the same export command with `--recovery <recovery public half>` writes a second file, `<out file>.recovery`; it is kept in the
    encrypted backup, and a person holding one share cannot open it. *Done when:* the file is in the backup and the sitting has proved it
    opens. The sitting itself is not built yet.
+   **Do not write a recovery file anywhere until the 2-of-3 recovery sitting exists and has proved it opens**; the security reviewer writes that sitting's steps.
 9. **Retire the old copy, with a date** (the founder). On the old host, delete the setting, the wrapped files and any env file or shell
-   history that held the key; then take the host down or wipe its volume. Write into the key register: the key's name, its new holder,
+   history that held the key; then take the host down or wipe its volume. Also name, for each of these, that it was deleted or that it is kept and why: the old computer's backups (for example Time Machine, and any cloud drive that syncs the folder), the tunnel's settings, and anything a script or person copied the room's settings into. The key register's row stays open until each is named, deleted, or said to be kept with the reason. Write into the key register: the key's name, its new holder,
    the date it moved, the date the old copy was destroyed, and the proof (the match in step 7). If the old host stays up for any
    reason, the register says so and why. *Done when:* the register row is full; write the date here too: `retired on ____-__-__`.
 10. **Rotate the key within a week of the move** (Project Weave, made on the new host only). The key lived on a host Project Weave did
