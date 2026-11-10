@@ -31,7 +31,7 @@ export async function gate () {
   const invite = /^\/i\/([A-Za-z0-9_-]{16,64})\/?$/.exec(location.pathname)?.[1] ?? null
   let session
   try { session = await call('/api/session') } catch { session = null }
-  if (session && (session.status === 404 || (session.ok && typeof session.body.signedIn !== 'boolean'))) { open(); return null } // a room with no door (tests, old rooms)
+  if (session?.ok && typeof session.body?.signedIn !== 'boolean') session = null // not the answer a members-only room gives: treat it as not answering, never as an open door
   if (session?.ok && session.body.signedIn) { if (invite) history.replaceState(null, '', '/'); open(); return session.body }
 
   return new Promise((resolve) => {
@@ -93,7 +93,10 @@ export async function gate () {
       let r
       try { r = await call(`/api/invite/${invite}`) } catch { return offline() }
       if (r.status >= 500) return offline()
-      if (!r.ok || !r.body.valid) return card(h('h1', null, 'This invitation does not work'), h('p', { class: 'why' }, 'It may have been used already, or it may have run out. Ask the person who invited you for a new link.'))
+      if (!r.ok || !r.body.valid) {
+        const why = { used: 'Someone has already used it: each link works once.', expired: 'It has run out: a link works for 7 days.', 'inviter-left': 'The person who made it is no longer a member.' }[r.body?.reason] ?? 'The room does not know this link.'
+        return card(h('h1', null, 'This invitation does not work'), h('p', { class: 'why' }, `${why} Ask a member for a new link.`))
+      }
       const who = r.body.invitedBy?.name
       const name = h('input', { type: 'text', maxlength: 60, placeholder: 'How the room will see you', autocomplete: 'nickname' })
       const msg = h('p', { class: 'gate-error', role: 'alert', hidden: true }), say = problem(msg)

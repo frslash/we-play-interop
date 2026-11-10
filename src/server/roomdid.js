@@ -88,9 +88,14 @@ export function signInPortalEndpoint (publicUrl) {
   try { const u = new URL(publicUrl); return u.protocol === 'https:' ? u.origin + '/' : '' } catch { return '' }
 }
 
-/** The document the room's DID should have: the room's signing key, a service pointing at the room's site, its Trust Task door, and the page people sign in on. */
+/**
+ * The document the room's DID should have: the room's signing key (it signs the log's witnesses and members' passes)
+ * and a service pointing at the room's site. Since the room became members-only (November 2026) it has no open Trust
+ * Task door and no wallet sign-in page, so its DID no longer lists either: a listed door that answers nothing only
+ * invites probing.
+ */
 export function roomDidDocument ({ did, roomPublicKey, publicUrl }) {
-  const vm = `${did}#room`, portal = signInPortalEndpoint(publicUrl)
+  const vm = `${did}#room`
   return {
     '@context': ['https://www.w3.org/ns/did/v1', 'https://w3id.org/security/multikey/v1'],
     id: did,
@@ -99,8 +104,6 @@ export function roomDidDocument ({ did, roomPublicKey, publicUrl }) {
     assertionMethod: [vm],
     service: [
       { id: `${did}#room-site`, type: 'LinkedDomains', serviceEndpoint: new URL(publicUrl).origin + '/' },
-      { id: `${did}#trust-tasks`, type: HTTPS_SERVICE, serviceEndpoint: trustTaskBase(publicUrl) }, // found by its type, never by this #id
-      ...(portal ? [{ id: `${did}#sign-in-portal`, type: 'SignInPortal', serviceEndpoint: portal }] : []),
     ],
   }
 }
@@ -112,7 +115,8 @@ export function roomDidDocument ({ did, roomPublicKey, publicUrl }) {
  * until a person who holds the key adds an entry without it. Nothing fails meanwhile: the room neither asks for the
  * service nor answers at it. This says which of those the live document still lists, for /api/info. Never throws.
  */
-export const RETIRED_SERVICES = ['DIDCommMessaging']
+export const RETIRED_SERVICES = ['DIDCommMessaging', HTTPS_SERVICE, 'SignInPortal'] // the join desk's inbox, then (members-only, November 2026) the Trust Task door and the wallet sign-in page
+const listsRetired = (doc) => (doc?.service ?? []).some((s) => RETIRED_SERVICES.includes(s?.type))
 export function roomDidDiffers (document) {
   try {
     const listed = RETIRED_SERVICES.filter((t) => (document?.service ?? []).some((s) => s?.type === t))
@@ -180,7 +184,7 @@ export async function growRoomDid ({ dataDir, file = '', publicUrl, roomPublicKe
     const wantDoc = roomDidDocument({ did, roomPublicKey, publicUrl })
     const have = current.didDocument // as resolved: did:webvh adds its own #files and #whois services, so look for ours
     const docOk = ['verificationMethod', 'authentication', 'assertionMethod'].every((k) => sameJson(have[k], wantDoc[k])) &&
-      wantDoc.service.every((s) => (have.service ?? []).some((h) => sameJson(h, s)))
+      wantDoc.service.every((s) => (have.service ?? []).some((h) => sameJson(h, s))) && !listsRetired(have)
     const committed = current.didDocumentMetadata.nextKeyHashes ?? []
     const nextOk = !nextHash || sameJson(committed, [nextHash])
     const keyOk = updateKey ? sameJson(keys, [updateKey]) : !keys.includes(rehearsalKey)
@@ -211,7 +215,7 @@ export async function growRoomDid ({ dataDir, file = '', publicUrl, roomPublicKe
     // verify, the update keys must be exactly what was asked, and the document must be the one wanted. Else change nothing.
     const after = await resolveDIDFromLog(r.log)
     const afterDoc = after.didDocument
-    const afterOk = sameJson(after.didDocumentMetadata.updateKeys ?? [], nextKeys) && (!nextHash || sameJson(after.didDocumentMetadata.nextKeyHashes ?? [], [nextHash])) && ['verificationMethod', 'authentication', 'assertionMethod'].every((k) => sameJson(afterDoc[k], wantDoc[k])) && wantDoc.service.every((s) => (afterDoc.service ?? []).some((h) => sameJson(h, s)))
+    const afterOk = sameJson(after.didDocumentMetadata.updateKeys ?? [], nextKeys) && (!nextHash || sameJson(after.didDocumentMetadata.nextKeyHashes ?? [], [nextHash])) && ['verificationMethod', 'authentication', 'assertionMethod'].every((k) => sameJson(afterDoc[k], wantDoc[k])) && wantDoc.service.every((s) => (afterDoc.service ?? []).some((h) => sameJson(h, s))) && !listsRetired(afterDoc)
     if (!afterOk) { log('room DID not grown: the new log did not resolve to what was asked'); return { grown: false, reason: 'new log did not verify' } }
     // the new key first (so a crash leaves a key that can still sign), then the log, then the key takes its usual name
     if (fresh) writeFileSync(join(dir, 'update-key.next.txt'), fresh.seedHex + '\n', { mode: 0o600 })
