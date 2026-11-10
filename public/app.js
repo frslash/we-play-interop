@@ -810,7 +810,7 @@ function renderTalk (scrollDown, { holdAt = null } = {}) {
     talk.pane = store.get('wpi.talkPane') === 'people' ? 'people' : 'all'
     talk.plist = h('div', { class: 'chat chat-people', 'aria-live': 'polite' })
     talk.plist.addEventListener('scroll', () => { talk.pscrolled = true }, { passive: true })
-    talk.pinput = keep(h('textarea', { rows: 1, maxlength: 2000, placeholder: 'Say something only people can read…', 'aria-label': 'A message only people can read' }), 'chat.people')
+    talk.pinput = keep(h('textarea', { rows: 1, maxlength: 2000, placeholder: 'People only…', 'aria-label': 'A message only people can read' }), 'chat.people')
     talk.pinput.addEventListener('input', () => { talk.pinput.style.height = 'auto'; talk.pinput.style.height = Math.min(160, talk.pinput.scrollHeight) + 'px' })
     talk.pinput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && matchMedia('(min-width: 760px)').matches) { ev.preventDefault(); sendPeople() } })
     const pcomposer = h('div', { class: 'composer' }, h('div', { class: 'composer-row' }, talk.pinput, h('button', { class: 'btn primary send', onclick: sendPeople, 'aria-label': 'Send to People only' }, '↑')))
