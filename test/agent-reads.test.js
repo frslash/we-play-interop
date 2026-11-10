@@ -19,7 +19,8 @@ const listTools = { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }
 
 describe('an agent with its own key reads with a signed header', () => {
   let room, a, agent, delegation
-  const read = (path, header, extra = {}) => room.call(path, { headers: { [AGENT_HEADER]: header ?? agentReadHeader(agent, extra.method ?? 'GET', path) }, ...extra })
+  const sign = (who, method, path, opts = {}) => agentReadHeader(who, method, path, { origin: room.base, ...opts })
+  const read = (path, header, extra = {}) => room.call(path, { headers: { [AGENT_HEADER]: header ?? sign(agent, extra.method ?? 'GET', path) }, ...extra })
   before(async () => {
     room = await startRoom(); a = await room.firstMember('Person A'); agent = newIdentity()
     assert.equal((await room.linkGithub(a)).status, 201)
@@ -38,28 +39,47 @@ describe('an agent with its own key reads with a signed header', () => {
   })
 
   test('the same header twice: the second is refused as already used', async () => {
-    const h = agentReadHeader(agent, 'GET', '/api/state')
+    const h = sign(agent, 'GET', '/api/state')
     assert.equal((await read('/api/state', h)).status, 200)
     const again = await read('/api/state', h); assert.equal(again.status, 401); assert.match(again.body.agent, /already used/)
   })
 
-  test('a read signed more than two minutes ago (or that far ahead) is refused as stale', async () => {
-    for (const ms of [-3 * 60_000, 3 * 60_000]) {
-      const r = await read('/api/state', agentReadHeader(agent, 'GET', '/api/state', { issuedAt: new Date(Date.now() + ms).toISOString() }))
-      assert.equal(r.status, 401); assert.match(r.body.agent, /older than two minutes/)
+  test('a read signed more than 60 seconds ago (or that far ahead) is refused as stale', async () => {
+    for (const ms of [-90_000, 90_000]) {
+      const r = await read('/api/state', sign(agent, 'GET', '/api/state', { issuedAt: new Date(Date.now() + ms).toISOString() }))
+      assert.equal(r.status, 401); assert.match(r.body.agent, /older than 60 seconds/)
     }
-    assert.equal((await read('/api/state', agentReadHeader(agent, 'GET', '/api/state', { issuedAt: new Date(Date.now() - 100_000).toISOString() }))).status, 200, 'a minute and a half is still fine')
+    assert.equal((await read('/api/state', sign(agent, 'GET', '/api/state', { issuedAt: new Date(Date.now() - 50_000).toISOString() }))).status, 200, 'fifty seconds is still fine')
   })
 
-  test('a read is for one request: another path or method gets nothing', async () => {
-    const h = agentReadHeader(agent, 'GET', '/api/state')
-    const r = await read('/api/log', h); assert.equal(r.status, 401); assert.match(r.body.agent, /different method or path/)
-    assert.equal((await read('/api/state', agentReadHeader(agent, 'POST', '/api/state'))).status, 401)
+  test('the same nonce in a freshly signed document is refused too (the nonce is single use, not only the document)', async () => {
+    const n = 'nonce_used_once_0123456789'
+    assert.equal((await read('/api/state', sign(agent, 'GET', '/api/state', { nonce: n }))).status, 200)
+    const again = await read('/api/state', sign(agent, 'GET', '/api/state', { nonce: n })); assert.equal(again.status, 401); assert.match(again.body.agent, /already used/)
+  })
+
+  test('a signed read is for reading: a valid header on a POST, PUT or DELETE is a 401, and so is a header signed for one', async () => {
+    for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
+      const r = await room.call('/api/state', { method, headers: { [AGENT_HEADER]: sign(agent, 'GET', '/api/state') } })
+      assert.equal(r.status, 401, method); assert.match(r.body.agent, /GET and HEAD only/)
+      const r2 = await room.call('/api/draft', { method, headers: { [AGENT_HEADER]: sign(agent, method, '/api/draft') }, body: {} })
+      assert.equal(r2.status, 401, method)
+    }
+    const post = await room.call('/api/draft', { method: 'POST', headers: { [AGENT_HEADER]: sign(agent, 'POST', '/api/draft') }, body: {} })
+    assert.equal(post.status, 401); assert.match(post.body.agent, /GET and HEAD only/)
+    assert.equal((await read('/api/state', sign(agent, 'GET', '/api/state'), { method: 'HEAD' })).status, 401, 'a GET signature is not a HEAD signature')
+    assert.equal((await read('/api/state', sign(agent, 'HEAD', '/api/state'), { method: 'HEAD' })).status, 200, 'HEAD signed for HEAD is let in')
+  })
+
+  test('a read is for one room: a header signed for another origin is refused', async () => {
+    for (const origin of ['https://other.example', room.base.replace('127.0.0.1', 'localhost'), room.base.replace('http:', 'https:')]) {
+      const r = await read('/api/state', sign(agent, 'GET', '/api/state', { origin })); assert.equal(r.status, 401, origin); assert.match(r.body.agent, /different room, method or path/)
+    }
   })
 
   test('the wrong signer: a person, a stranger, or a header whose issuer is not the key that signed it', async () => {
-    for (const who of [a.id, newIdentity()]) assert.equal((await read('/api/state', agentReadHeader(who, 'GET', '/api/state'))).status, 401)
-    const forged = JSON.parse(Buffer.from(agentReadHeader(newIdentity(), 'GET', '/api/state'), 'base64url').toString())
+    for (const who of [a.id, newIdentity()]) assert.equal((await read('/api/state', sign(who, 'GET', '/api/state'))).status, 401)
+    const forged = JSON.parse(Buffer.from(sign(newIdentity(), 'GET', '/api/state'), 'base64url').toString())
     forged.issuer = agent.did // the agent's name on someone else's signature
     const r = await read('/api/state', Buffer.from(JSON.stringify(forged)).toString('base64url')); assert.equal(r.status, 401); assert.match(r.body.agent, /signature/)
   })
@@ -69,13 +89,13 @@ describe('an agent with its own key reads with a signed header', () => {
     assert.equal((await room.call('/api/state', { cookie: a.cookie, headers: { [AGENT_HEADER]: 'junk' } })).status, 200, 'a person with a session is a person, whatever else they send')
   })
 
-  test('the public /mcp takes a person\'s session or the header, and nothing else is let in', async () => {
+  test('the public /mcp takes a person\'s session and nothing else: a signed read is not for a POST', async () => {
     assert.equal((await room.call('/mcp', { method: 'POST', headers: MCP, body: listTools })).status, 401)
     assert.equal((await room.call('/mcp', { method: 'POST', headers: { ...MCP, 'x-inwove-agent': 'junk' }, body: listTools })).status, 401)
-    const stranger = await room.call('/mcp', { method: 'POST', headers: { ...MCP, [AGENT_HEADER]: agentReadHeader(newIdentity(), 'POST', '/mcp') }, body: listTools }); assert.equal(stranger.status, 401)
+    const stranger = await room.call('/mcp', { method: 'POST', headers: { ...MCP, [AGENT_HEADER]: sign(newIdentity(), 'POST', '/mcp') }, body: listTools }); assert.equal(stranger.status, 401)
     const person = await room.call('/mcp', { method: 'POST', cookie: a.cookie, headers: MCP, body: listTools }); assert.equal(person.status, 200)
     assert.ok(person.text.includes('overview'))
-    const viaAgent = await room.call('/mcp', { method: 'POST', headers: { ...MCP, [AGENT_HEADER]: agentReadHeader(agent, 'POST', '/mcp') }, body: listTools }); assert.equal(viaAgent.status, 200); assert.ok(viaAgent.text.includes('overview'))
+    const viaAgent = await room.call('/mcp', { method: 'POST', headers: { ...MCP, [AGENT_HEADER]: sign(agent, 'POST', '/mcp') }, body: listTools }); assert.equal(viaAgent.status, 401, 'MCP is a POST: an agent that holds its own key uses the bridge, which reads signed and writes signed lines')
   })
 
   test('a hosted agent keeps its link: the secret in it is the credential, no header and no session', async () => {
