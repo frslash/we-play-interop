@@ -68,11 +68,6 @@ export async function ensureRoomDid ({ dataDir, file = '', publicUrl, log = cons
   }
 }
 
-/** Where the room takes DIDComm messages (the join desk's route), for PUBLIC_URL. '' when there is none. */
-export function didcommEndpoint (publicUrl) {
-  try { return publicUrl ? new URL(publicUrl).origin + '/didcomm' : '' } catch { return '' }
-}
-
 /**
  * Where the room takes standard Trust Task documents, for PUBLIC_URL: the base its DID names. The door is this +
  * "/trust-tasks" (src/server/door.js): the https binding makes the service's endpoint the base and has every sender
@@ -93,7 +88,7 @@ export function signInPortalEndpoint (publicUrl) {
   try { const u = new URL(publicUrl); return u.protocol === 'https:' ? u.origin + '/' : '' } catch { return '' }
 }
 
-/** The document the room's DID should have: the room's signing key, a service pointing at the room's site, its DIDComm inbox, its Trust Task door, and the page people sign in on. */
+/** The document the room's DID should have: the room's signing key, a service pointing at the room's site, its Trust Task door, and the page people sign in on. */
 export function roomDidDocument ({ did, roomPublicKey, publicUrl }) {
   const vm = `${did}#room`, portal = signInPortalEndpoint(publicUrl)
   return {
@@ -104,7 +99,6 @@ export function roomDidDocument ({ did, roomPublicKey, publicUrl }) {
     assertionMethod: [vm],
     service: [
       { id: `${did}#room-site`, type: 'LinkedDomains', serviceEndpoint: new URL(publicUrl).origin + '/' },
-      { id: `${did}#didcomm`, type: 'DIDCommMessaging', serviceEndpoint: { uri: didcommEndpoint(publicUrl), accept: ['didcomm/v2'] } },
       { id: `${did}#trust-tasks`, type: HTTPS_SERVICE, serviceEndpoint: trustTaskBase(publicUrl) }, // found by its type, never by this #id
       ...(portal ? [{ id: `${did}#sign-in-portal`, type: 'SignInPortal', serviceEndpoint: portal }] : []),
     ],
@@ -112,20 +106,35 @@ export function roomDidDocument ({ did, roomPublicKey, publicUrl }) {
 }
 
 /**
+ * Services the room used to ask its DID to list and no longer does. Until November 2026 the room asked for a
+ * DIDCommMessaging service (its join desk's inbox); the desk was taken out because a real wallet refused the code
+ * that led to it. The room's host does not hold the DID's update key, so a DID already published keeps listing it
+ * until a person who holds the key adds an entry without it. Nothing fails meanwhile: the room neither asks for the
+ * service nor answers at it. This says which of those the live document still lists, for /api/info. Never throws.
+ */
+export const RETIRED_SERVICES = ['DIDCommMessaging']
+export function roomDidDiffers (document) {
+  try {
+    const listed = RETIRED_SERVICES.filter((t) => (document?.service ?? []).some((s) => s?.type === t))
+    return listed.map((type) => ({ service: type, why: 'the room no longer asks for it and nothing answers at it; whoever holds the DID\'s update key can publish an entry without it' }))
+  } catch { return [] }
+}
+
+/**
  * What the room's DID says right now, read from the same log /.well-known/did.jsonl serves (so it is what a wallet
- * resolves): its id, its DIDComm endpoint, the base of its Trust Task door, the key it lists as #room for
+ * resolves): its id, the base of its Trust Task door, the key it lists as #room for
  * authentication (the room can answer as this DID only when that is its own key), and the whole document. Nulls
  * when there is no log or it does not verify. Never throws.
  */
 export async function roomDidStatus ({ dataDir, file = '' }) {
-  const none = { did: null, didcomm: null, trustTasks: null, roomKey: null, document: null }
+  const none = { did: null, trustTasks: null, roomKey: null, document: null }
   try {
     const text = readRoomDidLog({ dataDir, file })
     if (text === null) return none
     const doc = (await resolveDIDFromLog(text.trim().split('\n').map((l) => JSON.parse(l)))).didDocument
     const room = `${doc.id}#room`
     const key = (doc.authentication ?? []).includes(room) ? (doc.verificationMethod ?? []).find((m) => m.id === room)?.publicKeyMultibase : null
-    return { did: doc.id ?? null, didcomm: serviceEndpoint(doc, 'DIDCommMessaging'), trustTasks: serviceEndpoint(doc, HTTPS_SERVICE), roomKey: key ?? null, document: doc }
+    return { did: doc.id ?? null, trustTasks: serviceEndpoint(doc, HTTPS_SERVICE), roomKey: key ?? null, document: doc }
   } catch { return none }
 }
 
@@ -136,7 +145,7 @@ const readSeed = (p) => { try { return identityFromSeedHex(readFileSync(p, 'utf8
 
 /**
  * Bring the room's DID up to date with a new signed log entry (never rewriting old ones): its document carries the
- * room's signing key and its services for PUBLIC_URL (the site, the DIDComm inbox, the Trust Task door), and its update
+ * room's signing key and its services for PUBLIC_URL (the site, the Trust Task door, the sign-in page), and its update
  * key is no longer the rehearsal key. A service the document lacks (one this code learned to name since the last entry)
  * is reason enough for a new entry.
  * The new update key is ROOM_DID_UPDATE_KEY (a public Ed25519 multikey held by the room's people) when set; otherwise

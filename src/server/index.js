@@ -1,6 +1,6 @@
 // InWove: one small server. Reads are public; every write is a signed
 // Trust Task document, verified and appended to the hash-chained log.
-import { handleRoomDid, ensureRoomDid, growRoomDid } from './roomdid.js'
+import { handleRoomDid, ensureRoomDid, growRoomDid, roomDidDiffers } from './roomdid.js'
 import { RoomDidWatch } from './room-did-watch.js'
 import { Door, serveRoomTasks } from './door.js'
 import { Community } from './community.js'
@@ -298,7 +298,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (await ctx.signIn.handle(req, res, path, q, send)) return // ── wallet sign-in: what a page reads to start one, and what the room holds for a browser key (reads only)
     if (path === '/.well-known/webfinger' || path.startsWith('/ap/')) return ctx.activitypub.handle(req, res, url)
     if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
-    if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), join: { via: config.communityDid ? 'community' : 'none' }, door: ctx.door.info(baseOf(req)) }) }
+    if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), join: { via: config.communityDid ? 'community' : 'none' }, roomDid: { differs: roomDidDiffers(ctx.join.status.document) }, door: ctx.door.info(baseOf(req)) }) }
     if (path === '/api/state') return send(res, 200, views.state(ctx))
     if (path === '/api/steps') return send(res, 200, ctx.facilitator.view())
     if (path === '/api/map' || path === '/api/board') return send(res, 200, views.mapView(ctx))

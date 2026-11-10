@@ -52,8 +52,26 @@ describe('the old join link and the removed join desk', () => {
     const i = await (await fetch(base + '/api/info')).json()
     assert.equal('keyring' in i, false); assert.equal('visits' in i, false)
     assert.deepEqual(i.join, { via: 'none' })
+    assert.deepEqual(i.roomDid, { differs: [] }, 'no DID log, nothing that differs')
     assert.ok(i.door && i.door.address, 'the door report stays')
     assert.ok(!/_oob|invitation/i.test(JSON.stringify(i)), 'nothing about an invitation')
+  })
+})
+
+describe('/api/info says what a live DID still lists that the room no longer asks for', () => {
+  let ctx, base, dir
+  before(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'wpi-visit-d-'))
+    const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, publicUrl: 'https://interop.example', checkEveryMinutes: 0, boardDataUrl: 'data:application/json,{}', llm: { ...baseConfig.llm, apiKey: '' } }
+    ctx = await createApp(config, { hostWelcomeMs: null })
+    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${ctx.server.address().port}`
+  })
+  after(async () => { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) })
+  test('a DID document that lists DIDCommMessaging: the room runs, and /api/info names it (the real DID-log case is in room-did-grow.test.js)', async () => {
+    ctx.join.status = { ...ctx.join.status, at: Date.now() + 60_000, document: { id: 'did:webvh:x', service: [{ id: '#didcomm', type: 'DIDCommMessaging', serviceEndpoint: 'https://interop.example/didcomm' }] } } // as a read of the log 'just now'
+    const r = await fetch(base + '/api/info'); assert.equal(r.status, 200)
+    assert.deepEqual((await r.json()).roomDid.differs.map((d) => d.service), ['DIDCommMessaging'])
   })
 })
 
