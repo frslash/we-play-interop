@@ -3,6 +3,7 @@
 // Each source is a copy someone keeps: a mirror's address (it serves /api/log, see agent/mirror.js),
 // a mirror's entries.jsonl, or an export (.json). No source is trusted: every entry must link, hash and
 // carry two good signatures, and the result must pass the whole-log check with no signature unchecked.
+// A source that is a members-only room's address needs a member: set WPI_MEMBER_KEY_FILE (a file holding your key).
 //   node agent/rebuild.js <copy> [<copy> ...] --room did:key:... [--out rebuilt-export.json]
 // --room is required: the room's DID, from somewhere other than the copies (the room's page, your own
 // notes). Without it, a full copy of some other room would rebuild and pass as this one.
@@ -12,6 +13,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { rebuildFromCopies } from '../src/shared/rebuild.js'
 import { makeExport } from '../src/server/export.js'
 import { createResolver } from '../src/server/resolver.js'
+import { RoomReadError, roomFetch } from './member-session.js'
 
 const args = process.argv.slice(2)
 const opt = (k) => { const i = args.indexOf('--' + k); return i >= 0 ? args.splice(i, 2)[1] : null }
@@ -25,9 +27,9 @@ if (!args.length) { console.error(usage); process.exit(2) }
 
 async function readCopy (src) {
   if (/^https?:\/\//.test(src)) {
-    const base = src.replace(/\/$/, ''), entries = []
+    const base = src.replace(/\/$/, ''), entries = [], get = roomFetch(base)
     for (let after = -1; ;) {
-      const r = await fetch(`${base}/api/log?after=${after}&limit=500`, { signal: AbortSignal.timeout(20_000) })
+      const r = await get(`${base}/api/log?after=${after}&limit=500`, { signal: AbortSignal.timeout(20_000) })
       if (!r.ok) throw new Error(`answered ${r.status}`)
       const page = (await r.json()).entries ?? []
       entries.push(...page)
@@ -44,7 +46,7 @@ async function readCopy (src) {
 
 const copies = [], unreadable = []
 for (const src of args) {
-  try { copies.push({ name: src, entries: await readCopy(src) }) } catch (err) { unreadable.push({ name: src, problem: String(err.message).slice(0, 200) }) }
+  try { copies.push({ name: src, entries: await readCopy(src) }) } catch (err) { unreadable.push({ name: src, problem: String(err.message).slice(0, 200) }); if (err instanceof RoomReadError) console.error(err.message) }
 }
 const resolver = createResolver()
 const r = await rebuildFromCopies(copies, { room, keyFor: (d, vm, p) => resolver.keyFor(d, vm, p) })

@@ -8,11 +8,11 @@ The room is MIT-licensed code plus a signed public log. This file lists what has
 2. **The host.** One ordinary Linux server running the room and Caddy (automatic https) with `docker-compose.yml`, its data on an encrypted volume. [`docs/hosting.md`](docs/hosting.md) is the whole guide, from creating the server to backups. Health check: `/healthz`.
 3. **The domain.** Set as `PUBLIC_URL`. The room's Mastodon account (`@room@<host>`) and links use it, so announce it only once it is fixed.
 4. **The record.** Export from the old room, import into the new one:
-   - `node agent/export-log.js <old-url> > room-export.json`
+   - `WPI_MEMBER_KEY_FILE=<file holding a member's key> node agent/export-log.js <old-url> > room-export.json` (both rooms are members-only: the tools sign in with a member's own key, never one given on the command line)
    - `node agent/import-log.js room-export.json <data-dir>` (clean, empty instance only; it refuses unless the whole chain verifies and the head matches)
-   - Check with `node agent/verify-log.js <new-url>` that the chain head equals the old one.
+   - Check with `WPI_MEMBER_KEY_FILE=<key file> node agent/verify-log.js <new-url>` that the chain head equals the old one.
    - On the new server these run inside the room's image: the exact commands are in section 7 of [`docs/hosting.md`](docs/hosting.md).
-   The export holds only what the public log shows. Notebooks, drafts, wake links and keys are not in it.
+   A member sees people-only lines, so a member's export is the whole record. Notebooks, drafts, wake links and keys are not in the log, so not in it. Keep the file private.
 
 ## Secrets the new owner makes themselves (never committed)
 
