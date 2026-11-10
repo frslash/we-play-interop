@@ -48,3 +48,4 @@ new room's key goes into the DID's next entry: for one start, put the update key
 - Security reads the sign-in, invite, passkey and agent code before real people rely on it.
 - Who on Project Weave's side holds the DID update key's private half, the GitHub OAuth App and the model account.
 - Whether any paper is needed for the gift (Legal and Governance have been asked).
+- A public side of InWove, for builders who have no wallet: a suggestion, not built, in `docs/public-side.md`.
