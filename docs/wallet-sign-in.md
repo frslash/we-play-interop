@@ -6,7 +6,7 @@ This is the room's side of OpenVTC's wallet sign-in (the `auth/oob` Trust Tasks,
 
 **What it is not, yet.** A sign-in does not join anyone to the room and cannot say, propose or vote. The room can answer "who approved this browser key, and until when", and nothing more. [What it would take](#proposed-letting-a-signed-in-browser-write) is written out at the end, for the room's people to decide.
 
-**Not the same as the other QR code.** The You tab also shows "Join on your phone": a short link a phone's camera opens, carrying a DIDComm invitation in `?_oob=`. Nothing in OpenVTC's code read here scans that one, and its design note says a trigger link "is not a variant of the DIDComm out-of-band encoding". It stays until the room's people decide otherwise. The two codes are labelled on the page.
+**The only code on the page.** The room had a second QR code until November 2026, "Join on your phone", that carried a DIDComm invitation in `?_oob=`. A real wallet (Keyring) scanned it by mistake and refused it ("DIDComm v2 is not enabled for this agent"), while it read this sign-in code correctly: nothing in OpenVTC's code read here scans a DIDComm invitation, and its design note says a trigger link "is not a variant of the DIDComm out-of-band encoding". The code was taken out, so this is the one code the page shows. A short link someone already holds (`/j/<code>`) now opens the room's page.
 
 ## The exchange
 

@@ -1099,38 +1099,6 @@ function lostKeyPanel (mine) {
     !S.hosts?.length ? h('p', { class: 'meta' }, 'This room has no host named yet (ROOM_HOSTS), so the last step waits until it has one.') : null)
 }
 
-// ---------- join on your phone: a short link for this visit only, as a QR code ----------
-// The room makes the link (POST /api/visit); it opens once and runs out after ten minutes. A phone camera
-// opens it into this page's join flow; a wallet reads the room's DID and a DIDComm invitation behind it.
-// This code is for a phone's camera. The code a wallet scans to sign in is another one, on the card after it (signin.js).
-const visit = { url: null, oob: null, keyring: null, until: 0, asking: null, timer: null, img: null, label: null, failed: 0 }
-const visitText = () => visit.oob || visit.url // the ?_oob= invitation itself when the room made one, so a wallet that reads the code (Keyring) finds it
-const keyringLabel = () => visit.keyring?.ready ? 'Ready for Keyring' : '' // only when the room reports every part of it live
-const visitFresh = () => visit.url && visit.until - (Date.now() + serverOffset) > 30_000
-function askVisit (again) {
-  if ((visitFresh() && !again) || visit.asking || Date.now() - visit.failed < 60_000) return // refused: wait a minute, not every redraw
-  visit.asking = api('/api/visit', { method: 'POST' }).then((r) => {
-    if (!r.ok) { visit.failed = Date.now(); return }
-    visit.url = r.body.url; visit.oob = r.body.oob ?? null; visit.keyring = r.body.keyring ?? null; visit.until = Date.parse(r.body.expiresAt)
-    if (visit.img?.isConnected) visit.img.src = `/api/qr.svg?text=${encodeURIComponent(visitText())}`
-    if (visit.label?.isConnected) visit.label.textContent = keyringLabel()
-    clearTimeout(visit.timer) // a fresh code shortly before this one runs out, while the page is still showing it
-    visit.timer = setTimeout(() => { if (visit.img?.isConnected && !joined()) askVisit(true) }, Math.max(5_000, visit.until - (Date.now() + serverOffset) - 30_000))
-  }).catch(() => {}).finally(() => { visit.asking = null })
-}
-function phoneCard () {
-  if (window.matchMedia?.('(hover: none) and (pointer: coarse)').matches) return null // already on a phone: nothing to scan
-  visit.img = h('img', { class: 'qr small', alt: 'QR code: scan it to join on your phone', src: visitFresh() ? `/api/qr.svg?text=${encodeURIComponent(visitText())}` : null })
-  visit.label = h('span', { class: 'meta keyring-ready' }, visitFresh() ? keyringLabel() : '')
-  askVisit()
-  const did = S.workspace
-  return h('div', { class: 'card join-qr' },
-    h('p', { class: 'why' }, h('strong', null, 'Join on your phone. '), 'Scan with your phone’s camera: it opens this room there.'), visit.img, visit.label,
-    h('div', { class: 'row' }, h('span', { class: 'meta grow' }, 'For this visit only.'), h('button', { class: 'btn tiny', onclick: () => askVisit(true) }, 'New code')),
-    fold('join-did', null, h('summary', null, 'Show the plain DID code'),
-      h('p', { class: 'why' }, 'For a wallet that reads the room’s DID itself. The same for everyone, and it does not run out.'),
-      h('img', { class: 'qr small', src: `/api/qr.svg?text=${encodeURIComponent(did)}`, alt: 'QR code of the room’s DID' }), h('p', null, h('code', null, did))))
-}
 // ---------- the community whose membership pass the room takes ----------
 // A room can name one community (COMMUNITY_DID). This card says who it is and where to join it, as the room read it
 // from the community's own DID a moment ago (/api/community, asked at most once a minute), or that none is set.
@@ -1193,7 +1161,7 @@ function renderYou () {
         h('label', null, 'Name', name),
         h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn primary', onclick: join }, 'Join')),
         h('details', null, h('summary', null, 'I already have a key'), h('label', null, 'Your key', seedIn), h('button', { class: 'btn', onclick: () => { try { me = identityFromSeedHex(seedIn.value); store.set('wpi.seed', me.seedHex); store.set('wpi.keySaved', me.did); toast('Key loaded.'); refresh() } catch (err) { toast(err.message) } } }, 'Use this key'))),
-      phoneCard(), communityCard(), walletCard(h, tech, S.signIn))
+      communityCard(), walletCard(h, tech, S.signIn))
   }
   const mine = person(me.did)
   const myAgents = S.people.filter((p) => p.kind === 'agent' && p.principal === me.did && !p.removed)

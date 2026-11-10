@@ -1,7 +1,7 @@
 // InWove: one small server. Reads are public; every write is a signed
 // Trust Task document, verified and appended to the hash-chained log.
 import { handleRoomDid, ensureRoomDid, growRoomDid } from './roomdid.js'
-import { JoinRoute } from './join-route.js'
+import { RoomDidWatch } from './room-did-watch.js'
 import { Door, serveRoomTasks } from './door.js'
 import { Community } from './community.js'
 import { createHash } from 'node:crypto'
@@ -40,7 +40,6 @@ import { RESOURCES as CURATED_RESOURCES } from '../../public/resources.js'
 import { Cursors } from './cursors.js'
 import { AGREED } from './rules.js'
 import { ActivityPub } from './activitypub.js'
-import { CODE_RE, Visits, interaction, visitLocation } from './visits.js'
 import { SignIn, registerSignIn } from './signin.js'
 import { callerOf } from './caller.js'
 import { secretIn } from '../shared/guard.js'
@@ -152,13 +151,12 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.sources = new Sources({ dataDir: config.dataDir, ...sources }) // `sources` lets tests point it at a fake server; the app passes none
   // the projects shelf: every project's public code at one named commit, for agents to list, read and search (never fetched with the room's token)
   ctx.shelf = new Shelf({ dataDir: config.dataDir, maxBytes: (config.shelfMaxMb ?? 300) * 1024 * 1024, own: config.workspaceRepo, pins: pinsFromCommunity(root), named: () => namedRepos(ctx, CURATED_RESOURCES), ...shelf }) // `shelf` lets tests play GitHub from a local server; the app passes none
-  ctx.visits = new Visits() // join links for one visit each, in memory
-  ctx.join = new JoinRoute({ identity, config, resolver }) // the join desk at /didcomm, for the test community only
+  ctx.join = new RoomDidWatch({ identity, config }) // what the room's DID says and who the room answers as; the name is the one door.js reads
   await ctx.join.refresh(true)
   // the Trust Task door (door.js): other projects' software hands the room standard signed documents here. Made early, so any part of the room made after it can add its own tasks with ctx.door.register()
   ctx.door = serveRoomTasks(new Door({ ctx }), ctx)
-  // the community whose membership pass the room takes (COMMUNITY_DID); it answers as the DID the join desk speaks as
-  ctx.community = new Community({ config, resolver, identity, room: () => ctx.join.desk.room, ...(communityFetch ? { fetch: communityFetch } : {}) })
+  // the community whose membership pass the room takes (COMMUNITY_DID); it answers as the DID the room speaks as
+  ctx.community = new Community({ config, resolver, identity, room: () => ctx.join.room, ...(communityFetch ? { fetch: communityFetch } : {}) })
   // ── wallet sign-in (auth/oob/*, src/server/signin.js). This and the one line marked the same way in route() are all of it here.
   ctx.signIn = new SignIn({ identity, config, resolver, log, door: () => ctx.door })
   registerSignIn(ctx.door, ctx) // its six tasks go on the room's Trust Task door, beside discovery, ping and the log's lines
@@ -261,30 +259,8 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   /** The address as a limit key: one the room could not confirm is marked, so it still limits but is never taken for a real network (sign-in's "same network" says unknown for it). */
   const ipOf = (req) => { const c = callerFor(req); return c.trusted ? c.ip : 'untrusted:' + c.ip }
   const baseOf = (req) => config.publicUrl || `${callerFor(req).https ? 'https' : 'http'}://${req.headers.host}`
-  const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
-
-  /** A join link opened: a browser goes to the page's join flow, a wallet asking for JSON gets what the room offers. Once. */
-  function openVisit (req, res, code) {
-    const accept = String(req.headers.accept ?? '').toLowerCase(), json = accept.search(/application\/([\w.-]+\+)?json/), html = accept.indexOf('text/html')
-    const wallet = json >= 0 && (html < 0 || json < html) // asked for JSON before a web page: software, not a person's browser
-    const headers = { 'cache-control': 'no-store', vary: 'accept', 'referrer-policy': 'no-referrer' }
-    const about = (visit) => ({ base: baseOf(req), did: ctx.join.did, name: ctx.join.community.name, visit })
-    if (req.method === 'HEAD') { // a link check or a preview: says where the link goes, without using it up
-      const v = CODE_RE.test(code) ? ctx.visits.look(code, ctx.visits.now()) : null
-      if (v && !v.usedAt && !wallet) res.writeHead(303, { ...headers, location: visitLocation(about(v)) })
-      else res.writeHead(!v ? 404 : v.usedAt ? 410 : 200, headers)
-      return res.end()
-    }
-    const got = CODE_RE.test(code) ? ctx.visits.open(code, wallet ? 'wallet' : 'page') : { why: 'gone' }
-    if (got.visit) {
-      if (wallet) return send(res, 200, interaction(about(got.visit)), headers)
-      return send(res, 303, '', { ...headers, location: visitLocation(about(got.visit)) }) // the one-time ?_oob= invitation link; the page opens on You
-    }
-    const status = got.why === 'used' ? 410 : 404, why = got.why === 'used' ? 'This code was for one visit, and it has been used.' : 'This code has run out, or there is no such code.'
-    if (wallet) return send(res, status, { error: why }, headers)
-    return send(res, status, `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(config.workspaceName)}</title><p>${why} <a href="/">Open the room</a> to join, or show its page again on the other screen for a fresh code.</p>`,
-      { ...headers, 'content-type': TYPES_OF['.html'], 'content-security-policy': "default-src 'none'", 'x-content-type-options': 'nosniff' })
-  }
+  /** A link someone already holds (/j/<code>, from the old "Join on your phone" code, taken out in November 2026): the room's page, whatever the code. The code is never read. */
+  const redirectOldLink = (res) => { res.writeHead(303, { location: '/', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }); res.end() }
 
   async function route (req, res) {
     const url = new URL(req.url, 'http://local')
@@ -313,7 +289,6 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       return handleMcp(ctx, req, res, body)
     }
     if (handleRoomDid(req, res, path, { dataDir: config.dataDir, file: config.didLogFile })) return
-    if (await ctx.join.handle(req, res, path, readBody, send)) return
     if (DOOR_PATHS.has(path)) { // the Trust Task door: a signed standard document in, a signed answer out
       if (req.method !== 'POST') return send(res, 405, { error: 'POST a signed Trust Task document here (application/json). /api/info says what this door serves and which DID to address.' }, { allow: 'POST' })
       const { raw, bytes, cut } = await readDoorBody(req)
@@ -323,7 +298,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
     if (await ctx.signIn.handle(req, res, path, q, send)) return // ── wallet sign-in: what a page reads to start one, and what the room holds for a browser key (reads only)
     if (path === '/.well-known/webfinger' || path.startsWith('/ap/')) return ctx.activitypub.handle(req, res, url)
     if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
-    if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), keyring: ctx.join.readiness({ oob: true }), door: ctx.door.info(baseOf(req)) }) }
+    if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), join: { via: config.communityDid ? 'community' : 'none' }, door: ctx.door.info(baseOf(req)) }) }
     if (path === '/api/state') return send(res, 200, views.state(ctx))
     if (path === '/api/steps') return send(res, 200, ctx.facilitator.view())
     if (path === '/api/map' || path === '/api/board') return send(res, 200, views.mapView(ctx))
@@ -344,18 +319,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
       if (!t || t.length > 600) return send(res, 400, 'text: 1 to 600 characters')
       return send(res, 200, await QRCode.toString(t, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' }), { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=3600' })
     }
-    if (path === '/api/visit') { // a join link for this visit (POST), or how the links have been used (GET)
-      if (req.method === 'GET') return send(res, 200, ctx.visits.view())
-      if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' })
-      const v = ctx.visits.make(ipOf(req))
-      if (!v) return send(res, 429, { error: 'too many join links from this address; try again in a minute' }, { 'retry-after': '60' })
-      await ctx.join.refresh()
-      const token = ctx.join.mint() // the invitation's id is a one-time desk token, so the ?_oob= link is the join code itself
-      if (token) v.invitation = token
-      const oob = token ? visitLocation({ base: baseOf(req), did: ctx.join.did, name: ctx.join.community.name, visit: v }) : null
-      return send(res, 201, { url: `${baseOf(req)}/j/${v.code}?iuv=1`, oob, expiresAt: new Date(v.expiresAt).toISOString(), keyring: ctx.join.readiness({ oob: Boolean(oob) }) }, { 'cache-control': 'no-store' })
-    }
-    if (path.startsWith('/j/') && (req.method === 'GET' || req.method === 'HEAD')) return openVisit(req, res, path.slice(3))
+    if (path.startsWith('/j/') && (req.method === 'GET' || req.method === 'HEAD')) return redirectOldLink(res)
     if (path === '/api/events') {
       // no-transform and no buffering, so proxies and tunnels pass each event on at once; the padding pushes past buffers that wait for a first chunk
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no', connection: 'keep-alive', 'access-control-allow-origin': '*' })
