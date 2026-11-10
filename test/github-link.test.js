@@ -2,6 +2,7 @@
 // started it, the token is never stored or logged, "verified" is only for repositories GitHub listed, a stale or
 // somebody else's verification opens nothing, and an agent joins only for repositories its person linked.
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { after, before, describe, mock, test } from 'node:test'
 import { newIdentity } from '../src/shared/did.js'
 import { TYPES, signedDocument } from '../src/shared/types.js'
@@ -17,16 +18,54 @@ describe('linking GitHub', () => {
   before(async () => { github = fakeGithub(); room = await startRoom({ github }); a = await room.firstMember('Person A'); b = await room.newMember(a.id, 'Person B') })
   after(() => room.stop())
 
-  test('Link GitHub sends a member to GitHub with the read:user scope only, and a random state', async () => {
+  test('Link GitHub sends a member to GitHub with no scope at all, a PKCE S256 challenge, the exact redirect and a random state', async () => {
     const r = await room.call('/api/github/start', { cookie: a.cookie })
     assert.equal(r.status, 302)
     const to = new URL(r.headers.get('location'))
     assert.equal(to.origin + to.pathname, 'https://github.com/login/oauth/authorize')
-    assert.equal(to.searchParams.get('scope'), 'read:user'); assert.equal(to.searchParams.get('client_id'), 'test-client-id')
+    assert.equal(to.searchParams.has('scope'), false, 'a public login and public repositories need no scope'); assert.equal(to.searchParams.get('client_id'), 'test-client-id')
+    assert.equal(to.searchParams.get('code_challenge_method'), 'S256'); assert.match(to.searchParams.get('code_challenge'), /^[A-Za-z0-9_-]{43}$/)
     assert.equal(to.searchParams.get('redirect_uri'), room.config.publicUrl + '/api/github/callback')
     assert.match(to.searchParams.get('state'), /^[A-Za-z0-9_-]{43}$/)
     assert.ok(!to.href.includes('test-client-secret'), 'the secret never leaves the room')
     assert.notEqual(stateOf(await room.call('/api/github/start', { cookie: a.cookie })), to.searchParams.get('state'))
+  })
+
+  test('PKCE: the verifier behind the challenge, and the very redirect URI, go to GitHub in the token trade (and GitHub refuses a trade without them)', async () => {
+    const to = new URL((await room.call('/api/github/start', { cookie: a.cookie })).headers.get('location'))
+    const challenge = to.searchParams.get('code_challenge'), redirect = to.searchParams.get('redirect_uri'), state = to.searchParams.get('state')
+    assert.equal(redirect, room.config.publicUrl + '/api/github/callback')
+    const before = github.calls.length
+    const code = github.grant('octo-a', ['acme/app'], { challenge, redirect })
+    const r = await room.call(`/api/github/callback?code=${code}&state=${state}`, { cookie: a.cookie })
+    assert.equal(r.headers.get('location'), '/#tab=you&github=1', 'GitHub, checking the challenge and the redirect, accepted the trade')
+    const trade = github.calls.slice(before).find((c) => c.url.endsWith('/login/oauth/access_token')), sent = JSON.parse(trade.body)
+    assert.equal(sent.redirect_uri, redirect); assert.equal(createHash('sha256').update(sent.code_verifier, 'ascii').digest('base64url'), challenge)
+    assert.match(sent.code_verifier, /^[A-Za-z0-9_-]{43,128}$/)
+    // a code made for another challenge (an attacker's own authorize request) does not trade
+    const s2 = stateOf(await room.call('/api/github/start', { cookie: a.cookie }))
+    const bad = github.grant('octo-a', ['acme/app'], { challenge: 'x'.repeat(43), redirect })
+    assert.equal((await room.call(`/api/github/callback?code=${bad}&state=${s2}`, { cookie: a.cookie })).headers.get('location'), '/#tab=you&github=0&why=exchange')
+  })
+
+  test('linking dies with the session: sign out after starting, and the callback fails with the state reason', async () => {
+    const c = await room.newMember(a.id, 'Person S')
+    const state = stateOf(await room.call('/api/github/start', { cookie: c.cookie }))
+    assert.equal((await room.call('/api/session/end', { method: 'POST', cookie: c.cookie })).status, 200)
+    const r = await room.call(`/api/github/callback?code=${github.grant('octo-s', ['s/one'])}&state=${state}`)
+    assert.equal(r.headers.get('location'), '/#tab=you&github=0&why=state')
+    assert.equal(room.ctx.githubLink.verification(c.id.did), null)
+  })
+
+  test('linking dies with the session: a finished verification is gone after sign-out too, so a line that relied on it is refused', async () => {
+    const c = await room.newMember(a.id, 'Person T')
+    await room.call(`/api/github/callback?code=${github.grant('octo-t', ['t/one'])}&state=${stateOf(await room.call('/api/github/start', { cookie: c.cookie }))}`)
+    assert.ok(room.ctx.githubLink.verification(c.id.did), 'it was there')
+    await room.call('/api/session/end', { method: 'POST', cookie: c.cookie })
+    assert.equal(room.ctx.githubLink.verification(c.id.did), null)
+    const again = await room.signInWithKey(c.id)
+    assert.match(msg(await room.say(c.id, 'repos', { github: 'octo-t', repos: [{ name: 't/one', verified: true }] })), /Link your GitHub first/)
+    void again
   })
 
   test('without a session there is no start, and the linking view needs one too', async () => {
@@ -71,7 +110,7 @@ describe('linking GitHub', () => {
     assert.ok(f.started >= 5 && f.linked >= 2 && f.failed.denied >= 1 && f.failed.exchange >= 1 && f.failed.state >= 3, JSON.stringify(f))
   })
 
-  test('the token is never stored and never logged: a planted value is nowhere the room keeps or says anything', async () => {
+  test('the code and the token are never stored or logged: a planted value is nowhere the room keeps or says anything', async () => {
     const logged = []; const spies = ['log', 'warn', 'error', 'info', 'debug'].map((k) => mock.method(console, k, (...x) => logged.push(x.map(String).join(' '))))
     const bodies = []
     try {
@@ -82,11 +121,11 @@ describe('linking GitHub', () => {
       bodies.push((await room.say(a.id, 'repos', { github: 'octo-a', repos: [{ name: 'acme/app', verified: true }] })).text)
       bodies.push((await room.call('/api/state', { cookie: a.cookie })).text, (await room.call('/api/log', { cookie: a.cookie })).text, (await room.call('/api/info', { cookie: a.cookie })).text)
     } finally { spies.forEach((s) => s.mock.restore()) }
-    const tokens = github.tokensMade(); assert.ok(tokens.length >= 1)
+    const tokens = [...github.tokensMade(), ...github.codesMade()]; assert.ok(tokens.length >= 2, 'both a token and a code were planted')
     const { rows: tables } = await room.ctx.db.query("select table_name from information_schema.tables where table_schema = 'public'")
     const kept = [JSON.stringify(room.ctx.log.entries), JSON.stringify(room.ctx.log.state.participants.get(a.id.did)), JSON.stringify(room.ctx.githubLink.stats)]
     for (const { table_name: t } of tables) kept.push(JSON.stringify((await room.ctx.db.query(`select * from "${t}"`)).rows))
-    for (const t of tokens) for (const [where, text] of [['a response', bodies.join('\n')], ['the log, the state or a table', kept.join('\n')], ['console output', logged.join('\n')]]) assert.ok(!text.includes(t), `the token is not in ${where}`)
+    for (const t of tokens) for (const [where, text] of [['a response', bodies.join('\n')], ['the log, the state or a table', kept.join('\n')], ['console output', logged.join('\n')]]) assert.ok(!text.includes(t), `the token or code is not in ${where}`)
     // and GitHub was only ever asked for what the room needs: the trade, who this is, and the public repositories
     assert.ok(github.calls.every((c) => /^https:\/\/(github\.com\/login\/oauth\/access_token|api\.github\.com\/(user|users\/[^/]+\/repos)(\/repos)?(\?|$))/.test(c.url)), github.calls.map((c) => c.url).join(' '))
   })

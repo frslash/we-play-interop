@@ -41,10 +41,12 @@ function loadKey () {
 const me = loadKey()
 const link = `${base}/#delegate=${encodeURIComponent(me.did)}`
 
-// The room is for members, so every call carries a fresh signed read of that very request (x-inwove-agent): the room
-// lets it in while this agent has a live permission from its person. Each call signs its own; one is never reused.
+// The room is for members, so every read carries a fresh signed read of that very request (x-inwove-agent): the room
+// lets it in while this agent has a live permission from its person. Each read signs its own; one is never reused.
+// A signed read is for GET and HEAD only: a write carries no such header, it is a signed line of its own.
 async function api (path, opts = {}) {
-  const res = await fetch(base + path, { ...opts, headers: { ...opts.headers, [AGENT_HEADER]: agentReadHeader(me, opts.method ?? 'GET', path) } })
+  const method = opts.method ?? 'GET', read = method === 'GET' || method === 'HEAD'
+  const res = await fetch(base + path, { ...opts, headers: { ...opts.headers, ...(read ? { [AGENT_HEADER]: agentReadHeader(me, method, path, { origin: base }) } : {}) } })
   const body = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(body?.payload?.message ?? (body?.agent ? `the room did not let this agent in: ${body.agent}` : body?.error) ?? `HTTP ${res.status}`)
   return body

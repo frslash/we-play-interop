@@ -234,8 +234,8 @@ export function checkPayload (name, doc) {
       if (!Array.isArray(p.repos) || p.repos.some((r) => !isObj(r) || typeof r.verified !== 'boolean' || Object.keys(r).some((k) => !['name', 'verified'].includes(k)))) return 'repos: [ { name: owner/repo, verified: true | false } ]'
       return checkRepoNames(p.repos.map((r) => r.name))
     }
-    case 'agentRead': // an agent with its own key asking the room a question: it signs the method and the exact path, fresh, once (gate.js)
-      return ['GET', 'HEAD', 'POST'].includes(p.method) && typeof p.path === 'string' && /^\/[^\s]{0,2000}$/.test(p.path) ? null : 'method: GET | HEAD | POST, path: the request path with its query'
+    case 'agentRead': // an agent with its own key reading: it signs the room's origin, the method (GET or HEAD only) and the exact path, with a one-time nonce, fresh, once (gate.js)
+      return ['GET', 'HEAD'].includes(p.method) && typeof p.path === 'string' && /^\/[^\s]{0,2000}$/.test(p.path) && typeof p.origin === 'string' && /^https?:\/\/[^\s/]{1,255}$/.test(p.origin) && typeof p.nonce === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(p.nonce) ? null : 'origin: the room\'s origin, method: GET | HEAD, path: the request path with its query, nonce: 16-64 characters, single use'
     case 'sessionKey': return /^[A-Za-z0-9_-]{43}$/.test(p.challenge ?? '') ? null : 'challenge: the one the room gave you (43 characters)'
     case 'delegate': {
       if (!DID_RE.test(p.delegate ?? '')) return 'delegate: the agent DID'

@@ -18,8 +18,8 @@ const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a
 
 describe('an agent with its own key, by HTTP, against a people-only line', () => {
   let room, A, agent, delegation, secret, secretHash, fileSha, photoSha, publicSha
-  /** One signed request as the agent: the header is made for this very method and path (with its query). */
-  const asAgent = (path, { method = 'GET', body, headers = {} } = {}) => room.call(path, { method, body, headers: { [AGENT_HEADER]: agentReadHeader(agent, method, path), ...headers } })
+  /** One request as the agent: a read carries a header made for this very room, method and path (with its query); a write carries none (a signed read is for GET and HEAD only). */
+  const asAgent = (path, { method = 'GET', body, headers = {} } = {}) => room.call(path, { method, body, headers: { ...(method === 'GET' || method === 'HEAD' ? { [AGENT_HEADER]: agentReadHeader(agent, method, path, { origin: room.base }) } : {}), ...headers } })
   // the planted words and files, and the hash of every people-only line there is now (a line's hash is a way to ask for it, and the
   // log's head and each line's parent name the line before it, so the hash must not ride out on those either)
   const clean = (what, text) => {
@@ -75,7 +75,7 @@ describe('an agent with its own key, by HTTP, against a people-only line', () =>
 
   test('the live stream carries a public line to the agent and never a people-only one', async () => {
     const ac = new AbortController()
-    const res = await fetch(`${room.base}/api/events`, { headers: { [AGENT_HEADER]: agentReadHeader(agent, 'GET', '/api/events') }, signal: ac.signal })
+    const res = await fetch(`${room.base}/api/events`, { headers: { [AGENT_HEADER]: agentReadHeader(agent, 'GET', '/api/events', { origin: room.base }) }, signal: ac.signal })
     assert.equal(res.status, 200)
     const reader = res.body.getReader(); let buf = ''
     const pump = (async () => { try { for (;;) { const { value, done } = await reader.read(); if (done) break; buf += new TextDecoder().decode(value) } } catch { /* aborted */ } })()
@@ -95,13 +95,9 @@ describe('an agent with its own key, by HTTP, against a people-only line', () =>
     const w = await waiting; clean('/api/wait', w.text); assert.doesNotMatch(w.text, /"woke":\s*true/); assert.match(w.text, /"woke":\s*false/); assert.doesNotMatch(w.text, /not an agent/, 'it was asked as the agent, so the wait was real')
   })
 
-  test('the public /mcp, over the agent\'s header, leaves it out of every tool', async () => {
-    const rpc = (method, params) => { const body = { jsonrpc: '2.0', id: 1, method, params }; return room.call('/mcp', { method: 'POST', headers: { ...MCP, [AGENT_HEADER]: agentReadHeader(agent, 'POST', '/mcp') }, body }) }
-    const list = await rpc('tools/list', {}); assert.equal(list.status, 200)
-    const tools = [...list.text.matchAll(/"name":\s*"([a-z_]+)"/g)].map((m) => m[1]); assert.ok(tools.includes('read_log') && tools.includes('get_entry'))
-    const args = { read_log: { after: -1, limit: 200 }, get_entry: { hash: secretHash }, participant: { did: A.id.did }, resources: {}, proposals: {}, overview: {}, map: {}, verify_log: {}, read_file: { file: fileSha }, see_photo: { photo: photoSha, sha256: photoSha } }
-    for (const name of tools) { const r = await rpc('tools/call', { name, arguments: args[name] ?? {} }); assert.ok([200, 400].includes(r.status), `${name}: ${r.status}`); clean(`/mcp ${name}`, r.text) }
-    assert.match((await rpc('tools/call', { name: 'get_entry', arguments: { hash: secretHash } })).text, /no entry with that hash/)
+  test('the public /mcp does not open to the agent\'s header at all (it is a POST, and a signed read is for reading)', async () => {
+    const rpc = (method, params) => room.call('/mcp', { method: 'POST', headers: { ...MCP, [AGENT_HEADER]: agentReadHeader(agent, 'GET', '/mcp', { origin: room.base }) }, body: { jsonrpc: '2.0', id: 1, method, params } })
+    for (const r of [await rpc('tools/list', {}), await rpc('tools/call', { name: 'get_entry', arguments: { hash: secretHash } }), await rpc('tools/call', { name: 'read_log', arguments: { after: -1, limit: 200 } })]) { assert.equal(r.status, 401); clean('/mcp', r.text) }
   })
 
   test('what is a person\'s own is refused to the agent', async () => {
