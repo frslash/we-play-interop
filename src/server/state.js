@@ -118,11 +118,12 @@ export class State {
         this.participants.set(e.author, { ...prev, left: undefined, did: e.author, kind: 'human', name: p.name, projects: p.projects ?? [], about: p.about ?? '', since: prev?.since ?? e.timestamp })
         break
       }
+      case 'repos': { const who = this.participants.get(e.author); if (who) { who.github = p.github; who.repos = p.repos.map((r) => ({ name: r.name, verified: r.verified })) } break } // what a person linked: the latest line stands
       case 'invite': this.invites.set(p.codeHash, { hash: e.hash, by: e.author, at: e.timestamp, expiresAt: p.expiresAt, usedBy: null, usedAt: null }); break
       case 'delegate': {
-        this.delegations.set(e.hash, { hash: e.hash, issuer: e.author, delegate: p.delegate, scope: p.scope, ask: p.ask ?? [], label: p.label ?? '', expiresAt: doc.expiresAt, revoked: false, endedBy: null, seq: e.seq, credential: credentialOf(doc, this.workspace) })
+        this.delegations.set(e.hash, { hash: e.hash, issuer: e.author, delegate: p.delegate, scope: p.scope, ask: p.ask ?? [], label: p.label ?? '', expiresAt: doc.expiresAt, revoked: false, endedBy: null, seq: e.seq, credential: credentialOf(doc, this.workspace), repos: p.repos ?? [] })
         const prev = this.participants.get(p.delegate)
-        this.participants.set(p.delegate, { ...prev, did: p.delegate, kind: 'agent', name: p.label || `agent of ${this.nameOf(e.author)}`, principal: e.author, hosted: this.hosted.has(p.delegate), since: prev?.since ?? e.timestamp })
+        this.participants.set(p.delegate, { ...prev, did: p.delegate, kind: 'agent', name: p.label || `agent of ${this.nameOf(e.author)}`, principal: e.author, hosted: this.hosted.has(p.delegate), repos: p.repos ?? prev?.repos ?? [], since: prev?.since ?? e.timestamp })
         break
       }
       case 'card': {

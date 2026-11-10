@@ -45,6 +45,8 @@ export const TYPES = {
   resource: T('map/resource'),
   invite: T('member/invite'),
   sessionKey: T('session/key'),
+  repos: T('member/repos'),
+  agentRead: T('agent/read'),
 }
 export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v, k]))
 
@@ -52,7 +54,7 @@ export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => 
 export const WHO = {
   genesis: 'workspace', round: 'workspace', step: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', forYou: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
   link: 'human', vouch: 'human', replace: 'human', // a lost key: people only, never agents (room lines 772-821)
-  join: 'human', invite: 'human', sessionKey: 'private', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
+  join: 'human', invite: 'human', repos: 'human', sessionKey: 'private', agentRead: 'private', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone', resource: 'anyone',
 }
 /** What a human can let an agent do (delegation scope). Approving, vetoing and delegating stay human. */
@@ -62,6 +64,12 @@ export const AGENT_SCOPES = ['note', 'propose', 'vote', 'project', 'way', 'run',
  *  Resources), and a person who asked to see each note first sees these first too. */
 export const SCOPE_OF = { resource: 'note' }
 export const scopeOf = (name) => SCOPE_OF[name] ?? name
+/** A GitHub login, and an "owner/name" repository: what a person links and an agent says it works on. */
+export const GITHUB_LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/
+export const REPO_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9._-]{1,100}$/
+export const MAX_REPOS = 30 // one person's working set; the page shows each as a checkbox, so it is also what a person can read through
+/** A list of repository names, 1 to MAX_REPOS, none twice (GitHub names do not care about capitals). Null when it is fine, else what is wrong. */
+export const checkRepoNames = (v, field = 'repos') => (Array.isArray(v) && v.length >= 1 && v.length <= MAX_REPOS && v.every((r) => typeof r === 'string' && REPO_RE.test(r)) && new Set(v.map((r) => r.toLowerCase())).size === v.length ? null : `${field}: 1 to ${MAX_REPOS} repositories, each owner/name, none twice`)
 /** One resource per address: the same page with or without a trailing slash, a #fragment or a capital in the host is one. */
 export function resourceKey (u) {
   try {
@@ -221,12 +229,20 @@ export function checkPayload (name, doc) {
       const ahead = Date.parse(p.expiresAt) - Date.parse(doc.issuedAt)
       return ahead > 0 && ahead <= 14 * 86400000 ? null : 'expiresAt: after issuedAt and within 14 days'
     }
+    case 'repos': { // the repositories a person linked: the room checked them against GitHub (log.js), and each says whether GitHub listed it
+      if (!GITHUB_LOGIN_RE.test(p.github ?? '')) return 'github: the GitHub login you linked'
+      if (!Array.isArray(p.repos) || p.repos.some((r) => !isObj(r) || typeof r.verified !== 'boolean' || Object.keys(r).some((k) => !['name', 'verified'].includes(k)))) return 'repos: [ { name: owner/repo, verified: true | false } ]'
+      return checkRepoNames(p.repos.map((r) => r.name))
+    }
+    case 'agentRead': // an agent with its own key asking the room a question: it signs the method and the exact path, fresh, once (gate.js)
+      return ['GET', 'HEAD', 'POST'].includes(p.method) && typeof p.path === 'string' && /^\/[^\s]{0,2000}$/.test(p.path) ? null : 'method: GET | HEAD | POST, path: the request path with its query'
     case 'sessionKey': return /^[A-Za-z0-9_-]{43}$/.test(p.challenge ?? '') ? null : 'challenge: the one the room gave you (43 characters)'
     case 'delegate': {
       if (!DID_RE.test(p.delegate ?? '')) return 'delegate: the agent DID'
       if (!Array.isArray(p.scope) || !p.scope.length || !p.scope.every((s) => AGENT_SCOPES.includes(s))) return `scope: some of ${AGENT_SCOPES.join(', ')}`
       if (!optStr(p.label, 60)) return 'label: at most 60 characters'
       if (p.ask !== undefined && (!Array.isArray(p.ask) || !p.ask.every((s) => p.scope.includes(s)))) return 'ask: the kinds of line (from scope) that wait for your OK before they are posted'
+      if (p.repos !== undefined && checkRepoNames(p.repos)) return checkRepoNames(p.repos) // the repositories this agent works on (log.js asks that each is one its person linked)
       if (p.credential !== undefined && !isObj(p.credential)) return 'credential: the same permission as a credential you signed (see src/shared/credential.js), or leave it out'
       if (!RFC3339.test(doc.expiresAt ?? '')) return 'a delegation needs expiresAt'
       const days = (Date.parse(doc.expiresAt) - Date.parse(doc.issuedAt)) / 86400000
@@ -234,7 +250,7 @@ export function checkPayload (name, doc) {
       return null
     }
     case 'revoke': return HASH_RE.test(p.delegation ?? '') ? null : 'delegation: the hash of the delegation entry'
-    case 'host': return str(p.label, 1, 60) ? null : 'label: a name for the agent, 1 to 60 characters'
+    case 'host': return !str(p.label, 1, 60) ? 'label: a name for the agent, 1 to 60 characters' : p.repos === undefined ? null : checkRepoNames(p.repos)
     case 'remove': return DID_RE.test(p.agent ?? '') ? null : 'agent: your agent\'s DID'
     case 'leave': return optStr(p.why, 280) ? null : 'why: at most 280 characters (optional, public)'
     case 'link': return !DID_RE.test(p.old ?? '') ? 'old: the DID of your old account' : optStr(p.why, 280) ? null : 'why: at most 280 characters (optional, public)'

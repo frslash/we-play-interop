@@ -100,7 +100,8 @@ describe('the gate', () => {
 
   test('the agent routes keep their token: a real link works with no session, and sets an agent viewer', async () => {
     const delegate = newIdentity()
-    const made = await room.say(member.id, 'host', { label: 'My agent' })
+    assert.equal((await room.linkGithub(member)).status, 201)
+    const made = await room.say(member.id, 'host', { label: 'My agent', repos: ['acme/app'] })
     assert.equal(made.status, 201); const link = new URL(made.body.hosted.connector).pathname
     const r = await room.call(link); assert.equal(r.status, 200); assert.notEqual(r.status, 401)
     void delegate

@@ -5,6 +5,8 @@ import { handleRoomDid, ensureRoomDid, growRoomDid, roomDidDiffers } from './roo
 import { RoomDidWatch } from './room-did-watch.js'
 import { createGate } from './gate.js'
 import { createAccess } from './access.js'
+import { createGithubLink } from './github-link.js'
+import { createAgentReads } from './agent-read.js'
 import { ensureFirstInvite } from './invites.js'
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -123,7 +125,7 @@ function workspaceIdentity (config) {
  * `openRoom` is for tests only: no gate (every request is a person, with no DID) and a join needs no invite. It is an
  * argument, never read from the environment or a file, so a running room cannot be started open.
  */
-export async function createApp (config = defaultConfig, { openRoom = false, resolver = createResolver(), gh, wakeFetch, apFetch, awayGatherMs, hostWelcomeMs = 3000, sources, shelf } = {}) {
+export async function createApp (config = defaultConfig, { openRoom = false, resolver = createResolver(), gh, wakeFetch, apFetch, awayGatherMs, hostWelcomeMs = 3000, sources, shelf, githubFetch } = {}) {
   const identity = workspaceIdentity(config)
   const db = await openDb(config)
   const log = new Log({ db, identity, resolver, config, openRoom: openRoom === true })
@@ -245,6 +247,9 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
   const access = ctx.access = await createAccess(ctx, { send, readBody, refuse, ipOf })
   access.sessions.onEnd = (did) => { for (const [res, d] of sse) if (d === did) res.end() } // a person's live connections close with their sessions
   ctx.ensureFirstInvite = (opts) => ensureFirstInvite(ctx, opts)
+  // linking a person's GitHub repositories (github-link.js), and agents with their own key reading with a signed header (agent-read.js); `githubFetch` lets tests play GitHub
+  const githubLink = ctx.githubLink = createGithubLink(ctx, { send, ipOf, ...(githubFetch ? { fetch: githubFetch } : {}) })
+  const agentReads = ctx.agentReads = createAgentReads(ctx)
 
   async function route (req, res) {
     const url = new URL(req.url, 'http://local')
@@ -273,9 +278,10 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
     }
     if (handleRoomDid(req, res, path, { dataDir: config.dataDir, file: config.didLogFile })) return
     if (await access.handle(req, res, path)) return // who is signed in, signing in, passkeys, invites, the membership pass
+    if (await githubLink.handle(req, res, path)) return // linking GitHub: start, callback, what is pending
     if (config.activitypub && (path === '/.well-known/webfinger' || path.startsWith('/ap/'))) return ctx.activitypub.handle(req, res, url)
     if (path === '/healthz') return send(res, 200, { ok: true, db: db.kind, entries: log.entries.length })
-    if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), join: { via: 'invite' }, roomDid: { differs: roomDidDiffers(ctx.join.status.document) } }) }
+    if (path === '/api/info') { await ctx.join.refresh(); return send(res, 200, { ...views.info(ctx), join: { via: 'invite' }, roomDid: { differs: roomDidDiffers(ctx.join.status.document) }, agentReads: { allowed: agentReads.stats.allowed, refused: agentReads.stats.refused } }) }
     if (path === '/api/state') return send(res, 200, views.state(ctx))
     if (path === '/api/steps') return send(res, 200, ctx.facilitator.view())
     if (path === '/api/map' || path === '/api/board') return send(res, 200, views.mapView(ctx))
@@ -488,7 +494,7 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
     return res.end(readFileSync(f.file))
   }
 
-  const gate = createGate({ sessions: ctx.sessions, members: () => log.state, hosted, config, openRoom: openRoom === true, isStatic: (p) => Boolean(findStatic(p)) })
+  const gate = createGate({ sessions: ctx.sessions, members: () => log.state, hosted, config, openRoom: openRoom === true, isStatic: (p) => Boolean(findStatic(p)), agentReads })
   /**
    * A body that is not all in within `bodyTimeoutMs` of the request's start is answered 408 and the connection closed, before
    * any route (the door included) is waiting on it. It protects the room's connections and memory from one slow sender that
@@ -503,7 +509,7 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
     }, bodyMs)
     timer.unref(); req.once('end', () => clearTimeout(timer)); req.once('close', () => clearTimeout(timer))
   }
-  const server = createServer((req, res) => { guardBody(req, res); if (!gate(req, res)) return; route(req, res).catch((err) => { console.error(err); if (!res.headersSent) send(res, 500, { error: 'internal error' }) }) })
+  const server = createServer(async (req, res) => { guardBody(req, res); if (!(await gate(req, res))) return; route(req, res).catch((err) => { console.error(err); if (!res.headersSent) send(res, 500, { error: 'internal error' }) }) })
 
   const timers = []
   ctx.start = async () => {

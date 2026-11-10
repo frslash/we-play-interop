@@ -112,7 +112,8 @@ describe('invites', () => {
   })
 
   test('agents cannot make invites (people only)', async () => {
-    const hosted = await room.say(a.id, 'host', { label: 'Helper' }), agent = room.ctx.hosted.byToken(hosted.body.hosted.connector.split('/').pop())
+    assert.equal((await room.linkGithub(a)).status, 201)
+    const hosted = await room.say(a.id, 'host', { label: 'Helper', repos: ['acme/app'] }), agent = room.ctx.hosted.byToken(hosted.body.hosted.connector.split('/').pop())
     const doc = (await import('../src/shared/types.js')).signedDocument(agent.identity, { type: (await import('../src/shared/types.js')).TYPES.invite, payload: { codeHash: hashOf('x'), expiresAt: new Date(Date.now() + 86400000).toISOString() }, onBehalfOf: a.id.did, delegation: 'f'.repeat(64) })
     assert.equal((await room.call('/api/entries', { method: 'POST', body: doc })).status, 403)
   })
