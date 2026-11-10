@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, before, describe, test } from 'node:test'
 import { config as baseConfig } from '../src/server/config.js'
-import { createApp } from '../src/server/index.js'
+import { startCommunity } from './helpers/community-room.js'
 import { PASS_CHECK_TYPE } from '../src/shared/dtg.js'
 import { newIdentity } from '../src/shared/did.js'
 import { sign } from '../src/shared/proof.js'
@@ -36,9 +36,7 @@ describe('the room reads, names and counts the three addresses', () => {
   before(async () => {
     c = await standInCommunity()
     dir = mkdtempSync(join(tmpdir(), 'wpi-dtgctx-'))
-    ctx = await createApp(settings(dir, { communityDid: c.did }), { openRoom: true, hostWelcomeMs: null, resolver: c.resolver, communityFetch: c.fetch })
-    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
-    base = `http://127.0.0.1:${ctx.server.address().port}`
+    ;({ ctx, base } = await startCommunity(settings(dir, { communityDid: c.did }), { resolver: c.resolver, communityFetch: c.fetch }))
     ctx.community.lists.ttlMs = 0; ctx.community.lists.failTtlMs = 0
     room = ctx.join.did
   })

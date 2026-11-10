@@ -17,7 +17,11 @@ export async function startRoom ({ extra = {}, options = {} } = {}) {
   if (!extra.publicUrl) config.publicUrl = base // the room's public address: the origin and rpId a passkey must name
   /** fetch with an optional cookie and a JSON body; answers { status, headers, body (parsed when JSON), text }. */
   const call = async (path, { method = 'GET', cookie, body, headers = {} } = {}) => {
-    const r = await fetch(base + path, { method, redirect: 'manual', headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(cookie ? { cookie } : {}), ...headers }, ...(body !== undefined ? { body: typeof body === 'string' ? body : JSON.stringify(body) } : {}) })
+    const init = { method, redirect: 'manual', headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(cookie ? { cookie } : {}), ...headers }, ...(body !== undefined ? { body: typeof body === 'string' ? body : JSON.stringify(body) } : {}) }
+    let r
+    for (let tries = 0; ; tries++) { // a connection the server closed while it sat idle is reset when reused (busy machines show it): ask again on a fresh one
+      try { r = await fetch(base + path, init); break } catch (err) { if (tries >= 2 || err?.cause?.code !== 'ECONNRESET') throw err }
+    }
     const text = await r.text(); let parsed = null; try { parsed = JSON.parse(text) } catch { /* not JSON */ }
     return { status: r.status, headers: r.headers, body: parsed, text }
   }
