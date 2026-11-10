@@ -37,7 +37,7 @@ const keyRoom = () => { const id = newIdentity(); return { room: { did: id.did, 
 
 for (const [label, make] of [['did:key', async () => keyRoom()], ['did:webvh', webvhRoom]]) {
   describe(`a pass from a ${label} room`, () => {
-    test('verifies with the room\'s own reader, about the member, in a 90 day window', async () => {
+    test('verifies with the room\'s own reader, about the member, in a 30 day window', async () => {
       const { room, keyFor } = await make(), member = newIdentity()
       const pass = issueMembershipPass({ room, memberDid: member.did, name: 'Member One', now: NOW })
       const r = await verifyDtgCredential(pass, { keyFor, now: NOW, kinds: ['membership'] })
@@ -58,11 +58,11 @@ for (const [label, make] of [['did:key', async () => keyRoom()], ['did:webvh', w
       }
     })
 
-    test('it expires after 90 days and is not valid before it is made', async () => {
+    test('it expires after 30 days and is not valid before it is made', async () => {
       const { room, keyFor } = await make()
       const pass = issueMembershipPass({ room, memberDid: newIdentity().did, now: NOW })
-      assert.equal((await verifyDtgCredential(pass, { keyFor, now: NOW + 90 * DAY - 1000 })).ok, true)
-      const late = await verifyDtgCredential(pass, { keyFor, now: NOW + 90 * DAY + 1000 })
+      assert.equal((await verifyDtgCredential(pass, { keyFor, now: NOW + 30 * DAY - 1000 })).ok, true)
+      const late = await verifyDtgCredential(pass, { keyFor, now: NOW + 30 * DAY + 1000 })
       assert.equal(late.ok, false); assert.equal(late.problem, 'dates')
       assert.equal((await verifyDtgCredential(pass, { keyFor, now: NOW - 10 * 60_000 })).problem, 'dates')
     })

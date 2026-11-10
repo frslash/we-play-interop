@@ -1,7 +1,8 @@
 // The room's membership pass: a W3C Verifiable Credential in the DTG format (a MembershipCredential), signed by the
 // room, that a member downloads (GET /api/me/pass). It says one thing: "this room says this DID is a member", for
-// 90 days. It has no credentialStatus: the room's own record (the log) is the status, as for agent permissions, so
-// a pass someone left with is still in date but the room no longer answers "member" for them.
+// 30 days. It has no credentialStatus: the room's own record (the log) is the status, as for agent permissions, so
+// a pass someone left with is still in date but the room no longer answers "member" for them: anyone checking it must
+// ask the room, because once a person leaves the room stops vouching but the paper still looks valid.
 // The room signs with its own key as its DID's `#room` method (assertionMethod), the same key and DID it speaks as
 // elsewhere (ctx.join.room: its did:webvh when it has a log, else its did:key). Nothing here holds a person's key.
 import { DTG_CONTEXT } from '../shared/dtg-context.js'
@@ -9,7 +10,7 @@ import { VC_V2 } from '../shared/dtg.js'
 import { sign } from '../shared/proof.js'
 import { uuid } from '../shared/types.js'
 
-export const PASS_DAYS = 90
+export const PASS_DAYS = 30 // short on purpose: the paper outlives the membership it vouched for, so it should not outlive it for long
 const DAY_MS = 24 * 60 * 60 * 1000
 
 /**
