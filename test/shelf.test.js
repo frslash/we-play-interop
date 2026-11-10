@@ -9,7 +9,7 @@ import { after, before, describe, test } from 'node:test'
 import { gzipSync } from 'node:zlib'
 import { config as baseConfig } from '../src/server/config.js'
 import { createApp } from '../src/server/index.js'
-import { FETCHES_PER_MINUTE, MAX_FILE_BYTES, SHELF, SIGNER_FETCHES_PER_HOUR, Shelf, namedRepos, pinOf, pinsFromCommunity, LICENCES, MAX_NAMED_PROJECTS, insideFolder, licenceOf, repoOf, secretPath, tarReader } from '../src/server/shelf.js'
+import { FETCHES_PER_MINUTE, MAX_FILE_BYTES, SHELF, SIGNER_FETCHES_PER_HOUR, Shelf, namedRepos, pinOf, LICENCES, MAX_NAMED_PROJECTS, insideFolder, licenceOf, repoOf, secretPath, tarReader } from '../src/server/shelf.js'
 import { registerAgentTools } from '../src/agent-tools.js'
 import * as views from '../src/server/views.js'
 
@@ -91,8 +91,8 @@ describe('the projects shelf', () => {
     assert.ok(SHELF.length >= 9)
     for (const p of SHELF) { assert.ok(repoOf(`https://github.com/${p.repo}`) === p.repo, p.repo); assert.match(p.pin, /^[0-9a-f]{40}$/, `${p.repo} names one full commit`) }
     assert.equal(new Shelf({ dataDir: mkdtempSync(join(dir, 'l-')) }).all().every((p) => p.pin), true) // every listed project is read at a pin
-    assert.ok(SHELF.some((p) => p.repo === 'OpenVTC/verifiable-trust-infrastructure' && p.pinned === 'vti'))
-    assert.ok(SHELF.some((p) => p.repo === 'affinidi/affinidi-messaging-mediator' && p.pinned === 'mediator'))
+    assert.ok(SHELF.some((p) => p.repo === 'OpenVTC/verifiable-trust-infrastructure'))
+    assert.ok(SHELF.some((p) => p.repo === 'affinidi/affinidi-messaging-mediator'))
   })
 
   test('only github.com repositories count, by owner and name', () => {
@@ -460,18 +460,6 @@ describe('the projects shelf', () => {
     const tar = Buffer.concat([entry('a.txt', 'hello'), entry('b.txt', 'x'.repeat(50)), entry(LONG, 'deep'), block(1024)])
     for (let i = 0; i < tar.length; i += 37) r.write(tar.subarray(i, i + 37)) // in awkward pieces, as a network delivers them
     assert.deepEqual(got, [['a.txt', 5, 'hello'], ['b.txt', 50, null], [LONG, 4, 'deep']])
-  })
-
-  test('the commits the test host builds from come from its own Dockerfiles', () => {
-    const root = mkdtempSync(join(dir, 'c-'))
-    assert.deepEqual(pinsFromCommunity(root), {})
-    mkdirSync(join(root, 'community/vta'), { recursive: true }); mkdirSync(join(root, 'community/mediator'), { recursive: true })
-    writeFileSync(join(root, 'community/vta/Dockerfile'), `FROM x\nARG VTI_SHA=${A}\nARG FEATURES="a,b"\n`)
-    writeFileSync(join(root, 'community/mediator/Dockerfile'), `ARG MEDIATOR_REPO=https://example\nARG MEDIATOR_SHA=${B}\n`)
-    assert.deepEqual(pinsFromCommunity(root), { vti: A, mediator: B })
-    const here = pinsFromCommunity(join(import.meta.dirname, '..')) // this repository's own files carry both pins
-    assert.match(here.vti, /^[0-9a-f]{40}$/); assert.match(here.mediator, /^[0-9a-f]{40}$/)
-    assert.equal(readFileSync(join(import.meta.dirname, '../Dockerfile'), 'utf8').includes('COPY community ./community'), true) // so the running room can read them
   })
 
   test('a repository named in the Resources or on the map is on the shelf', () => {

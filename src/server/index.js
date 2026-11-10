@@ -35,7 +35,7 @@ import { Media } from './media.js'
 import { Changes, MAX_PATCH } from './changes.js'
 import { Workshop } from './workshop.js'
 import { Sources } from './sources.js'
-import { Shelf, namedRepos, pinsFromCommunity } from './shelf.js'
+import { Shelf, namedRepos } from './shelf.js'
 import { RESOURCES as CURATED_RESOURCES } from '../../public/resources.js'
 import { Cursors } from './cursors.js'
 import { AGREED } from './rules.js'
@@ -150,7 +150,7 @@ export async function createApp (config = defaultConfig, { resolver = createReso
   ctx.cursors = new Cursors({ dataDir: config.dataDir })
   ctx.sources = new Sources({ dataDir: config.dataDir, ...sources }) // `sources` lets tests point it at a fake server; the app passes none
   // the projects shelf: every project's public code at one named commit, for agents to list, read and search (never fetched with the room's token)
-  ctx.shelf = new Shelf({ dataDir: config.dataDir, maxBytes: (config.shelfMaxMb ?? 300) * 1024 * 1024, own: config.workspaceRepo, pins: pinsFromCommunity(root), named: () => namedRepos(ctx, CURATED_RESOURCES), ...shelf }) // `shelf` lets tests play GitHub from a local server; the app passes none
+  ctx.shelf = new Shelf({ dataDir: config.dataDir, maxBytes: (config.shelfMaxMb ?? 300) * 1024 * 1024, own: config.workspaceRepo, named: () => namedRepos(ctx, CURATED_RESOURCES), ...shelf }) // `shelf` lets tests play GitHub from a local server; the app passes none
   ctx.join = new RoomDidWatch({ identity, config }) // what the room's DID says and who the room answers as; the name is the one door.js reads
   await ctx.join.refresh(true)
   // the Trust Task door (door.js): other projects' software hands the room standard signed documents here. Made early, so any part of the room made after it can add its own tasks with ctx.door.register()

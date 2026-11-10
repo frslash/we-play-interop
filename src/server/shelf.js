@@ -46,13 +46,12 @@ import { createGunzip } from 'node:zlib'
 
 const SHA_RE = /^[0-9a-f]{40}$/
 
-// The projects on the room's Resources page whose code is public and states a licence, each at one commit. `pinned`
-// names a commit the room's test host builds from (pinsFromCommunity reads it from that host's own Dockerfiles, so
-// what agents read is what runs); `pin` is the commit otherwise. To move a pin, change it here in a pull request.
+// The projects on the room's Resources page whose code is public and states a licence, each at one commit (`pin`).
+// To move a pin, change it here in a pull request.
 // Not here on purpose: a project whose repository the public cannot read, and one with no licence at its top level.
 export const SHELF = [
-  { repo: 'OpenVTC/verifiable-trust-infrastructure', title: 'OpenVTC: trust agent (VTA), trust community (VTC), data rooms, pnm and cnm', pinned: 'vti', pin: 'c6964c4612131089e1add0f47575894e1bd8a565' },
-  { repo: 'affinidi/affinidi-messaging-mediator', title: 'Affinidi messaging mediator (DIDComm v2 and TSP)', pinned: 'mediator', pin: 'e6e2c63654bb43bb7feb732834702cd940b2bcce' },
+  { repo: 'OpenVTC/verifiable-trust-infrastructure', title: 'OpenVTC: trust agent (VTA), trust community (VTC), data rooms, pnm and cnm', pin: 'c6964c4612131089e1add0f47575894e1bd8a565' },
+  { repo: 'affinidi/affinidi-messaging-mediator', title: 'Affinidi messaging mediator (DIDComm v2 and TSP)', pin: 'e6e2c63654bb43bb7feb732834702cd940b2bcce' },
   { repo: 'Mickens-Lab/openvti-starter', title: 'OpenVTI starter: the data rooms demo kit', pin: 'ca4f259c6049d12aa5a5030df249aa6c17ea25ef' },
   { repo: 'Project-Weave-Tech/dtg-interop', title: 'DTG interop board: projects, ways and runs', pin: 'af997a1355ca88214b3e35b9f002147c16a40046' },
   { repo: 'real-life-org/trust-protocol', title: 'RLTP: Real Life Trust Protocol (specs, library, conformance)', pin: '48c5efb9f9d968dc746c52b6c77be7c706f723e0' },
@@ -181,13 +180,6 @@ export function secretPath (rel) {
   return parts.slice(0, -1).some((s) => SECRET_DIR.test(s)) || (SECRET_NAME.test(name) && !ENV_EXAMPLE.test(name))
 }
 
-/** The commits the room's test host builds from, read from its own Dockerfiles: { vti, mediator } (each a full commit, or absent). */
-export function pinsFromCommunity (root) {
-  const arg = (file, name) => { try { return new RegExp(`^ARG ${name}=([0-9a-f]{40})\\s*$`, 'm').exec(readFileSync(join(root, file), 'utf8'))?.[1] } catch { return undefined } }
-  const vti = arg('community/vta/Dockerfile', 'VTI_SHA'), mediator = arg('community/mediator/Dockerfile', 'MEDIATOR_SHA')
-  return { ...(vti ? { vti } : {}), ...(mediator ? { mediator } : {}) }
-}
-
 /** True when `to`, once resolved, is inside `root` (not the folder itself, not above it, not on another drive). The last check before any file is written. */
 export function insideFolder (root, to) {
   const r = relative(resolve(root), resolve(to))
@@ -276,12 +268,12 @@ export function tarReader (onFile, { cap = MAX_FILE_BYTES, onGlobal } = {}) {
 export class Shelf {
   /**
    * `named()` returns the repositories the room's people named by signed entries: [{ repo, title?, from?, pin?, by?, at? }]
-   * (see namedRepos). `pins`: { vti, mediator } from pinsFromCommunity. `own`: the room's own repository. `hosts`,
+   * (see namedRepos). `own`: the room's own repository. `hosts`,
    * `fetch`, `allowHttp` and `limits` exist so tests can play GitHub from a local server; the app passes none of them.
    */
-  constructor ({ dataDir, list = SHELF, named = () => [], pins = {}, own = '', maxBytes = DEFAULT_MAX_BYTES, fetch: f = globalThis.fetch, hosts = { api: 'https://api.github.com', code: 'https://codeload.github.com' }, allowHttp = false, now = () => Date.now(), limits = {} }) {
+  constructor ({ dataDir, list = SHELF, named = () => [], own = '', maxBytes = DEFAULT_MAX_BYTES, fetch: f = globalThis.fetch, hosts = { api: 'https://api.github.com', code: 'https://codeload.github.com' }, allowHttp = false, now = () => Date.now(), limits = {} }) {
     this.dir = join(dataDir, 'shelf'); mkdirSync(this.dir, { recursive: true })
-    Object.assign(this, { list, named, pins, own, maxBytes, fetch: f, hosts, allowHttp, now })
+    Object.assign(this, { list, named, own, maxBytes, fetch: f, hosts, allowHttp, now })
     this.limits = { download: MAX_DOWNLOAD_BYTES, unpacked: MAX_UNPACKED_BYTES, bytes: MAX_PROJECT_BYTES, files: MAX_PROJECT_FILES, depth: MAX_PATH_DEPTH, ...limits } // `limits` exists so tests can lower them
     this.busy = new Map() // id -> the fetch under way
     this.heads = new Map() // id -> { commit, at }: the room's own repository only
@@ -305,8 +297,8 @@ export class Shelf {
     const out = new Map(), waiting = new Map(), seen = new Set(), left = new Map()
     const add = (repo, title, extra = {}) => { if (repo && REPO_RE.test(repo) && !out.has(idOf(repo))) out.set(idOf(repo), { id: idOf(repo), repo, title: title || repo, ...extra }) }
     for (const p of this.list) {
-      const pin = this.pins[p.pinned] ?? p.pin
-      if (SHA_RE.test(pin ?? '')) add(p.repo, p.title, { pin, pinnedBy: this.pins[p.pinned] ? 'the room\'s test host builds from this commit' : 'the room\'s list', from: 'the room\'s list' })
+      const pin = p.pin
+      if (SHA_RE.test(pin ?? '')) add(p.repo, p.title, { pin, pinnedBy: 'the room\'s list', from: 'the room\'s list' })
       else if (REPO_RE.test(p.repo ?? '')) waiting.set(idOf(p.repo), { project: p.repo, from: 'the room\'s list' })
     }
     if (this.own) add(this.own, 'This room\'s own code', { from: 'the room itself', own: true })
