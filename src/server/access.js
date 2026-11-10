@@ -40,7 +40,7 @@ export async function createAccess (ctx, { send: sendIt, readBody, refuse: refus
     try {
       if (path === '/api/session' && req.method === 'GET') {
         const token = tokenFromCookie(req.headers.cookie), s = me && token ? sessions.lookup(token) : null
-        const room = { name: config.workspaceName }
+        const room = { name: config.workspaceName, host: config.operator || null } // who hosts the room (ROOM_OPERATOR): a member must be able to find out who can read it
         return send(res, 200, s ? { signedIn: true, did: me, name: nameOf(me), passkeys: passkeys.count(me), expiresAt: s.expiresAt, room } : { signedIn: false, room }, { 'cache-control': 'no-store' })
       }
       if (path === '/api/session/key/challenge' && post) {

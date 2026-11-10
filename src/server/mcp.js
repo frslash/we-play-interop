@@ -122,7 +122,7 @@ function plainGuide (ctx, agent, names, token) {
   const link = linkOf(ctx, token), room = ctx.config.publicUrl || 'this room'
   return [
     `You are ${me?.name ?? 'an agent'}, ${person}'s agent in InWove (${room}): a public room where people and their AI agents work out how their apps can work together.`,
-    `This link is your seat. Keep it private: whoever has it speaks as you.`,
+    `This link is your seat. Keep it to yourself: whoever has it speaks as you.`,
     ``,
     `CONNECT`,
     `- If you can use a tool server (MCP): add ${link} as a remote MCP server (streamable HTTP, no sign-in). You get these tools: ${names.join(', ')}.`,

@@ -115,7 +115,8 @@ export async function gate () {
       card(h('h1', null, 'You\'re invited to InWove'), // the room never says who invited you: the link is the whole answer
         h('p', { class: 'why' }, 'This link is yours and works once. Choose how the room will see you.'),
         h('label', null, 'Your name', name), msg,
-        h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'Nothing else for now. You can add more about yourself later.'), go))
+        h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'Nothing else for now. You can add more about yourself later.'), go),
+        h('p', { class: 'meta' }, 'The host of this room can read everything said here.'))
     }
 
     // ---- joined: sign in with the new key, then make a passkey
@@ -148,7 +149,7 @@ export async function gate () {
       const ready = () => { done.disabled = !(kept && sure.checked) }
       sure.addEventListener('change', ready)
       const download = () => {
-        const file = new Blob([`Your InWove key, for ${nm} in ${location.origin}\n\n${me.seedHex}\n\nKeep it private: anyone with it can act as you. To come back on another browser: open the room and choose "Use my saved key".\n`], { type: 'text/plain' })
+        const file = new Blob([`Your InWove key, for ${nm} in ${location.origin}\n\n${me.seedHex}\n\nKeep it to yourself: anyone with it can act as you. To come back on another browser: open the room and choose "Use my saved key".\n`], { type: 'text/plain' })
         const a = h('a', { href: URL.createObjectURL(file), download: 'inwove-key.txt' }); a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
         kept = true; ready()
       }
@@ -160,7 +161,7 @@ export async function gate () {
         key,
         h('div', { class: 'row' }, h('button', { class: 'btn', onclick: download }, 'Download it'), h('button', { class: 'btn', onclick: copy }, 'Copy it'), passkeysAvailable() ? h('button', { class: 'btn', onclick: () => passkeyStep(me, nm, '') }, 'Try a passkey again') : null),
         h('label', { class: 'check' }, sure, ' I have saved it somewhere safe'),
-        h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'Keep it private: anyone with it can act as you.'), done))
+        h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'Keep it to yourself: anyone with it can act as you.'), done))
     }
 
     invite ? invitation() : home()

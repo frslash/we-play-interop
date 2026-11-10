@@ -15,7 +15,14 @@ const madeLinks = [] // newest first; kept only in this page
 
 /** The cards for a member who is signed in. `me`: their key (or null when this browser has none); `origin`: the room's public address. */
 export function memberCards ({ me, origin, session, toast, redraw }) {
-  return [passkeys(), signedInHere(), inviting(), pass(), signOut()]
+  return [host(), passkeys(), signedInHere(), inviting(), pass(), signOut()]
+
+  function host () {
+    const who = session?.room?.host
+    return h('div', { class: 'card' }, h('h2', null, 'Who hosts this room'),
+      h('p', { class: 'why' }, who ? `This room is hosted by ${who}.` : 'This room has not named its host yet.'),
+      h('p', { class: 'why' }, 'The host of this room can read everything said here.'))
+  }
 
   const when = (iso) => { const t = Date.parse(iso); return Number.isFinite(t) ? new Date(t).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '' }
 

@@ -817,7 +817,7 @@ function renderTalk (scrollDown, { holdAt = null } = {}) {
     const pcomposer = h('div', { class: 'composer' }, h('div', { class: 'composer-row' }, talk.pinput, h('button', { class: 'btn primary send', onclick: sendPeople, 'aria-label': 'Send to People only' }, '↑')))
     talk.paneTabs = h('div', { class: 'seg small talk-pane-tabs', role: 'group', 'aria-label': 'Which window' })
     talk.winPeople = h('section', { class: 'talk-win win-people', 'aria-labelledby': 'win-people-title' },
-      h('h2', { id: 'win-people-title' }, 'People only'), h('p', { class: 'meta win-note' }, 'AIs can’t read this.'), talk.plist, pcomposer)
+      h('h2', { id: 'win-people-title' }, 'People only'), h('p', { class: 'meta win-note' }, 'The room’s AIs can’t read this. The host of this room can read everything said here.'), talk.plist, pcomposer)
     talk.winAll = h('section', { class: 'talk-win win-all talk-main', 'aria-labelledby': 'win-all-title' },
       h('h2', { id: 'win-all-title' }, 'People and AIs'), talk.goals, talk.waiting, talk.list, talk.composer)
     // a line of yours dragged from People only into People and AIs is shared after asking (a drag is only ever offered on your own lines)
@@ -1631,7 +1631,7 @@ function flowView (where) {
     const ready = () => { done.disabled = !(kept && sure.checked) }
     sure.addEventListener('change', ready)
     const download = () => {
-      const file = new Blob([`Your InWove key, for ${myName} in ${S.publicUrl || location.origin}\n\n${me.seedHex}\n\nKeep it private: anyone with it can act as you. To come back on another browser: Join, then "I already have a key".\n`], { type: 'text/plain' })
+      const file = new Blob([`Your InWove key, for ${myName} in ${S.publicUrl || location.origin}\n\n${me.seedHex}\n\nKeep it to yourself: anyone with it can act as you. To come back on another browser: Join, then "I already have a key".\n`], { type: 'text/plain' })
       const a = h('a', { href: URL.createObjectURL(file), download: 'we-play-interop-key.txt' }); a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
       kept = true; ready()
     }
@@ -1642,7 +1642,7 @@ function flowView (where) {
       h('pre', { class: 'key', oncopy: () => { kept = true; ready() } }, me.seedHex), // copying it by hand counts too
       h('div', { class: 'row' }, h('button', { class: 'btn', onclick: download }, 'Download it'), h('button', { class: 'btn', onclick: copy }, 'Copy it')),
       h('label', { class: 'check' }, sure, ' I’ve saved it somewhere safe'),
-      h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'Keep it private: anyone with it can act as you.'), done),
+      h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'Keep it to yourself: anyone with it can act as you.'), done),
     ]
   }
   if (f.step === 'ask') {
