@@ -120,91 +120,86 @@ async function writeEntry (dir, didDocument, updateKeys) {
   const r = await updateDID({ log, signer, verifier: { verify: async (sig, msg, pub) => ed25519.verify(sig, msg, pub) }, didDocument, updateKeys: updateKeys ?? [mk], updated: new Date(Date.parse(log.at(-1).versionTime) + 1000).toISOString().replace(/\.\d+Z$/, 'Z') })
   writeFileSync(join(dir, 'did.jsonl'), r.log.map((e) => JSON.stringify(e)).join('\n') + '\n')
 }
-/** The DIDComm inbox the room used to ask its DID to list (until November 2026): a live DID may still carry it. */
-const didcommService = (did) => ({ id: `${did}#didcomm`, type: 'DIDCommMessaging', serviceEndpoint: { uri: 'https://inwove.org/didcomm', accept: ['didcomm/v2'] } })
-/** The room's DID document as the code before the door wrote it: the room key, the site and the DIDComm inbox. */
-function withoutDoor (did, room) {
+/** The services the room's DID used to list (until November 2026): the join desk's inbox, the Trust Task door and the wallet sign-in page. A live DID may still carry them. */
+const retiredServices = (did) => [
+  { id: `${did}#didcomm`, type: 'DIDCommMessaging', serviceEndpoint: { uri: 'https://inwove.org/didcomm', accept: ['didcomm/v2'] } },
+  { id: `${did}#trust-tasks`, type: 'TrustTaskHTTPS', serviceEndpoint: 'https://inwove.org' },
+  { id: `${did}#sign-in-portal`, type: 'SignInPortal', serviceEndpoint: 'https://inwove.org/' },
+]
+/** The room's DID document as the code before the room became members-only wrote it: the room key, the site and all three retired services. */
+function withRetired (did, room) {
   const doc = roomDidDocument({ did, roomPublicKey: room.publicKey, publicUrl: 'https://inwove.org' })
-  return { ...doc, service: [...doc.service.filter((s) => s.type === 'LinkedDomains'), didcommService(did)] }
+  return { ...doc, service: [...doc.service, ...retiredServices(did)] }
 }
-const ours = (doc) => doc.service.filter((s) => /#(room-site|didcomm|trust-tasks)$/.test(s.id)).map((s) => s.type) // did:webvh adds its own #files and #whois
+const RETIRED = ['DIDCommMessaging', 'TrustTaskHTTPS', 'SignInPortal']
+const ours = (doc) => doc.service.filter((s) => /#(room-site|didcomm|trust-tasks|sign-in-portal)$/.test(s.id)).map((s) => s.type) // did:webvh adds its own #files and #whois
 
-test('the DID names the room\'s Trust Task door: TrustTaskHTTPS, its endpoint the origin, so the door is <origin>/trust-tasks', async () => {
+test('the room is members-only: its DID lists only the room\'s site and the room\'s key, no door, no sign-in page, no inbox', async () => {
   const { dir } = await rehearsal(); const room = newIdentity()
   assert.equal((await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org/', roomPublicKey: room.publicKey, log: quiet })).grown, true)
   const doc = (await resolveDIDFromLog(entries(dir))).didDocument
-  const door = doc.service.find((s) => s.type === 'TrustTaskHTTPS')
-  assert.deepEqual(door, { id: `${doc.id}#trust-tasks`, type: 'TrustTaskHTTPS', serviceEndpoint: 'https://inwove.org' }) // the base, never the full address: a sender adds /trust-tasks itself
-  assert.equal(serviceEndpoint(doc, 'TrustTaskHTTPS'), 'https://inwove.org')
-  assert.deepEqual(ours(doc), ['LinkedDomains', 'TrustTaskHTTPS']) // no DIDComm inbox: the room has no desk behind one
+  assert.deepEqual(ours(doc), ['LinkedDomains'])
   assert.ok(doc.service.some((s) => s.type === 'LinkedDomains' && s.serviceEndpoint === 'https://inwove.org/'))
-  assert.equal(doc.service.some((s) => s.type === 'DIDCommMessaging'), false)
+  for (const t of RETIRED) assert.equal(doc.service.some((s) => s.type === t), false, t)
+  assert.equal(serviceEndpoint(doc, 'TrustTaskHTTPS'), null)
+  assert.equal(serviceEndpoint(doc, 'SignInPortal'), null)
+  const room_ = `${doc.id}#room`
+  assert.equal(doc.verificationMethod[0].id, room_); assert.equal(doc.verificationMethod[0].publicKeyMultibase, ed25519Multikey(room.publicKey))
+  assert.deepEqual(doc.authentication, [room_]); assert.deepEqual(doc.assertionMethod, [room_])
   const { document, ...status } = await roomDidStatus({ dataDir: dir })
-  assert.deepEqual(status, { did: doc.id, trustTasks: 'https://inwove.org', roomKey: ed25519Multikey(room.publicKey) }); assert.deepEqual(document, doc)
-  assert.equal(serviceEndpoint(doc, 'SignInPortal'), 'https://inwove.org/') // wallet sign-in's page, beside the door
+  assert.deepEqual(status, { did: doc.id, trustTasks: null, roomKey: ed25519Multikey(room.publicKey) }); assert.deepEqual(document, doc)
+  assert.deepEqual(roomDidDiffers(document), [], 'a DID the room wrote today differs in nothing')
 })
 
-test('a DID grown before the room had a door gets one more entry on the next start, for the service alone', async () => {
+test('a DID that still lists the retired services gets one more entry on the next start, listing none of them', async () => {
   const { dir } = await rehearsal(); const room = newIdentity()
   await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, log: quiet })
   const did = (await resolveDIDFromLog(entries(dir))).didDocument.id
-  await writeEntry(dir, withoutDoor(did, room))
+  await writeEntry(dir, withRetired(did, room))
   assert.equal(entries(dir).length, 3)
-  assert.deepEqual(ours((await resolveDIDFromLog(entries(dir))).didDocument), ['LinkedDomains', 'DIDCommMessaging'])
-  assert.equal((await roomDidStatus({ dataDir: dir })).trustTasks, null)
+  assert.deepEqual(ours((await resolveDIDFromLog(entries(dir))).didDocument), ['LinkedDomains', ...RETIRED])
   const keysBefore = (await resolveDIDFromLog(entries(dir))).didDocumentMetadata.updateKeys, seedBefore = readFileSync(join(dir, 'update-key.txt'), 'utf8')
-  // the next start
+  // the next start: the host holds the update key
   const r = await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, log: quiet })
   assert.equal(r.grown, true); assert.match(r.versionId, /^4-/)
   const out = await resolveDIDFromLog(entries(dir)) // the whole chain and every proof still check
   assert.equal(entries(dir).length, 4)
-  assert.deepEqual(ours(out.didDocument), ['LinkedDomains', 'TrustTaskHTTPS']) // the entry the room writes anyway is the one that drops the old inbox
+  assert.deepEqual(ours(out.didDocument), ['LinkedDomains'])
+  assert.deepEqual(roomDidDiffers(out.didDocument), [])
   assert.deepEqual(out.didDocumentMetadata.updateKeys, keysBefore); assert.equal(readFileSync(join(dir, 'update-key.txt'), 'utf8'), seedBefore) // nothing else changed: the same update key, still held
   // and the start after that changes nothing
   assert.deepEqual(await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, log: quiet }), { grown: false, reason: 'up to date' })
   assert.equal(entries(dir).length, 4)
 })
 
-test('when the room\'s people hold the update key, the host cannot add the door to the DID by itself, and says so', async () => {
+test('each retired service alone is enough to make a DID out of date', async () => {
+  for (const type of RETIRED) {
+    const { dir } = await rehearsal(); const room = newIdentity()
+    await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, log: quiet })
+    const did = (await resolveDIDFromLog(entries(dir))).didDocument.id
+    const doc = roomDidDocument({ did, roomPublicKey: room.publicKey, publicUrl: 'https://inwove.org' })
+    await writeEntry(dir, { ...doc, service: [...doc.service, retiredServices(did).find((s) => s.type === type)] })
+    assert.equal((await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, log: quiet })).grown, true, type)
+    assert.deepEqual(ours((await resolveDIDFromLog(entries(dir))).didDocument), ['LinkedDomains'], type)
+  }
+})
+
+test('when the room\'s people hold the update key, the host cannot drop the retired services by itself, says so, and the DID still says what differs', async () => {
   const { dir } = await rehearsal(); const room = newIdentity(), owner = ed25519Multikey(newIdentity().publicKey)
   await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, log: quiet })
   const did = (await resolveDIDFromLog(entries(dir))).didDocument.id
-  await writeEntry(dir, withoutDoor(did, room), [owner]) // handed over before the room had a door
+  await writeEntry(dir, withRetired(did, room), [owner]) // handed over while the services were still listed
   const before = readFileSync(join(dir, 'did.jsonl'), 'utf8'), lines = []
   assert.deepEqual(await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, updateKey: owner, log: (l) => lines.push(l) }), { grown: false, reason: 'no update key here' })
   assert.match(lines[0], /holds none of its update keys/)
   assert.equal(readFileSync(join(dir, 'did.jsonl'), 'utf8'), before) // their signature is needed for that entry
-  assert.equal((await roomDidStatus({ dataDir: dir })).trustTasks, null) // and /api/info's door.inDid stays false until then
+  const status = await roomDidStatus({ dataDir: dir })
+  assert.deepEqual(roomDidDiffers(status.document).map((d) => d.service), RETIRED) // what the live document still lists, for /api/info
+  assert.deepEqual(roomDidDiffers(null), []); assert.deepEqual(roomDidDiffers({}), [])
 })
 
-test('wallet sign-in reads the grown DID: the door, the sign-in page and the room key are all there', async () => {
-  const { SignIn } = await import('../src/server/signin.js')
-  const { createResolver } = await import('../src/server/resolver.js')
-  const { dir } = await rehearsal(); const room = newIdentity()
-  assert.equal((await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, log: quiet })).grown, true)
-  const signIn = new SignIn({ identity: room, resolver: createResolver(), config: { publicUrl: 'https://inwove.org', dataDir: dir, didLogFile: '' } })
-  await signIn.refresh(true)
-  assert.match(signIn.status.did, /^did:webvh:/); assert.ok(signIn.status.document, 'roomDidStatus hands sign-in the whole document')
-  assert.deepEqual(signIn.didDocument(), { status: 'ok' })
-  signIn.stop()
+test('a room with no DID log has no DID status', async () => {
+  // (The room no longer serves wallet sign-in or its Trust Task door, so the test that had sign-in read the grown DID's door and sign-in page went with them.)
   const none = mkdtempSync(join(tmpdir(), 'wpi-no-did-'))
   assert.deepEqual(await roomDidStatus({ dataDir: none }), { did: null, trustTasks: null, roomKey: null, document: null })
-})
-
-test('a live DID that still lists DIDCommMessaging: the room asks for no such service, changes nothing for it, and says what differs', async () => {
-  const { dir } = await rehearsal(); const room = newIdentity()
-  assert.equal((await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, log: quiet })).grown, true)
-  const fresh = (await resolveDIDFromLog(entries(dir))).didDocument
-  assert.deepEqual(roomDidDiffers(fresh), [], 'a DID the room wrote today differs in nothing')
-  // the room's people publish a document with the old inbox still in it (the host does not hold their key in the real room; the test signs with the rehearsal one)
-  const { service, ...rest } = roomDidDocument({ did: fresh.id, roomPublicKey: room.publicKey, publicUrl: 'https://inwove.org' })
-  await writeEntry(dir, { ...rest, service: [...service, didcommService(fresh.id)] })
-  const count = entries(dir).length, text = readFileSync(join(dir, 'did.jsonl'), 'utf8')
-  const r = await growRoomDid({ dataDir: dir, publicUrl: 'https://inwove.org', roomPublicKey: room.publicKey, log: quiet })
-  assert.deepEqual(r, { grown: false, reason: 'up to date' }, 'every service the room wants is there: nothing to write, and nothing fails')
-  assert.equal(readFileSync(join(dir, 'did.jsonl'), 'utf8'), text); assert.equal(entries(dir).length, count)
-  const status = await roomDidStatus({ dataDir: dir })
-  assert.equal(status.trustTasks, 'https://inwove.org'); assert.ok(status.roomKey)
-  assert.deepEqual(roomDidDiffers(status.document).map((d) => d.service), ['DIDCommMessaging'])
-  assert.deepEqual(roomDidDiffers(null), []); assert.deepEqual(roomDidDiffers({}), [])
 })

@@ -676,12 +676,7 @@ describe('what the room says about it', () => {
 
   // (The room no longer serves wallet sign-in or its Trust Task door: those routes are gone, and test/access.test.js checks they answer 404.
   // The two tests that ran a whole sign-in through the room's own /trust-tasks went with them; the modules and the exchange tests above stay.)
-  test('the room\'s DID document asks wallets to accept its own page as the place sign-in starts', () => {
-    // the room's DID document asks wallets to accept its own page as the place sign-in starts: https only
-    const d = roomDidDocument({ did: 'did:webvh:abc:interop.example', roomPublicKey: newIdentity().publicKey, publicUrl: 'https://interop.example/x' })
-    assert.deepEqual(d.service.find((x) => x.type === 'SignInPortal'), { id: 'did:webvh:abc:interop.example#sign-in-portal', type: 'SignInPortal', serviceEndpoint: 'https://interop.example/' })
-    assert.equal(signInPortalEndpoint('http://localhost:3000'), ''); assert.equal(roomDidDocument({ did: 'did:webvh:abc:localhost%3A3000', roomPublicKey: newIdentity().publicKey, publicUrl: 'http://localhost:3000' }).service.some((x) => x.type === 'SignInPortal'), false)
-  })
+  // (The room's DID document no longer asks wallets to start sign-in on its page: test/room-did-grow.test.js checks it lists no SignInPortal.)
 })
 
 describe('who sign-in signs as', () => {
