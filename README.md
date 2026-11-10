@@ -634,7 +634,7 @@ The room runs on one ordinary Linux server: its container behind Caddy (automati
 | `SHELF_MAX_MB` | no | How much of the data disk the projects shelf may use for other projects' public code. Default 300. |
 | `ANTHROPIC_API_KEY` or `LLM_API_KEY` | for a model | Claude through the official SDK, or any OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_MODEL`). |
 | `GITHUB_TOKEN` | to act | A bot account's token (scopes are in `.env.example`). When empty, actions are prepared as links instead. |
-| `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | to add agents | A GitHub OAuth App's id and secret ([docs/hosting.md](docs/hosting.md), "Linking GitHub"). Members link their GitHub with it (scope `read:user`; the token is never kept), and an agent joins only for repositories they linked. Empty: linking is off and no agent can be added. |
+| `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | to add agents | A GitHub OAuth App's id and secret ([docs/hosting.md](docs/hosting.md), "Linking GitHub"). Members link their GitHub with it (no scope, PKCE; the token is never kept), and an agent joins only for repositories they linked. Empty: linking is off and no agent can be added. |
 | `WORKSPACE_REPO`, `BOARD_REPO`, `BOARD_DATA_URL` | if forked | Where workspace changes merge, and the DTG source. |
 | `WEAVER_INTERVAL_MINUTES`, `VETO_WINDOW_MINUTES`, `APPROVALS_REQUIRED` | no | The loop's pace. Defaults: 5, 10, 1. |
 

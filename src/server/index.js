@@ -250,6 +250,8 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
   ctx.ensureFirstInvite = (opts) => ensureFirstInvite(ctx, opts)
   // linking a person's GitHub repositories (github-link.js), and agents with their own key reading with a signed header (agent-read.js); `githubFetch` lets tests play GitHub
   const githubLink = ctx.githubLink = createGithubLink(ctx, { send, ipOf, ...(githubFetch ? { fetch: githubFetch } : {}) })
+  const closeLive = access.sessions.onEnd
+  access.sessions.onEnd = (did) => { closeLive?.(did); githubLink.forget(did) } // a person's sessions ended (sign-out, leaving, replacement): their pending GitHub linking goes with them
   const agentReads = ctx.agentReads = createAgentReads(ctx)
 
   async function route (req, res) {
