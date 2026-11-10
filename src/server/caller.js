@@ -21,7 +21,8 @@ let warned = false
  * behind any proxy but Fly's refused every sign-in as "not https": the first live check against the real room showed it.)
  * It never decides the caller's address or whether that address is trusted.
  */
-const saidHttps = (h, env) => String(env.publicUrl ?? '').startsWith('https://') && one(h['x-forwarded-proto']).split(',')[0].trim().toLowerCase() === 'https'
+// A list ("a, b") is read from its end, as the address is below: the last entry is the nearest proxy's, the one the room's own proxy wrote.
+const saidHttps = (h, env) => String(env.publicUrl ?? '').startsWith('https://') && one(h['x-forwarded-proto']).split(',').pop().trim().toLowerCase() === 'https'
 
 /** The named header, lower-cased, when it is a plain header name; else '' (and one console line, once). */
 export function clientIpHeader (name) {
@@ -34,7 +35,7 @@ export function clientIpHeader (name) {
 
 /**
  * { ip, https, trusted, source } for a request.
- * - source 'fly': ip from fly-client-ip and https from x-forwarded-proto, both written by Fly's proxy (fly.toml forces https).
+ * - source 'fly': ip from fly-client-ip and https from x-forwarded-proto, both written by Fly's proxy (Fly's proxy forces https).
  *   Without fly-client-ip (a call on Fly's private network, which skips the proxy) the socket rules below apply.
  * - source 'header': ip from the one header the host named, and only from it. https comes from the socket, or from
  *   x-forwarded-proto when PUBLIC_URL is https (see saidHttps): so behind a proxy that ends TLS, set PUBLIC_URL to the

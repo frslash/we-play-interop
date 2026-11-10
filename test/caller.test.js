@@ -43,7 +43,9 @@ describe('callerOf', () => {
     const HTTPS = { onFly: false, trustedClientIpHeader: '', publicUrl: 'https://room.example' }
     const c = callerOf(req({ 'x-forwarded-for': '1.1.1.1', 'x-forwarded-proto': 'https' }), { env: HTTPS })
     assert.deepEqual(c, { ip: '198.51.100.7', https: true, trusted: false, source: 'socket' }) // https, yes; the address and its trust, unchanged
-    assert.equal(callerOf(req({ 'x-forwarded-proto': 'HTTPS, http' }), { env: HTTPS }).https, true) // the first value, any letter case
+    assert.equal(callerOf(req({ 'x-forwarded-proto': 'https, http' }), { env: HTTPS }).https, false) // the last value is the nearest proxy's: it said http
+    assert.equal(callerOf(req({ 'x-forwarded-proto': 'http, https' }), { env: HTTPS }).https, true)
+    assert.equal(callerOf(req({ 'x-forwarded-proto': 'http, HTTPS' }), { env: HTTPS }).https, true) // any letter case
     assert.equal(callerOf(req({ 'x-forwarded-proto': 'http' }), { env: HTTPS }).https, false)
     assert.equal(callerOf(req(), { env: HTTPS }).https, false) // no word from a proxy: the socket's
     for (const publicUrl of ['http://room.example', '', undefined]) assert.equal(callerOf(req({ 'x-forwarded-proto': 'https' }), { env: { onFly: false, trustedClientIpHeader: '', publicUrl } }).https, false, String(publicUrl))
