@@ -66,8 +66,8 @@ describe('the room on the fediverse (ActivityPub, read only)', () => {
 
   before(async () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-ap-'))
-    config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', ratePerMinute: 1000, boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify({ projects: [] })), llm: { ...baseConfig.llm, apiKey: '' } }
-    ctx = await createApp(config, { apFetch: fetch, hostWelcomeMs: null }) // apFetch: the plain fetch, so the room can reach the local pretend server
+    config = { ...baseConfig, activitypub: true, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', ratePerMinute: 1000, boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify({ projects: [] })), llm: { ...baseConfig.llm, apiKey: '' } }
+    ctx = await createApp(config, { openRoom: true, apFetch: fetch, hostWelcomeMs: null }) // apFetch: the plain fetch, so the room can reach the local pretend server
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
     base = `http://127.0.0.1:${ctx.server.address().port}`
     config.publicUrl = base // the room's public address, as PUBLIC_URL gives it

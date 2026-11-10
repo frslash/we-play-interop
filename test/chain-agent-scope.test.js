@@ -15,7 +15,7 @@ import { createApp } from '../src/server/index.js'
 describe('the chain verifier checks an agent\'s scope the way the room does', () => {
   test('a resource under note and an approve under vote verify; a resource without note never got in', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wpi-scope-'))
-    const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, agentApprovals: true, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } }, { awayGatherMs: 0, hostWelcomeMs: null })
+    const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, agentApprovals: true, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } }, { openRoom: true, awayGatherMs: 0, hostWelcomeMs: null })
     try {
       await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
       const base = `http://127.0.0.1:${ctx.server.address().port}`

@@ -14,7 +14,7 @@ import { State } from '../src/server/state.js'
 describe('export: the public record leaves whole, and comes back to the same head', () => {
   test('export, import into a clean instance, same chain head and same meaning', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wpi-exp-')), dir2 = mkdtempSync(join(tmpdir(), 'wpi-imp-'))
-    const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } }, { awayGatherMs: 0, hostWelcomeMs: null })
+    const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } }, { openRoom: true, awayGatherMs: 0, hostWelcomeMs: null })
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
     const base = `http://127.0.0.1:${ctx.server.address().port}`, person = newIdentity()
     const send = async (name, payload) => (await fetch(`${base}/api/entries`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signedDocument(person, { type: TYPES[name], payload })) })).json()
@@ -40,7 +40,7 @@ describe('export: the public record leaves whole, and comes back to the same hea
 
   test('a tampered, truncated or wrong-version export is refused', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wpi-exp2-'))
-    const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } }, { awayGatherMs: 0, hostWelcomeMs: null })
+    const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } }, { openRoom: true, awayGatherMs: 0, hostWelcomeMs: null })
     const person = newIdentity()
     await ctx.log.accept(signedDocument(person, { type: TYPES.join, payload: { name: 'Person A' } })).catch(() => {})
     const good = makeExport(ctx.log.entries)

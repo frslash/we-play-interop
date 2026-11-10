@@ -14,7 +14,7 @@ describe('the old join link and the removed join desk', () => {
   const start = async (extra = {}) => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-visit-'))
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, publicUrl: 'https://interop.example', checkEveryMinutes: 0, boardDataUrl: 'data:application/json,{}', llm: { ...baseConfig.llm, apiKey: '' }, ...extra }
-    ctx = await createApp(config, { hostWelcomeMs: null })
+    ctx = await createApp(config, { openRoom: true, hostWelcomeMs: null })
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
     base = `http://127.0.0.1:${ctx.server.address().port}`
   }
@@ -48,12 +48,12 @@ describe('the old join link and the removed join desk', () => {
     assert.match(app, /walletCard\(/, 'the sign-in card stays')
   })
 
-  test('/api/info: no keyring block, a join block that says where joining happens, and the sign-in and door reports stay', async () => {
+  test('/api/info: no keyring block, a join block that says where joining happens (by invite), and no door or wallet sign-in report', async () => {
     const i = await (await fetch(base + '/api/info')).json()
     assert.equal('keyring' in i, false); assert.equal('visits' in i, false)
-    assert.deepEqual(i.join, { via: 'none' })
+    assert.deepEqual(i.join, { via: 'invite' })
     assert.deepEqual(i.roomDid, { differs: [] }, 'no DID log, nothing that differs')
-    assert.ok(i.door && i.door.address, 'the door report stays')
+    assert.ok(!('door' in i) && i.signIn === null, 'the Trust Task door and wallet sign-in are not started, so there is nothing to report')
     assert.ok(!/_oob|invitation/i.test(JSON.stringify(i)), 'nothing about an invitation')
   })
 })
@@ -63,7 +63,7 @@ describe('/api/info says what a live DID still lists that the room no longer ask
   before(async () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-visit-d-'))
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, publicUrl: 'https://interop.example', checkEveryMinutes: 0, boardDataUrl: 'data:application/json,{}', llm: { ...baseConfig.llm, apiKey: '' } }
-    ctx = await createApp(config, { hostWelcomeMs: null })
+    ctx = await createApp(config, { openRoom: true, hostWelcomeMs: null })
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
     base = `http://127.0.0.1:${ctx.server.address().port}`
   })
@@ -73,17 +73,4 @@ describe('/api/info says what a live DID still lists that the room no longer ask
     const r = await fetch(base + '/api/info'); assert.equal(r.status, 200)
     assert.deepEqual((await r.json()).roomDid.differs.map((d) => d.service), ['DIDCommMessaging'])
   })
-})
-
-describe('/api/info join.via with a community named', () => {
-  let ctx, base, dir
-  before(async () => {
-    dir = mkdtempSync(join(tmpdir(), 'wpi-visit-c-'))
-    const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, publicUrl: 'https://interop.example', checkEveryMinutes: 0, boardDataUrl: 'data:application/json,{}', llm: { ...baseConfig.llm, apiKey: '' }, communityDid: 'did:webvh:QmExample:community.example' }
-    ctx = await createApp(config, { hostWelcomeMs: null, communityFetch: async () => { throw new Error('no network in this test') } })
-    await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
-    base = `http://127.0.0.1:${ctx.server.address().port}`
-  })
-  after(async () => { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) })
-  test('says community', async () => { assert.deepEqual((await (await fetch(base + '/api/info')).json()).join, { via: 'community' }) })
 })

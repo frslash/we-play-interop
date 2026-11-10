@@ -4,6 +4,7 @@
 // A delegation that carries its permission as a credential the person signed
 // (src/shared/credential.js) has it verified once, here, and every write the
 // agent makes is then checked against what the credential says.
+import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { canonicalize } from '../shared/crypto.js'
 import { hashCore, verifyChain } from '../shared/chain.js'
@@ -14,6 +15,13 @@ import { insertEntry, loadEntries } from './db.js'
 import { State } from './state.js'
 
 const ERROR_TYPE = 'https://trusttasks.org/spec/trust-task-error/0.6'
+/** Why an invite does not let someone in (never the code itself). */
+const INVITE_WORDS = {
+  unknown: 'that invite is not one this room knows; ask the member who invited you for a new link',
+  expired: 'that invite has run out; ask the member who invited you for a new link',
+  used: 'that invite was already used; ask the member who invited you for a new link',
+  'inviter gone': 'the member who made that invite is no longer in the room; ask another member for a link',
+}
 
 /** A refusal, answered as a Trust Task error document (trust-task-error). */
 export class TaskError extends Error {
@@ -23,8 +31,10 @@ export class TaskError extends Error {
 }
 
 export class Log extends EventEmitter {
-  constructor ({ db, identity, resolver, config }) {
+  constructor ({ db, identity, resolver, config, openRoom = false }) {
     super()
+    this.openRoom = openRoom === true // tests only (createApp's option): joins need no invite. Never from the environment.
+    this.reserved = new Set() // invite codes (hashed) a join is being appended with right now, so two joins cannot spend one invite
     this.db = db; this.identity = identity; this.resolver = resolver; this.config = config
     this.entries = []; this.byHash = new Map(); this.byDocId = new Map()
     this.state = new State()
@@ -147,9 +157,20 @@ export class Log extends EventEmitter {
     this.#checkContext(name, doc, principal)
     for (const guard of this.guards ?? []) { const why = guard(doc, principal, name); if (why) throw new TaskError('malformedRequest', why, { status: 422 }) } // nothing secret enters the permanent record
     this.#limit(principal, ip)
+    // a newcomer may join only with an invite a member (or the room) made that is still good: checked and held in one step, no await between
+    let spending = null
+    if (name === 'join' && !this.openRoom && !st.isCurrentMember(doc.issuer)) {
+      if (!doc.payload.invite) throw new TaskError('permissionDenied', 'this room is for members: join with the invite link a member gave you', { status: 403 })
+      const ok = st.inviteFor(doc.payload.invite, Date.now()), h = createHash('sha256').update(doc.payload.invite, 'utf8').digest('hex')
+      if (!ok.ok) throw new TaskError('permissionDenied', INVITE_WORDS[ok.reason], { status: 403 })
+      if (this.reserved.has(h)) throw new TaskError('permissionDenied', INVITE_WORDS.used, { status: 403 })
+      this.reserved.add(h); spending = h
+    }
     this.verified = null
-    const entry = await this.#append(doc, { author: doc.issuer, onBehalfOf: principal, delegation: delegation?.hash })
-    return { entry, duplicate: false }
+    try {
+      const entry = await this.#append(doc, { author: doc.issuer, onBehalfOf: principal, delegation: delegation?.hash })
+      return { entry, duplicate: false }
+    } finally { if (spending) this.reserved.delete(spending) }
   }
 
   /** A grant carrying its permission as a credential: the person's signature on it, and that it says what the grant says. */

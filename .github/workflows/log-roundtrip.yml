@@ -1,6 +1,8 @@
 name: export-roundtrip
-# The room's export round trip (Goal 2, check 1): export the live room's public log, import it into an
-# empty data folder, export again from that copy and compare the two entry by entry.
+# The room's export round trip (Goal 2, check 1): export a running room's log, import it into an empty data
+# folder, export again from that copy and compare the two entry by entry. The room's record is for its members and
+# is no longer public, so this runs against a room the test starts on the runner itself (test/export-roundtrip-ci.test.js
+# and test/log-roundtrip.test.js), never against a live one.
 # Runs on every pull request and on main, so the latest main run shows whether it passes.
 # Read-only: no secrets, no environments, no id-token, no write permission, no pull_request_target.
 on:
@@ -12,11 +14,9 @@ permissions:
   contents: read
 jobs:
   export-roundtrip:
-    name: export round trip (export inwove.org, re-import, compare)
+    name: export round trip (a room started here: export, re-import, compare)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      ROOM_URL: https://inwove.org
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -25,20 +25,5 @@ jobs:
         with:
           node-version: 22
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: export the live room's public log
-        run: |
-          set -euo pipefail
-          for i in 1 2 3; do
-            node agent/export-log.js "$ROOM_URL" > "$RUNNER_TEMP/room-export.json" && exit 0
-            echo "export attempt $i failed; retrying"; sleep $((i * 10))
-          done
-          exit 1
-      - name: re-import into an empty data folder, export again, compare
-        run: |
-          set -euo pipefail
-          dir="$RUNNER_TEMP/wpi-empty-data"
-          rm -rf "$dir" && mkdir "$dir"
-          node agent/roundtrip-log.js "$RUNNER_TEMP/room-export.json" "$dir" "$RUNNER_TEMP/re-export.json" | tee "$RUNNER_TEMP/roundtrip.json"
-      - name: summary (ok, entries, head seq and hash, unchecked signatures)
-        if: always()
-        run: node agent/roundtrip-summary.js "$RUNNER_TEMP/roundtrip.json"
+      - name: export a room started on this runner, re-import into an empty data folder, export again, compare
+        run: node --test test/export-roundtrip-ci.test.js test/log-roundtrip.test.js

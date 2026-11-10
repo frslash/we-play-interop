@@ -7,6 +7,8 @@ import { describe, test } from 'node:test'
 import { config as baseConfig } from '../src/server/config.js'
 import { callerOf } from '../src/server/caller.js'
 import { createApp } from '../src/server/index.js'
+import { newIdentity } from '../src/shared/did.js'
+import { TYPES, signedDocument } from '../src/shared/types.js'
 
 const req = (headers = {}, socket = {}) => ({ headers, socket: { remoteAddress: '198.51.100.7', encrypted: false, ...socket } })
 const FLY = { onFly: true, trustedClientIpHeader: '' }, NAMED = { onFly: false, trustedClientIpHeader: 'cf-connecting-ip' }, PLAIN = { onFly: false, trustedClientIpHeader: '' }
@@ -62,16 +64,17 @@ describe('callerOf', () => {
   })
 })
 
-describe('the door through createApp', () => {
+describe('the address limit through createApp', () => {
   test('a forged x-forwarded-for does not choose the limit key: the socket address is limited', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wpi-caller-'))
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', onFly: false, trustedClientIpHeader: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } }
-    const ctx = await createApp(config, { awayGatherMs: 0, hostWelcomeMs: null })
+    const ctx = await createApp(config, { openRoom: true, awayGatherMs: 0, hostWelcomeMs: null })
     try {
       await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
       const base = `http://127.0.0.1:${ctx.server.address().port}`
       const statuses = []
-      for (let i = 0; i < 14; i++) statuses.push((await fetch(`${base}/trust-tasks`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': `203.0.113.${i + 1}` }, body: '{}' })).status)
+      // a different person each time, so only the address can be what is limited (the room's own per-address allowance is four times a person's)
+      for (let i = 0; i < 14; i++) statuses.push((await fetch(`${base}/api/entries`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': `203.0.113.${i + 1}` }, body: JSON.stringify(signedDocument(newIdentity(), { type: TYPES.join, payload: { name: `Person ${i}` } })) })).status)
       assert.ok(statuses.includes(429), `limited by the socket address whatever the header says: ${statuses}`)
     } finally { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) }
   })
@@ -82,13 +85,13 @@ describe('a body that does not arrive', () => {
     const { connect } = await import('node:net')
     const dir = mkdtempSync(join(tmpdir(), 'wpi-slow-'))
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', bodyTimeoutMs: 300, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } }
-    const ctx = await createApp(config, { awayGatherMs: 0, hostWelcomeMs: null })
+    const ctx = await createApp(config, { openRoom: true, awayGatherMs: 0, hostWelcomeMs: null })
     try {
       await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
       const text = await new Promise((resolve, reject) => {
         const s = connect(ctx.server.address().port, '127.0.0.1'); let got = ''
         s.on('data', (d) => { got += d }); s.on('close', () => resolve(got)); s.on('error', reject)
-        s.write('POST /trust-tasks HTTP/1.1\r\nhost: 127.0.0.1\r\ncontent-type: application/json\r\ncontent-length: 1000\r\n\r\n{"half":')
+        s.write('POST /api/entries HTTP/1.1\r\nhost: 127.0.0.1\r\ncontent-type: application/json\r\ncontent-length: 1000\r\n\r\n{"half":')
         setTimeout(() => reject(new Error('the room kept waiting')), 5000).unref()
       })
       assert.match(text, /^HTTP\/1\.1 408 /)

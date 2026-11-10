@@ -28,7 +28,7 @@ const wakes = async (fn) => { woken.length = 0; const r = await fn(); await sett
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), 'wpi-named-'))
   const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, voteMinutes: 10, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(BOARD)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }
-  ctx = await createApp(config, { resolver: createResolver(), hostWelcomeMs: null, wakeFetch: async () => ({ ok: true, status: 200 }) })
+  ctx = await createApp(config, { openRoom: true, resolver: createResolver(), hostWelcomeMs: null, wakeFetch: async () => ({ ok: true, status: 200 }) })
   await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
   base = `http://127.0.0.1:${ctx.server.address().port}`
   const exp = new Date(Date.now() + 86400000).toISOString()

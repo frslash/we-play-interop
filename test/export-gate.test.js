@@ -39,7 +39,7 @@ describe('export gate: every author DID method must be checkable', () => {
     const dir = mkdtempSync(join(tmpdir(), 'wpi-gate-')), dir2 = mkdtempSync(join(tmpdir(), 'wpi-gate2-'))
     const webvh = await makeWebvh()
     const resolver = createResolver({ fetch: webvh.fetch })
-    const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } }, { resolver, awayGatherMs: 0, hostWelcomeMs: null })
+    const ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } }, { openRoom: true, resolver, awayGatherMs: 0, hostWelcomeMs: null })
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
     const base = `http://127.0.0.1:${ctx.server.address().port}`
     const peerKey = newIdentity()

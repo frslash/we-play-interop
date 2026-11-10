@@ -30,7 +30,7 @@ describe('OpenHaven live copy', () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-src-'))
     const list = [{ ...SOURCES[0], url: `http://127.0.0.1:${port}/api/graph.json` }]
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, checkEveryMinutes: 0, llm: { ...baseConfig.llm, apiKey: '' } }
-    ctx = await createApp(config, { hostWelcomeMs: null, sources: { list, allowHttp: true, startDelayMs: 3_600_000 } })
+    ctx = await createApp(config, { openRoom: true, hostWelcomeMs: null, sources: { list, allowHttp: true, startDelayMs: 3_600_000 } })
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r)); base = `http://127.0.0.1:${ctx.server.address().port}`
   })
   after(async () => { await ctx.stop(); fake.close(); rmSync(dir, { recursive: true, force: true }) })

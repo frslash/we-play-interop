@@ -27,7 +27,7 @@ describe('a change to how the room decides is reviewed before it merges', () => 
   }
   before(async () => {
     dir = mkdtempSync(join(tmpdir(), 'wpi-review-'))
-    ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: 'test', vetoWindowMinutes: 0, approvalsRequired: 1, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } }, { gh, awayGatherMs: 0, hostWelcomeMs: null })
+    ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: 'test', vetoWindowMinutes: 0, approvalsRequired: 1, weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: '', llm: { ...baseConfig.llm, apiKey: '' } }, { openRoom: true, gh, awayGatherMs: 0, hostWelcomeMs: null })
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
     base = `http://127.0.0.1:${ctx.server.address().port}`
     await send(owner, 'join', { name: 'Person A' }); await send(reviewer, 'join', { name: 'Person B' })

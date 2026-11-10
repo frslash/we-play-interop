@@ -10,7 +10,7 @@ export const config = {
   publicUrl: (env.PUBLIC_URL || '').replace(/\/$/, ''),
   onFly: Boolean(env.FLY_APP_NAME), // set by Fly's platform: the room is behind Fly's proxy, which writes fly-client-ip and x-forwarded-proto itself (see caller.js)
   trustedClientIpHeader: (env.TRUSTED_CLIENT_IP_HEADER || '').trim().toLowerCase(), // the one request header a proxy in front of the room sets to the caller's address (e.g. cf-connecting-ip); empty: the socket's address is used. Read only by caller.js
-  activitypub: env.ACTIVITYPUB !== '0', // the room's public lines, followable from Mastodon as @room@<the host of PUBLIC_URL>; 0 turns it off
+  activitypub: env.ACTIVITYPUB === '1', // the room's public lines, followable from Mastodon as @room@<the host of PUBLIC_URL>. Off unless ACTIVITYPUB=1: the room's record is for members, so it publishes nothing by default
   workspaceName: env.WORKSPACE_NAME || 'InWove',
   workspaceKey: env.WORKSPACE_KEY || '',
   databaseUrl: env.DATABASE_URL || '',
@@ -45,7 +45,7 @@ export const config = {
   },
   // the weaver speaks after a pause in the conversation, never more often than this
   weaverIntervalMinutes: int(env.WEAVER_INTERVAL_MINUTES, 10),
-  checkEveryMinutes: int(env.ROOM_CHECK_MINUTES, 180), // the room check walks the newcomer's path this often, and after every start
+  checkEveryMinutes: int(env.ROOM_CHECK_MINUTES, 0), // the room check walks the newcomer's path this often, and after every start. 0 (the default) is off: it joins as an outsider, and the room is for members
   weaverQuietMinutes: int(env.WEAVER_QUIET_MINUTES, 2),
   vetoWindowMinutes: int(env.VETO_WINDOW_MINUTES, AGREED.proposals.vetoWindowMinutes),
   operator: env.ROOM_OPERATOR || '', // who runs this room, named on its safety card
@@ -58,6 +58,7 @@ export const config = {
   githubToken: env.GITHUB_TOKEN || '',
   workspaceRepo: env.WORKSPACE_REPO || 'Project-Weave-Tech/we-play-interop',
 
+  signInPerMinute: int(env.SIGNIN_PER_MINUTE, 60), // calls to the open sign-in and invite routes one address may make a minute (a person signs in a few times a day; this stops a script guessing)
   maxSkewMinutes: int(env.MAX_SKEW_MINUTES, 10),
   // entries a person (with their agents) may add per minute: enough for a lively chat, not a flood
   ratePerMinute: int(env.RATE_PER_MINUTE, 30),

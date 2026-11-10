@@ -1,5 +1,5 @@
 // The community whose membership pass the room takes (src/server/community.js): COMMUNITY_DID, GET /api/community,
-// POST /api/community/pass and the `community` entry of /api/info. The community is played by the stand-in in
+// POST /api/community/pass and the `community` entry of /api/info (the room itself no longer serves these: see start() below). The community is played by the stand-in in
 // test/support/standin-community.js, which answers the way OpenVTC's vtc-service does (each shape cites its file
 // there). This shows the room's side holds together; test/live/community-live.test.js is the check against a real one.
 import assert from 'node:assert/strict'
@@ -8,7 +8,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, test } from 'node:test'
 import { config as baseConfig } from '../src/server/config.js'
-import { createApp } from '../src/server/index.js'
 import { Community, MAX_CHECKS_PER_MINUTE } from '../src/server/community.js'
 import { createResolver } from '../src/server/resolver.js'
 import { PASS_CHECK_TYPE, passCheck } from '../src/shared/dtg.js'
@@ -17,13 +16,10 @@ import { newIdentity } from '../src/shared/did.js'
 import { sign } from '../src/shared/proof.js'
 import { ERROR_PREFIX, signedTask, verifyTask } from '../src/shared/trusttask.js'
 import { standInCommunity } from './support/standin-community.js'
+import { startCommunity } from './helpers/community-room.js'
 
 const settings = (dir, extra) => ({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, publicUrl: '', checkEveryMinutes: 0, boardDataUrl: 'data:application/json,{}', llm: { ...baseConfig.llm, apiKey: '' }, ...extra })
-const start = async (config, opts) => {
-  const ctx = await createApp(config, { hostWelcomeMs: null, ...opts })
-  await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
-  return { ctx, base: `http://127.0.0.1:${ctx.server.address().port}` }
-}
+const start = startCommunity
 const getJson = async (url) => (await fetch(url)).json()
 const post = (url, body) => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: typeof body === 'string' ? body : JSON.stringify(body) })
 

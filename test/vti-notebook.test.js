@@ -393,7 +393,7 @@ describe('the bridge with the three settings', () => {
     w = await world(); w.fake.host.signs = true; cred = w.fake.credential([w.member]) // the bridge can read the host's DID, so the host signs its answers
     dir = mkdtempSync(join(tmpdir(), 'wpi-vti-notebook-'))
     const board = { generated: new Date().toISOString().slice(0, 10), projects: [], credentialProfiles: { profiles: {} }, runs: [] }
-    ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(board)), llm: { ...baseConfig.llm, apiKey: '', anthropicKey: '', provider: 'openai' } })
+    ctx = await createApp({ ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(board)), llm: { ...baseConfig.llm, apiKey: '', anthropicKey: '', provider: 'openai' } }, { openRoom: true })
     ctx.server.prependListener('request', (req) => hits.push(`${req.method} ${req.url}`)) // every request the room's server is sent
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
     base = `http://127.0.0.1:${ctx.server.address().port}`

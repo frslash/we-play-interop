@@ -489,7 +489,7 @@ describe('the shelf in a running room', () => {
     await new Promise((r) => fake.listen(0, '127.0.0.1', r)); gh = `http://127.0.0.1:${fake.address().port}`
     dir = mkdtempSync(join(tmpdir(), 'wpi-shelf-app-'))
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, checkEveryMinutes: 0, githubToken: 'ghp_must_never_be_sent', workspaceRepo: 'o/demo', llm: { ...baseConfig.llm, apiKey: '', anthropicKey: '', provider: 'openai' } }
-    ctx = await createApp(config, { hostWelcomeMs: null, sources: { startDelayMs: 3_600_000 }, shelf: { list: [{ repo: 'o/pinned', title: 'Pinned', pin: PIN }, { repo: 'Project-Weave-Tech/dtg-interop', title: 'Board', pin: A }], hosts: { api: gh, code: gh }, allowHttp: true } })
+    ctx = await createApp(config, { openRoom: true, hostWelcomeMs: null, sources: { startDelayMs: 3_600_000 }, shelf: { list: [{ repo: 'o/pinned', title: 'Pinned', pin: PIN }, { repo: 'Project-Weave-Tech/dtg-interop', title: 'Board', pin: A }], hosts: { api: gh, code: gh }, allowHttp: true } })
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r)); base = `http://127.0.0.1:${ctx.server.address().port}`
   })
   after(async () => { await ctx.stop(); fake.close(); rmSync(dir, { recursive: true, force: true }) })

@@ -80,7 +80,7 @@ describe('from the room: the link, the agent tool and the Builder’s proposals'
     const state = { head: 'a'.repeat(40), calls: [], open: [] }
     const board = { generated: new Date().toISOString().slice(0, 10), projects: [], scenarios: [], runs: [] }
     const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: '', production: false, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, voteMinutes: 10, workspaceRepo: 'example/room', publicUrl: 'https://interop.example', boardDataUrl: 'data:application/json,' + encodeURIComponent(JSON.stringify(board)), llm: { ...baseConfig.llm, provider: 'openai', apiKey: '' } }
-    const ctx = await createApp(config, { resolver: createResolver(), hostWelcomeMs: null, wakeFetch: async () => ({ ok: true, status: 200 }), gh: fakeGh(state) })
+    const ctx = await createApp(config, { openRoom: true, resolver: createResolver(), hostWelcomeMs: null, wakeFetch: async () => ({ ok: true, status: 200 }), gh: fakeGh(state) })
     await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
     const base = `http://127.0.0.1:${ctx.server.address().port}`
     await ctx.board.refresh()
