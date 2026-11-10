@@ -28,7 +28,7 @@ export function buildMcpServer (ctx, { name = 'we-play-interop' } = {}) {
   })
   server.registerTool('read_log', { title: 'Read the log', description: 'Entries after a sequence number, optionally of one type (note, propose, vote, round, …).', inputSchema: { after: z.number().int().optional(), limit: z.number().int().min(1).max(200).optional(), type: z.string().optional() } }, async (args) => text(views.entries(ctx, args)))
   server.registerTool('get_entry', { title: 'One entry', description: 'One log entry by its hash.', inputSchema: { hash: z.string() } }, async ({ hash }) => {
-    const e = ctx.log.byHash.get(hash)
+    const e = views.entry(ctx, hash) // an agent's view: a people-only line is not there
     return e ? text(e) : fail('no entry with that hash')
   })
   server.registerTool('verify_log', { title: 'Verify the log', description: 'Re-check every hash link, signature and delegation in the log.' }, async () => text(await ctx.log.verify()))

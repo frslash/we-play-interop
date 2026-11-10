@@ -12,6 +12,7 @@ import { credentialRefuses, grantMismatch, verifyPermissionCredential } from '..
 import { sign, verifySignature } from '../shared/proof.js'
 import { AGENT_SCOPES, buildDocument, checkPayload, checkShape, NAME_OF, scopeOf, TYPES, WHO } from '../shared/types.js'
 import { insertEntry, loadEntries } from './db.js'
+import { isPeopleOnly } from './audience.js'
 import { State } from './state.js'
 
 const ERROR_TYPE = 'https://trusttasks.org/spec/trust-task-error/0.6'
@@ -34,6 +35,8 @@ export class Log extends EventEmitter {
   constructor ({ db, identity, resolver, config, openRoom = false }) {
     super()
     this.openRoom = openRoom === true // tests only (createApp's option): joins need no invite. Never from the environment.
+    this.copied = new Map() // hash of a people-only line -> the hash of its shared copy (a line is copied once)
+    this.copying = new Set() // originals a copy is being appended for right now, so two copies cannot both pass
     this.reserved = new Set() // invite codes (hashed) a join is being appended with right now, so two joins cannot spend one invite
     this.db = db; this.identity = identity; this.resolver = resolver; this.config = config
     this.entries = []; this.byHash = new Map(); this.byDocId = new Map()
@@ -67,6 +70,7 @@ export class Log extends EventEmitter {
 
   #index (e) {
     this.entries.push(e); this.byHash.set(e.hash, e); this.byDocId.set(e.document.id, e)
+    if (NAME_OF[e.type] === 'note' && e.document.payload.copiedFrom && !this.copied.has(e.document.payload.copiedFrom)) this.copied.set(e.document.payload.copiedFrom, e.hash)
     this.state.apply(e)
   }
 
@@ -166,11 +170,12 @@ export class Log extends EventEmitter {
       if (this.reserved.has(h)) throw new TaskError('permissionDenied', INVITE_WORDS.used, { status: 403 })
       this.reserved.add(h); spending = h
     }
+    if (name === 'note' && doc.payload.copiedFrom) this.copying.add(doc.payload.copiedFrom) // held with no await since the check above
     this.verified = null
     try {
       const entry = await this.#append(doc, { author: doc.issuer, onBehalfOf: principal, delegation: delegation?.hash })
       return { entry, duplicate: false }
-    } finally { if (spending) this.reserved.delete(spending) }
+    } finally { if (spending) this.reserved.delete(spending); if (name === 'note' && doc.payload.copiedFrom) this.copying.delete(doc.payload.copiedFrom) }
   }
 
   /** A grant carrying its permission as a credential: the person's signature on it, and that it says what the grant says. */
@@ -251,6 +256,19 @@ export class Log extends EventEmitter {
         break
       }
       case 'note':
+        if (p.audience === 'people') { // a line only people read: a person's own, kept apart from everything an agent or the room's AI reads
+          if (doc.onBehalfOf || !st.isHuman(doc.issuer)) throw new TaskError('permissionDenied', 'only a person writes a people-only line: AIs cannot read it, so they cannot write it', { status: 403 })
+          if (p.copiedFrom) throw new TaskError('malformedRequest', 'a shared copy is not people-only')
+          if (doc.threadId || doc.recipient || p.task || p.taskDone || p.step) throw new TaskError('malformedRequest', 'a people-only line is plain words: no reply, recipient, task or step (they would tie it to what AIs read)')
+        }
+        if (p.copiedFrom) {
+          const from = this.byHash.get(p.copiedFrom)
+          if (doc.onBehalfOf || !from || !isPeopleOnly(from)) throw new TaskError('malformedRequest', 'copiedFrom: a people-only line of yours')
+          if (from.author !== doc.issuer) throw new TaskError('permissionDenied', 'you can share only your own people-only lines', { status: 403 })
+          if (from.document.payload.text !== p.text) throw new TaskError('malformedRequest', 'a shared copy says what the original says')
+          if (this.copied.has(p.copiedFrom) || this.copying.has(p.copiedFrom)) throw new TaskError('permissionDenied', 'that line was already shared', { status: 403 })
+        }
+        if (doc.threadId && isPeopleOnly(this.byDocId.get(doc.threadId))) throw new TaskError('malformedRequest', 'a people-only line cannot be replied to in the open room: share it first')
         if (p.task) {
           const who = st.participants.get(p.task.for); if (!who || who.kind !== 'human' || who.left) throw new TaskError('malformedRequest', 'task.for: a person in this room (tasks are for people; agents get steps)')
           if (p.task.by !== undefined || p.task.from !== undefined) throw new TaskError('malformedRequest', 'task.by and task.from are the weaver\'s to fill, when it turns someone\'s line into a task; a task line you write is asked by you')

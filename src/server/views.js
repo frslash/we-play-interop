@@ -8,6 +8,7 @@ import { AGREED } from './rules.js'
 import { KINDS as RESOURCE_KINDS, RESOURCES as CURATED } from '../../public/resources.js'
 import { gist } from './weaver.js'
 import { repoOf } from './shelf.js'
+import { canSee, hiddenFromAgents, isPeopleOnly, isPerson } from './audience.js'
 
 export function info (ctx) {
   const { config, log, llm, weaver } = ctx, st = log.state
@@ -123,7 +124,8 @@ export function mapView (ctx) {
 
 const HEARD = new Set(['note', 'propose', 'round', 'project', 'way', 'run', 'vote', 'approve', 'veto', 'mode', 'join', 'delegate', 'result', 'link', 'vouch', 'replace'])
 /** What an agent hears: who said what, to whom, in reply to what, in plain words. */
-export function message (ctx, e, me) {
+export function message (ctx, e, me, viewer) {
+  if (!canSee(viewer, e)) return null // a people-only line is told only to a person (audience.js); the default viewer is an agent
   const st = ctx.log.state, doc = e.document, p = doc.payload, name = NAME_OF[e.type]
   const base = { id: e.hash, seq: e.seq, at: e.timestamp, type: name, from: st.nameOf(e.author), fromDid: e.author, ...(e.onBehalfOf !== e.author ? { for: st.nameOf(e.onBehalfOf) } : {}), ...(me && e.author === me ? { mine: true } : {}) }
   if (doc.recipient) Object.assign(base, { to: st.nameOf(doc.recipient), toDid: doc.recipient })
@@ -139,7 +141,7 @@ export function message (ctx, e, me) {
 /** Why an entry concerns an agent, most specific first, or null. */
 export function concerns (ctx, e, agent) {
   const name = NAME_OF[e.type], d = e.document, me = ctx.log.state.participants.get(agent)
-  if (e.author === agent) return null
+  if (e.author === agent || isPeopleOnly(e)) return null // a people-only line concerns no agent: it wakes none and is nobody's inbox
   if (name === 'round' && silentRound(d.payload)) return null // a round with nothing for anyone is a record, not a line
   if (name === 'note' && d.recipient === agent) return 'direct'
   // a person's line that @-names someone is for those it names alone: only they are woken, nobody else (room line 2760)
@@ -174,7 +176,7 @@ export function atNames (text, name) {
  */
 export function namedIn (ctx, e) {
   const name = NAME_OF[e.type], d = e.document, st = ctx.log.state
-  if (name !== 'note' || e.author !== e.onBehalfOf || !st.isHuman(e.author)) return null // a proposal stays open to every voter
+  if (name !== 'note' || isPeopleOnly(e) || e.author !== e.onBehalfOf || !st.isHuman(e.author)) return null // a proposal stays open to every voter
   const text = `${d.payload?.text ?? ''} ${d.payload?.title ?? ''}`
   if (!text.includes('@')) return null
   const out = new Set()
@@ -191,22 +193,23 @@ export function mentions (text, name) {
   return new RegExp(`(^|[^\\p{L}\\p{N}])@?${esc}(?![\\p{L}\\p{N}])`, 'iu').test(String(text))
 }
 
-export function messages (ctx, { after = -1, limit = 40, me, forMe } = {}) {
+export function messages (ctx, { after = -1, limit = 40, me, forMe } = {}, viewer) {
   const all = ctx.log.entries, items = [], only = forMe && me && forMe !== '0'
   let i = Math.max(0, Number(after) + 1)
   for (; i < all.length && items.length < Math.min(Number(limit) || 40, 100); i++) {
-    if (!HEARD.has(NAME_OF[all[i].type])) continue
+    if (!HEARD.has(NAME_OF[all[i].type]) || !canSee(viewer, all[i])) continue
     if (NAME_OF[all[i].type] === 'round' && silentRound(all[i].document.payload)) continue // a silent round is not a line
     const why = me ? concerns(ctx, all[i], me) : null
     if (only && (!why || why === 'round')) continue
-    items.push({ ...message(ctx, all[i], me), ...(why && why !== 'round' ? { forYou: why } : {}) })
+    items.push({ ...message(ctx, all[i], me, viewer), ...(why && why !== 'round' ? { forYou: why } : {}) })
   }
   return { items, more: i < all.length, head: ctx.log.head() }
 }
 
 /** A shared file's text (or an outside source's copy: file "source:<id>"), lines from..to, for read_file (the file itself is public in the room already). */
-export async function fileText (ctx, sha, { from, to } = {}) {
+export async function fileText (ctx, sha, { from, to } = {}, viewer) {
   if (sha.startsWith('source:')) return ctx.sources.text(sha.slice(7), { from, to }) // a copy of an outside source, not a shared file
+  if (!isPerson(viewer) && hiddenFromAgents(ctx.log, sha)) return null // attached only to a people-only line: an agent is told there is no such file
   const text = await ctx.media?.text(sha)
   if (text == null) return null
   const lines = text.split('\n'), a = Math.max(1, Number(from) || 1), b = Math.min(lines.length, Number(to) || Math.min(lines.length, a + 399))
@@ -216,8 +219,8 @@ export async function fileText (ctx, sha, { from, to } = {}) {
 
 /** A shared photo itself, for an agent to look at: its bytes (base64), its type, and the line that shared it.
  *  Only photos: a document is read as text (fileText). Photos are already public at /media/<sha256>. */
-export function photo (ctx, sha) {
-  if (!/^[0-9a-f]{64}$/.test(sha)) return null
+export function photo (ctx, sha, viewer) {
+  if (!/^[0-9a-f]{64}$/.test(sha) || (!isPerson(viewer) && hiddenFromAgents(ctx.log, sha))) return null
   const got = ctx.media?.get(sha)
   if (!got || !got.type?.startsWith('image/')) return null
   const e = ctx.log.entries.find((x) => (x.document.payload?.media ?? []).some((m) => m.sha256 === sha))
@@ -238,7 +241,7 @@ export function read (ctx, path) {
   if (p.startsWith('/api/files/')) return fileText(ctx, p.slice(11), q)
   if (p.startsWith('/api/photos/')) return photo(ctx, p.slice(12))
   if (p === '/api/log') return entries(ctx, q)
-  if (p.startsWith('/api/log/')) return ctx.log.byHash.get(decodeURIComponent(p.slice(9))) ?? null
+  if (p.startsWith('/api/log/')) return entry(ctx, decodeURIComponent(p.slice(9))) // in-process reads are the hosted agents': never a person's view
   if (p.startsWith('/api/participants/')) return participant(ctx, decodeURIComponent(p.slice(18)))
   if (p.startsWith('/api/credentials/')) return credential(ctx, decodeURIComponent(p.slice(17)))
   throw new Error(`nothing at ${p}`)
@@ -276,11 +279,17 @@ export function credential (ctx, hash) {
   }
 }
 
-export function entries (ctx, { after = -1, limit = 100, type } = {}) {
+/** One entry by hash, or null (also null for a people-only line the viewer may not read). */
+export function entry (ctx, hash, viewer) {
+  const e = ctx.log.byHash.get(hash)
+  return e && canSee(viewer, e) ? e : null
+}
+
+export function entries (ctx, { after = -1, limit = 100, type } = {}, viewer) {
   const all = ctx.log.entries
   const t = type ? (TYPES[type] ?? type) : null
   const out = []
-  for (let i = Math.max(0, Number(after) + 1); i < all.length && out.length < Math.min(Number(limit) || 100, 500); i++) if (!t || all[i].type === t) out.push(all[i])
+  for (let i = Math.max(0, Number(after) + 1); i < all.length && out.length < Math.min(Number(limit) || 100, 500); i++) if ((!t || all[i].type === t) && canSee(viewer, all[i])) out.push(all[i])
   return { entries: out, head: ctx.log.head() }
 }
 

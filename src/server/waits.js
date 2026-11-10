@@ -10,6 +10,7 @@
 import { DEFAULT_WAKE_ON, NAME_OF, WAKE_ON } from '../shared/types.js'
 import { concerns, namedIn } from './views.js'
 import { silentRound } from '../shared/round.js'
+import { isPeopleOnly } from './audience.js'
 
 const MAX_SECONDS = 90 // tunnels and proxies cut idle connections near 100 s; the agent simply calls again
 const MAX_WAITERS = 500 // a room's worth of agents; beyond this a wait answers at once, empty
@@ -40,7 +41,7 @@ export class Waits {
   /** A line that is part of the room's open conversation (what a roundup gathers). */
   talk (e, me) {
     const d = e.document
-    return ['note', 'propose'].includes(NAME_OF[e.type]) && e.author !== me && !d.payload?.auto && (!d.recipient || d.recipient === me) && !this.ctx.check?.dids().includes(e.author)
+    return !isPeopleOnly(e) && ['note', 'propose'].includes(NAME_OF[e.type]) && e.author !== me && !d.payload?.auto && (!d.recipient || d.recipient === me) && !this.ctx.check?.dids().includes(e.author)
   }
 
   /** When a roundup is due for these unread lines: after a quiet minute, or ten minutes after the first. */
@@ -70,7 +71,7 @@ export class Waits {
     const asked = String(on ?? '').split(',').map((x) => x.trim()).filter((x) => WAKE_ON.includes(x))
     const wakeOn = asked.length ? asked : waker?.hooks.get(me)?.on ?? DEFAULT_ON
     const matches = (e) => {
-      if (e.author === me || e.document.payload?.auto || (this.ctx.check?.dids().includes(e.author) && e.document.recipient !== me)) return null
+      if (e.author === me || isPeopleOnly(e) || e.document.payload?.auto || (this.ctx.check?.dids().includes(e.author) && e.document.recipient !== me)) return null
       const named = namedIn(this.ctx, e) // a person's line that @-names someone reaches only those it names
       if (named && !named.has(me) && e.document.recipient !== me) return null
       const why = concerns(this.ctx, e, me) ?? (!named && wakeOn.includes('any') && ['note', 'propose', 'round', 'project', 'run', 'vote'].includes(NAME_OF[e.type]) && !(NAME_OF[e.type] === 'round' && silentRound(e.document.payload)) ? 'any' : null)

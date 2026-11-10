@@ -220,7 +220,7 @@ async function catchUp () {
   const last = feed[0]?.seq ?? -1
   const r = await api(`/api/log?after=${last}&limit=100`)
   if (!r.ok || !r.body.entries.length) return
-  for (const e of r.body.entries) if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); toWeave.push(e) }
+  for (const e of r.body.entries) if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); if (!peopleOnly(e)) toWeave.push(e) }
   trimFeed()
   await refresh(); weaveQueued()
 }
@@ -240,7 +240,7 @@ function live () {
   es.addEventListener('entry', (ev) => {
     streamHeard = true
     const e = JSON.parse(ev.data)
-    if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); toWeave.push(e); notifyIfForMe(e) }
+    if (!feed.some((x) => x.hash === e.hash)) { feed.unshift(e); if (!peopleOnly(e)) { toWeave.push(e); notifyIfForMe(e) } }
     trimFeed()
     clearTimeout(pending); pending = setTimeout(async () => { await refresh(); weaveQueued() }, 250)
   })
@@ -362,7 +362,11 @@ function renderTop () {
 const tile = (n, label) => h('div', { class: 'tile', role: 'button', tabindex: 0, onclick: () => go('map') }, h('b', null, n), h('span', null, label))
 
 // ---------- Talk: one chat ----------
-const talk = { to: 'room', replyTo: null, notes: [], readUpTo: null, notesFor: null }
+const talk = { to: 'room', replyTo: null, notes: [], readUpTo: null, notesFor: null, pane: 'all' }
+// A people-only line (audience: 'people') is read by signed-in people and by no AI: it lives in Talk's left window.
+const peopleOnly = (e) => NAME_OF[e.type] === 'note' && e.document.payload?.audience === 'people'
+// the copy someone made of one of these for the AIs, if they did (a copy names its original in copiedFrom)
+const sharedCopy = (e) => [...feed, ...(talk.older ?? [])].find((x) => x.document.payload?.copiedFrom === e.hash)
 // how an agent can be reached right now (the room says, in /api/state)
 const LISTEN = { waiting: 'listening now', 'wake link': 'listening: the room wakes it', 'room answers': 'the room answers for it' }
 // what an agent says it runs on: its own word, never checked by the room
@@ -485,6 +489,14 @@ async function sendChat () {
   }
   talk.input.value = ''; forget('chat.text'); autoGrow(); setReply(null); drawTaskBox(); renderTalk(true)
 }
+async function sendPeople () {
+  const text = talk.pinput.value.trim()
+  if (!text) return
+  if (!joined()) { openBring(); return toast('First, pick a name.') }
+  const ok = await post('note', { text, kind: 'message', audience: 'people' })
+  if (!ok) return
+  talk.pinput.value = ''; forget('chat.people'); talk.pinput.style.height = 'auto'; renderTalk(true)
+}
 function setReply (e, { label } = {}) {
   talk.replyTo = e
   if (!talk.reply) return
@@ -529,6 +541,24 @@ function linkLine (e) {
     canVouch ? h('button', { class: 'btn tiny', title: 'Only if you know this is the same person', onclick: async () => { if (confirm(`Vouch that ${nameOf(l.from)} is ${oldName}? Only if you know it’s the same person.`) && await post('vouch', { request: l.hash })) toast('Vouched.') } }, 'I know them: vouch') : null,
     host && l.vouches.length ? h('button', { class: 'btn tiny', onclick: async () => { if (confirm(`Mark ${oldName}’s old key replaced by ${nameOf(l.from)}? Its permissions for agents end now; the history stays.`) && await post('replace', { request: l.hash })) toast('Marked replaced.') } }, 'Mark the old key replaced') : null]
 }
+// Sharing a line of yours from "People only" with the AIs: it is copied as a new message from you (copiedFrom names the original).
+// Dragging it across, or the Share with AIs button, asks first; someone else's line can do neither.
+async function shareWithAIs (e) {
+  if (!joined() || e.author !== me.did || sharedCopy(e)) return
+  if (!confirm('Share this with the AIs? It’s copied as a new message from you.')) return
+  const p = e.document.payload
+  const ok = await post('note', { text: p.text, kind: p.kind, ...(p.tech ? { tech: p.tech } : {}), ...(p.media ? { media: p.media } : {}), ...(p.files ? { files: p.files } : {}), copiedFrom: e.hash })
+  if (ok) renderTalk(true)
+}
+const SHARE_TYPE = 'application/x-inwove-share'
+/** The handle to drag a line of yours into the "People and AIs" window (a handle, so the text still selects and copies). */
+function shareGrip (e, bubble) {
+  return h('span', {
+    class: 'grip', draggable: 'true', 'aria-label': 'Drag to share with the AIs', title: 'Drag into People and AIs to share this with the AIs',
+    ondragstart: (ev) => { talk.dragging = true; ev.dataTransfer.effectAllowed = 'copy'; ev.dataTransfer.setData(SHARE_TYPE, e.hash); ev.dataTransfer.setData('text/plain', ''); ev.dataTransfer.setDragImage?.(bubble, 8, 8) },
+    ondragend: () => { talk.dragging = false; setTimeout(catchUpChat, 0) },
+  }, '⠿')
+}
 function chatItem (e) {
   const name = NAME_OF[e.type], d = e.document, p = d.payload
   const time = h('span', { class: 'time' }, ago(e.timestamp))
@@ -538,18 +568,23 @@ function chatItem (e) {
     const parent = d.threadId ? feed.find((x) => x.document.id === d.threadId) : null
     const agent = e.author !== e.onBehalfOf
     // the text selects and copies like any text; replying is its own button, so a drag never starts a reply
+    const only = peopleOnly(e), mineHere = only && joined() && e.author === me.did, copy = only ? sharedCopy(e) : null
     const actions = h('span', { class: 'msg-actions' },
-      h('button', { class: 'btn tiny', title: 'Reply to this', onclick: () => setReply(e) }, 'Reply'),
+      only ? null : h('button', { class: 'btn tiny', title: 'Reply to this', onclick: () => setReply(e) }, 'Reply'),
+      mineHere && !copy ? h('button', { class: 'btn tiny', title: 'Copy this to the room as a new message from you, so the AIs can read it', onclick: () => shareWithAIs(e) }, 'Share with AIs') : null,
       h('button', { class: 'btn tiny', title: 'Copy this message', onclick: () => navigator.clipboard?.writeText(p.text ?? '').then(() => toast('Copied.'), () => toast('Select the text and copy it by hand.')) }, 'Copy'))
     const mineToAnswer = forMe(e)
     const weaver = e.author === S.workspace // every line the weaver signs reads as a notice, like its rounds: centred and quieter
-    return h('div', { class: 'msg' + (weaver ? ' weaver' : '') + (e.author === me?.did ? ' mine' : '') + (agent && !weaver ? ' agent' : '') + (mineToAnswer ? ' for-me' : '') },
+    const bubble = h('div', { class: 'msg' + (weaver ? ' weaver' : '') + (e.author === me?.did ? ' mine' : '') + (agent && !weaver ? ' agent' : '') + (mineToAnswer ? ' for-me' : '') },
       h('div', { class: 'who' }, h('span', { class: 'dot', style: `background:${weaver ? 'var(--gold)' : colorFor(e.author)}` }), weaver ? 'The weaver' : nameOf(e.author), agent && !weaver ? listenDot(e.author) : null, agent && !weaver ? waitingBadge(e.author) : null, agent && !weaver && saysIt(e.author) ? h('span', { class: 'for', title: 'The agent’s own word: the room cannot check it' }, ` · ${saysIt(e.author)}`) : null, agent && !weaver && !nameOf(e.author).includes(nameOf(e.onBehalfOf)) ? h('span', { class: 'for' }, ` for ${nameOf(e.onBehalfOf)}`) : null,
         d.recipient && (!parent || parent.author !== d.recipient) ? h('span', { class: 'for' }, ` → ${nameOf(d.recipient)}`) : null, p.auto ? h('span', { class: 'badge away' }, 'while away') : null, mineToAnswer ? h('span', { class: 'badge for-me' }, 'for you') : null, taskBadge(e), ' ', time, actions),
       parent ? h('div', { class: 'quote' }, `${nameOf(parent.author)}: ${splitLayers(parent.document.payload.text ?? parent.document.payload.title ?? '').short.slice(0, 100)}`) : null,
       p.media?.length ? h('div', { class: 'photos' }, p.media.map((m) => h('a', { href: `/media/${m.sha256}`, target: '_blank', rel: 'noopener' }, h('img', { src: `/media/${m.sha256}`, loading: 'lazy', width: m.w, height: m.h, alt: 'a photo' })))) : null,
       p.files?.length ? h('div', { class: 'files' }, p.files.map((f) => h('a', { class: 'doc-chip', href: `/media/${f.sha256}?name=${encodeURIComponent(f.name)}`, download: f.name }, `📄 ${f.name} · ${sizeOf(f.bytes)}`))) : null,
       (p.media?.length && p.text === '(a photo)') || (p.files?.length && p.text === '(a file)') ? null : layered(e.hash, p.text, p.tech), techLine)
+    if (copy) bubble.querySelector('.who .time')?.before(h('span', { class: 'badge shared' }, 'shared with AIs'), ' ')
+    if (mineHere && !copy) bubble.querySelector('.who')?.prepend(shareGrip(e, bubble))
+    return bubble
   }
   if (name === 'propose') return system([forMe(e) ? h('span', { class: 'badge for-me' }, 'for you') : null, forMe(e) ? ' ' : null, `${nameOf(e.author)} proposed: `, h('strong', null, p.title), ' · ', h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); go('decide') } }, 'decide')])
   if (name === 'round') {
@@ -600,7 +635,7 @@ function holdingChat () {
   if (!talk.list) return false
   if (talk.dragging) return true
   const s = getSelection()
-  return Boolean(s && !s.isCollapsed && s.rangeCount && talk.list.contains(s.getRangeAt(0).commonAncestorContainer))
+  return Boolean(s && !s.isCollapsed && s.rangeCount && (talk.list.contains(s.getRangeAt(0).commonAncestorContainer) || talk.plist?.contains(s.getRangeAt(0).commonAncestorContainer)))
 }
 function catchUpChat () { if (talk.deferred && !holdingChat()) renderTalk() }
 const OLDER_PAGE = 200 // lines of the record per request when scrolling back (most are board bookkeeping, not chat)
@@ -771,12 +806,35 @@ function renderTalk (scrollDown, { holdAt = null } = {}) {
     root.addEventListener('dragover', (ev) => { if (!hasFiles(ev)) return; ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; root.classList.add('dropping') })
     root.addEventListener('dragleave', (ev) => { if (!root.contains(ev.relatedTarget)) root.classList.remove('dropping') })
     root.addEventListener('drop', (ev) => { if (!hasFiles(ev)) return; ev.preventDefault(); root.classList.remove('dropping'); if (!joined()) return toast('Join the room first to share a photo or file.'); addPhotos([...ev.dataTransfer.files]); talk.input.focus() })
-    // side by side (wide screens): people's lines on the left, agents' on the right, one timeline; the weaver in the middle
-    talk.lanes = store.get('wpi.talkLanes') !== 'one'
-    talk.lanesToggle = h('div', { class: 'seg small lanes-toggle' })
+    // two windows side by side: "People only" (no AI can read it) and "People and AIs" (the room, as it was); under 760px, two tabs
+    talk.pane = store.get('wpi.talkPane') === 'people' ? 'people' : 'all'
+    talk.plist = h('div', { class: 'chat chat-people', 'aria-live': 'polite' })
+    talk.plist.addEventListener('scroll', () => { talk.pscrolled = true }, { passive: true })
+    talk.pinput = keep(h('textarea', { rows: 1, maxlength: 2000, placeholder: 'People only…', 'aria-label': 'A message only people can read' }), 'chat.people')
+    talk.pinput.addEventListener('input', () => { talk.pinput.style.height = 'auto'; talk.pinput.style.height = Math.min(160, talk.pinput.scrollHeight) + 'px' })
+    talk.pinput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && matchMedia('(min-width: 760px)').matches) { ev.preventDefault(); sendPeople() } })
+    const pcomposer = h('div', { class: 'composer' }, h('div', { class: 'composer-row' }, talk.pinput, h('button', { class: 'btn primary send', onclick: sendPeople, 'aria-label': 'Send to People only' }, '↑')))
+    talk.paneTabs = h('div', { class: 'seg small talk-pane-tabs', role: 'group', 'aria-label': 'Which window' })
+    talk.winPeople = h('section', { class: 'talk-win win-people', 'aria-labelledby': 'win-people-title' },
+      h('h2', { id: 'win-people-title' }, 'People only'), h('p', { class: 'meta win-note' }, 'AIs can’t read this.'), talk.plist, pcomposer)
+    talk.winAll = h('section', { class: 'talk-win win-all talk-main', 'aria-labelledby': 'win-all-title' },
+      h('h2', { id: 'win-all-title' }, 'People and AIs'), talk.goals, talk.waiting, talk.list, talk.composer)
+    // a line of yours dragged from People only into People and AIs is shared after asking (a drag is only ever offered on your own lines)
+    const sharing = (ev) => [...(ev.dataTransfer?.types ?? [])].includes(SHARE_TYPE)
+    talk.winAll.addEventListener('dragover', (ev) => { if (!sharing(ev)) return; ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; talk.winAll.classList.add('sharing') })
+    talk.winAll.addEventListener('dragleave', (ev) => { if (!talk.winAll.contains(ev.relatedTarget)) talk.winAll.classList.remove('sharing') })
+    talk.winAll.addEventListener('drop', (ev) => {
+      if (!sharing(ev)) return
+      ev.preventDefault(); talk.winAll.classList.remove('sharing'); talk.dragging = false
+      const hash = ev.dataTransfer.getData(SHARE_TYPE), line = [...feed, ...talk.older].find((x) => x.hash === hash)
+      if (line && peopleOnly(line)) shareWithAIs(line)
+    })
+    talk.windows = h('div', { class: 'talk-windows' }, talk.winPeople, talk.winAll)
     talk.side = h('aside', { class: 'tasks-side card', 'aria-label': 'Your tasks' })
-    fill(root, talk.side, h('div', { class: 'talk-main' }, talk.goals, talk.lanesToggle, talk.waiting, talk.list, talk.composer))
+    fill(root, talk.side, h('div', { class: 'talk-main-wrap' }, talk.paneTabs, talk.windows))
   }
+  talk.windows.dataset.pane = talk.pane
+  fill(talk.paneTabs, [['people', 'People only'], ['all', 'People and AIs']].map(([k, l]) => h('button', { type: 'button', class: talk.pane === k ? 'on' : '', 'aria-pressed': String(talk.pane === k), onclick: () => { talk.pane = k; store.set('wpi.talkPane', k); renderTalk(true) } }, l)))
   drawTasks()
   const held = S.proposals.filter((p) => p.kind === 'goal' && p.status !== 'vetoed' && p.tally.for > p.tally.against)
   fill(talk.goals, held.length ? [h('strong', null, 'The room is going for: '), held.slice(0, 3).map((g) => g.title).join(' · ')] : h('span', { class: 'meta' }, 'Just talk. The weaver picks up what people want and suggests goals and next steps here.'))
@@ -789,8 +847,6 @@ function renderTalk (scrollDown, { holdAt = null } = {}) {
   talk.toggle.hidden = !agents.length
   if (!agents.length) talk.to = 'room'
   fill(talk.toggle, [['room', 'To the room'], ['agent', `To ${agents[0]?.name ?? 'my agent'}, privately`]].map(([k, l]) => h('button', { class: talk.to === k ? 'on' : '', onclick: () => { talk.to = k; talk.input.placeholder = k === 'agent' ? 'Only your agent will read this…' : 'Say something…'; renderTalk() } }, l)))
-  fill(talk.lanesToggle, [[true, 'People and agents side by side'], [false, 'One column']].map(([on, l]) => h('button', { class: talk.lanes === on ? 'on' : '', onclick: () => { talk.lanes = on; store.set('wpi.talkLanes', on ? 'split' : 'one'); renderTalk() } }, l)))
-  talk.list.classList.toggle('lanes', talk.lanes)
   // someone selecting text in the chat keeps their selection: the list redraws once they're done
   if (holdingChat()) { talk.deferred = true; talk.deferredScroll ||= Boolean(scrollDown); return }
   if (talk.deferredScroll) { scrollDown = true; talk.deferredScroll = false }
@@ -798,15 +854,16 @@ function renderTalk (scrollDown, { holdAt = null } = {}) {
   const nearBottom = talk.list.scrollHeight - talk.list.scrollTop - talk.list.clientHeight < 80
   if (nearBottom && holdAt == null && talk.older.length > 2 * OLDER_PAGE && !talk.loadingOlder) { talk.older.sort((a, b) => b.seq - a.seq); talk.older = talk.older.slice(0, 2 * OLDER_PAGE); talk.olderDone = false } // back at the newest: what was read further back is let go, and reloads if they scroll up again
   const seen = new Set(), shown = [...[...talk.older].reverse(), ...feed.slice(0, FEED_KEEP).reverse()].filter((e) => !seen.has(e.hash) && seen.add(e.hash)).sort((a, b) => a.seq - b.seq), oldest = shown[0]?.timestamp ?? ''
-  // which lane a line sits in when Talk is side by side: a person's own words on the left, agents on the right
-  const lane = (el, side) => { if (el && side && !el.classList.contains('sys') && !el.classList.contains('weaver')) el.classList.add(`lane-${side}`); return el }
-  const sideOf = (e) => (NAME_OF[e.type] === 'note' && e.author !== S.workspace ? (e.author === e.onBehalfOf || !e.onBehalfOf ? 'people' : 'agents') : null)
-  const rows = shown.filter((e) => !checkEntry(e)).map((e) => ({ at: e.timestamp, el: lane(chatItem(e), sideOf(e)) })).filter((x) => x.el)
-  for (const n of talk.notes) if (n.at >= oldest) rows.push({ at: n.at, el: lane(noteBubble(n), n.from === 'agent' ? 'agents' : 'people') })
+  const rows = shown.filter((e) => !checkEntry(e) && !peopleOnly(e)).map((e) => ({ at: e.timestamp, el: chatItem(e) })).filter((x) => x.el)
+  for (const n of talk.notes) if (n.at >= oldest) rows.push({ at: n.at, el: noteBubble(n) })
   rows.sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : 0))
   const top = talk.older.length || talk.loadingOlder ? h('p', { class: 'sys' }, talk.olderDone ? 'The start of the room.' : 'Scroll up for earlier lines.') : null
-  const heads = talk.lanes && rows.length ? [h('div', { class: 'lane-head lane-people' }, 'People'), h('div', { class: 'lane-head lane-agents' }, 'Agents')] : []
-  fill(talk.list, rows.length ? [...heads, top, ...rows.map((x) => x.el)].filter(Boolean) : h('p', { class: 'empty' }, 'Quiet so far. Say hello.'))
+  fill(talk.list, rows.length ? [top, ...rows.map((x) => x.el)].filter(Boolean) : h('p', { class: 'empty' }, 'Quiet so far. Say hello.'))
+  // the left window: lines only people can read, in the order they were said
+  const own = shown.filter(peopleOnly).map((e) => chatItem(e)).filter(Boolean)
+  const pNear = talk.plist.scrollHeight - talk.plist.scrollTop - talk.plist.clientHeight < 80
+  fill(talk.plist, own.length ? own : h('p', { class: 'empty' }, 'Nothing here yet. Only people in the room can read what is said in this window.'))
+  if (scrollDown || pNear || !talk.pscrolled) { talk.plist.scrollTop = talk.plist.scrollHeight; talk.pscrolled = true }
   if (holdAt != null) talk.list.scrollTop = talk.list.scrollHeight - holdAt // lines loaded above: the reader's place stays put
   else if (scrollDown || nearBottom || !talk.scrolled) { talk.list.scrollTop = talk.list.scrollHeight; talk.scrolled = true }
   if (!talk.olderDone && !talk.loadingOlder && talk.list.clientHeight > 0 && talk.list.scrollHeight <= talk.list.clientHeight + 300) setTimeout(() => loadOlder().catch(() => {}), 0) // too few lines to scroll: bring in earlier ones
@@ -1223,7 +1280,7 @@ function weaveQueued () {
   renderCaps()
 }
 function replay () {
-  const recent = feed.filter((e) => ageOf(e) < FADE_MS).reverse()
+  const recent = feed.filter((e) => !peopleOnly(e) && ageOf(e) < FADE_MS).reverse()
   recent.forEach((e, i) => setTimeout(() => weaveEntry(e, { fast: true, age: ageOf(e) }), 200 + i * 30))
 }
 const UNSAID = ['genesis', 'score', 'hosted', 'host']
@@ -1259,9 +1316,9 @@ function renderWatch () {
 }
 function renderCaps () {
   if (!watch.caps) return
-  const caps = feed.map((e) => [e, ageOf(e)]).filter(([, a]) => a < FADE_MS).map(([e, a]) => caption(e, a)).filter(Boolean).slice(0, 10)
+  const caps = feed.filter((e) => !peopleOnly(e)).map((e) => [e, ageOf(e)]).filter(([, a]) => a < FADE_MS).map(([e, a]) => caption(e, a)).filter(Boolean).slice(0, 10)
   if (caps.length) return fill(watch.caps, caps)
-  const last = feed.find((e) => !UNSAID.includes(NAME_OF[e.type]) && !checkEntry(e))
+  const last = feed.find((e) => !peopleOnly(e) && !UNSAID.includes(NAME_OF[e.type]) && !checkEntry(e))
   const toTalk = h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); go('talk') } }, 'Read it in Talk')
   fill(watch.caps, h('li', { class: 'empty' }, last ? ['Quiet right now. The last line was ', ago(last.timestamp), '. ', toTalk] : 'Quiet so far. Bring your agent, or say something in Talk.'))
 }

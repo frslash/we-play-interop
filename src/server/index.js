@@ -5,6 +5,7 @@ import { handleRoomDid, ensureRoomDid, growRoomDid, roomDidDiffers } from './roo
 import { RoomDidWatch } from './room-did-watch.js'
 import { createGate } from './gate.js'
 import { createAccess } from './access.js'
+import { canSee, hiddenFromAgents, isPerson } from './audience.js'
 import { ensureFirstInvite } from './invites.js'
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -214,8 +215,8 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
   const importMap = /<script type="importmap">([\s\S]*?)<\/script>/.exec(page)?.[1] ?? ''
   const csp = `default-src 'self'; script-src 'self' 'sha256-${createHash('sha256').update(importMap).digest('base64')}'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`
 
-  const sse = new Map() // a live connection -> the DID of the member it belongs to (null in an open test room)
-  log.on('entry', (e) => { const msg = `event: entry\ndata: ${JSON.stringify(e)}\n\n`; for (const res of sse.keys()) res.write(msg) })
+  const sse = new Map() // a live connection -> { did, viewer }: the member it belongs to (null in an open test room) and who was reading when it connected
+  log.on('entry', (e) => { const msg = `event: entry\ndata: ${JSON.stringify(e)}\n\n`; for (const [res, c] of sse) if (canSee(c.viewer, e)) res.write(msg) }) // a people-only line goes only to a person's connection (audience.js)
 
   const send = (res, status, body, headers = {}) => {
     const json = typeof body !== 'string'
@@ -243,7 +244,7 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
 
   // who is signed in, sign-in with a key or a passkey, invites, the membership pass (access.js); `sessions` is read by the gate
   const access = ctx.access = await createAccess(ctx, { send, readBody, refuse, ipOf })
-  access.sessions.onEnd = (did) => { for (const [res, d] of sse) if (d === did) res.end() } // a person's live connections close with their sessions
+  access.sessions.onEnd = (did) => { for (const [res, c] of sse) if (c.did === did) res.end() } // a person's live connections close with their sessions
   ctx.ensureFirstInvite = (opts) => ensureFirstInvite(ctx, opts)
 
   async function route (req, res) {
@@ -280,14 +281,14 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
     if (path === '/api/steps') return send(res, 200, ctx.facilitator.view())
     if (path === '/api/map' || path === '/api/board') return send(res, 200, views.mapView(ctx))
     if (path === '/api/resources') return send(res, 200, views.resourcesView(ctx, q))
-    if (path === '/api/log') return send(res, 200, views.entries(ctx, q))
-    if (path === '/api/messages') return send(res, 200, views.messages(ctx, req.inwoveViewer?.did ? { ...q, me: req.inwoveViewer.did } : openRoom ? q : { ...q, me: undefined, forMe: undefined })) // a caller is only ever themselves: the lines meant for you are the signed-in member's, whatever ?me= says
+    if (path === '/api/log') return send(res, 200, views.entries(ctx, q, req.inwoveViewer))
+    if (path === '/api/messages') return send(res, 200, views.messages(ctx, req.inwoveViewer?.did ? { ...q, me: req.inwoveViewer.did } : openRoom ? q : { ...q, me: undefined, forMe: undefined }, req.inwoveViewer)) // a caller is only ever themselves: the lines meant for you are the signed-in member's, whatever ?me= says
     if (path === '/api/wait') { // held open until something is for this agent, or the timeout
       const a = await ctx.waits.wait(q)
       const status = a.restarting ? 503 : 200, headers = a.restarting ? { 'retry-after': String(a.retryAfter) } : {} // a wait cut off by a restart
       return q.as === 'text' ? send(res, status, waitLine(a), headers) : send(res, status, a, headers) // as=text: one line a shell hook can read without a JSON parser
     }
-    if (path.startsWith('/api/log/')) { const e = log.byHash.get(path.slice(9)); return e ? send(res, 200, e) : send(res, 404, { error: 'no entry with that hash' }) }
+    if (path.startsWith('/api/log/')) { const e = views.entry(ctx, path.slice(9), req.inwoveViewer); return e ? send(res, 200, e) : send(res, 404, { error: 'no entry with that hash' }) }
     if (path === '/api/verify') return send(res, 200, await log.verify())
     if (path.startsWith('/api/credentials/')) { const c = views.credential(ctx, decodeURIComponent(path.slice(17))); return typeof c === 'string' ? send(res, 404, { error: c }) : send(res, 200, c) }
     if (path.startsWith('/api/participants/')) { const p = views.participant(ctx, decodeURIComponent(path.slice(18))); return p ? send(res, 200, p) : send(res, 404, { error: 'not in the workspace yet' }) }
@@ -301,7 +302,7 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
       // no-transform and no buffering, so proxies and tunnels pass each event on at once; the padding pushes past buffers that wait for a first chunk
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no', connection: 'keep-alive' })
       res.write(`:${' '.repeat(2048)}\n\nevent: hello\ndata: ${JSON.stringify(log.head())}\n\n`)
-      sse.set(res, req.inwoveViewer?.did ?? null)
+      sse.set(res, { did: req.inwoveViewer?.did ?? null, viewer: req.inwoveViewer })
       const beat = setInterval(() => res.write(': keep-alive\n\n'), 25_000)
       req.on('close', () => { clearInterval(beat); sse.delete(res) })
       return
@@ -356,8 +357,8 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
         return send(res, 201, stored)
       } catch (err) { return refuse(res, err, doc) }
     }
-    if (path.startsWith('/api/files/')) { const r = await views.fileText(ctx, path.slice(11), q); return r ? send(res, 200, r) : send(res, 404, { error: 'no file in this room has that sha256, or it has no text (a photo). The path is /api/files/<the sha256 a message lists under files>' }) }
-    if (path.startsWith('/api/photos/')) { const r = views.photo(ctx, path.slice(12)); return r ? send(res, 200, r) : send(res, 404, { error: 'no photo in this room has that sha256' }) }
+    if (path.startsWith('/api/files/')) { const r = await views.fileText(ctx, path.slice(11), q, req.inwoveViewer); return r ? send(res, 200, r) : send(res, 404, { error: 'no file in this room has that sha256, or it has no text (a photo). The path is /api/files/<the sha256 a message lists under files>' }) }
+    if (path.startsWith('/api/photos/')) { const r = views.photo(ctx, path.slice(12), req.inwoveViewer); return r ? send(res, 200, r) : send(res, 404, { error: 'no photo in this room has that sha256' }) }
     if (path === '/api/shelf' || path.startsWith('/api/shelf/')) { // other projects' public code, each at one commit: list, read, search
       if (req.method !== 'GET') return send(res, 405, { error: 'GET only' })
       try { return send(res, 200, await views.shelf(ctx, path, q)) } catch (err) { if (!err.status) console.error('shelf:', err); return send(res, err.status ?? 500, { error: err.status ? err.message : 'the shelf could not answer' }, err.status === 429 ? { 'retry-after': '60' } : {}) }
@@ -380,7 +381,7 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
       return d ? send(res, 200, d, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' }) : send(res, 404, { error: 'no change with that hash' })
     }
     if (path.startsWith('/media/') && req.method === 'GET') {
-      const m = /^\/media\/([0-9a-f]{64})$/.exec(path), got = m && ctx.media.get(m[1])
+      const m = /^\/media\/([0-9a-f]{64})$/.exec(path), got = m && (isPerson(req.inwoveViewer) || !hiddenFromAgents(log, m[1])) && ctx.media.get(m[1]) // a file only a people-only line carries is for people (audience.js)
       if (!got) return send(res, 404, { error: 'no photo with that hash' })
       const isImage = got.type.startsWith('image/'), name = String(q.name ?? 'file').replace(/[^\w.\- ]+/g, '_').slice(0, 120)
       res.writeHead(200, { 'content-type': got.type, 'cache-control': 'private, max-age=31536000, immutable', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; sandbox", ...(isImage ? {} : { 'content-disposition': `attachment; filename="${name}"` }) })

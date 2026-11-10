@@ -20,6 +20,7 @@
 import { exact, whyNot } from '../shared/steps.js'
 import { NAME_OF, STEP_STATES } from '../shared/types.js'
 import { parseJsonAnswer } from './llm.js'
+import { forAgents } from './audience.js'
 import { citedIn, resourcesFor } from './views.js'
 import { isCodeStep } from './state.js'
 import { partiesOf } from './votes.js'
@@ -306,7 +307,7 @@ export class Facilitator {
     if (this.heard == null) {
       this.heard = st.stepsHeard >= 0 ? st.stepsHeard : (st.steps.size || st.stepsDone.length ? -1 : st.seq)
       for (const s of this.steps().filter((x) => x.waitingOn)) { // after a restart: a decision given while the room was not listening
-        const e = this.log.entries.slice((s.waitingSince ?? s.seq) + 1).find((x) => NAME_OF[x.type] === 'note' && answers(st, x, s))
+        const e = this.log.entries.slice((s.waitingSince ?? s.seq) + 1).find((x) => forAgents(x) && NAME_OF[x.type] === 'note' && answers(st, x, s))
         if (e) { await this.decide(s, e); did.heard++ }
       }
       // older choices put to a person: the agents decide now. Never one parked, decided or held for its person, and a
@@ -319,7 +320,7 @@ export class Facilitator {
     const from = this.heard, skip = this.skip()
     for (const e of this.log.entries.slice(Math.max(0, from + 1))) {
       this.heard = e.seq
-      if (NAME_OF[e.type] !== 'note' || e.author === st.workspace || skip.includes(e.author)) continue
+      if (NAME_OF[e.type] !== 'note' || !forAgents(e) || e.author === st.workspace || skip.includes(e.author)) continue
       const p = e.document.payload
       if (p.step) { await this.say(e, did).catch((err) => { this.lastError = `step line ${e.seq}: ${err.message}` }); did.heard++; continue }
       // the decision a step waits on, given by its person anywhere in the room (it names what was asked)
@@ -642,7 +643,7 @@ export class Facilitator {
 
   threadText (docId) {
     if (!docId) return []
-    return this.log.entries.filter((e) => NAME_OF[e.type] === 'note' && e.document.threadId === docId).slice(-12).map((e) => ({ who: this.st.nameOf(e.author), text: clip(e.document.payload.text, 300) }))
+    return this.log.entries.filter((e) => forAgents(e) && NAME_OF[e.type] === 'note' && e.document.threadId === docId).slice(-12).map((e) => ({ who: this.st.nameOf(e.author), text: clip(e.document.payload.text, 300) }))
   }
 
   /** The model writes each step and its check (one call for all of them); without one, the agreement's own words. */

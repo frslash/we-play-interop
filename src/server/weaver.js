@@ -13,6 +13,7 @@ import { conflictSides, DIVE_PROMPT, diveContext, runDives, sanitizeDives } from
 import { ROUND_PROMPT } from './facilitator.js'
 import { citedIn, resourcesFor } from './views.js'
 import { parseJsonAnswer } from './llm.js'
+import { forAgents } from './audience.js'
 // What changes slowly in a round's context (the map, who is here, the goals): it goes first, so a model that caches reads it from
 // its cache; what is new this round (lines, the board, proposals, the resources they bring up) follows
 export const SLOW_KEYS = ['mode', 'map', 'people', 'inRoom', 'goals', 'intentions']
@@ -58,7 +59,7 @@ export class Weaver {
 
   newInputs () {
     const st = this.log.state, heard = Math.max(st.lastRoundSeq, this.heardUpTo ?? -1)
-    return this.log.entries.filter((e) => e.seq > heard && !['round', 'genesis'].includes(NAME_OF[e.type]) && !(NAME_OF[e.type] === 'propose' && e.author === st.workspace) && !this.skip().includes(e.author))
+    return this.log.entries.filter((e) => forAgents(e) && e.seq > heard && !['round', 'genesis'].includes(NAME_OF[e.type]) && !(NAME_OF[e.type] === 'propose' && e.author === st.workspace) && !this.skip().includes(e.author))
   }
 
   nextRoundAt () {
@@ -87,7 +88,7 @@ export class Weaver {
   context (inputs) {
     const st = this.log.state, m = this.board.map(), d = this.board.view
     const open = [...st.proposals.values()].filter((pr) => ['open', 'approved'].includes(st.statusOf(pr))).slice(-30)
-    const intentions = this.log.entries.filter((e) => NAME_OF[e.type] === 'note' && e.document.payload.kind === 'intention').slice(-30)
+    const intentions = this.log.entries.filter((e) => forAgents(e) && NAME_OF[e.type] === 'note' && e.document.payload.kind === 'intention').slice(-30)
     return {
       mode: st.mode.mode,
       alreadySaid: st.rounds.slice(-3).map((r) => ({ at: r.at, next: (r.next ?? []).map((n) => n.action), connections: (r.connections ?? []).map((c) => `${st.nameOf(c.between[0])} & ${st.nameOf(c.between[1])}: ${c.why}`) })),
@@ -174,7 +175,7 @@ export class Weaver {
     const st = this.log.state, out = new Map()
     const projects = (ctx.map.projects ?? []).map((p) => ({ slug: p.slug, words: [p.slug, p.name.toLowerCase()].filter((w) => w.length > 2) }))
     const mentions = (who, text) => { const t = text.toLowerCase(); for (const p of projects) if (p.words.some((w) => t.includes(w)) && !st.participants.get(who)?.projects?.includes(p.slug)) out.set(`${who}|${p.slug}`, { who, toward: p.slug, wants: clip(text, 140) }) }
-    for (const e of this.log.entries.slice(-400)) if (NAME_OF[e.type] === 'note') mentions(e.onBehalfOf, e.document.payload.text)
+    for (const e of this.log.entries.slice(-400)) if (NAME_OF[e.type] === 'note' && forAgents(e)) mentions(e.onBehalfOf, e.document.payload.text)
     for (const p of st.participants.values()) if (p.card?.lookingFor) mentions(p.did, p.card.lookingFor)
     return [...out.values()].slice(-12)
   }
@@ -197,6 +198,7 @@ export class Weaver {
     const terms = new Set([...(ctx.map.projects ?? []).flatMap((p) => [p.slug, p.name.toLowerCase()]), ...(ctx.map.ways ?? []).map((w) => w.id.toLowerCase())].filter((t) => t.length > 2))
     const talked = new Set()
     for (const e of this.log.entries) {
+      if (!forAgents(e)) continue
       const name = NAME_OF[e.type], d = e.document
       if (name === 'note' && d.recipient) talked.add([e.author, d.recipient].sort().join('|'))
       if (name !== 'note' && name !== 'project') continue
@@ -308,7 +310,7 @@ ${DIVE_PROMPT}${ctx.mode === 'facilitate' ? `\n${ROUND_PROMPT}\nAdd them to the 
     const suggested = new Set(recent.flatMap((r) => (r.connections ?? []).map((c) => pair(...c.between))))
     const talking = new Set()
     for (const e of this.log.entries.slice(-300)) {
-      if (NAME_OF[e.type] !== 'note') continue
+      if (NAME_OF[e.type] !== 'note' || !forAgents(e)) continue
       const d = e.document, other = d.recipient ?? (d.threadId ? this.log.byDocId.get(d.threadId)?.author : null)
       if (other) talking.add(pair(e.author, other))
     }
