@@ -12,6 +12,10 @@
 // An agent that holds its own key may also ask with an x-inwove-agent header: a fresh, single-use signed read of this
 // very request (agent-read.js). That is the only other way past the gate besides a session and a hosted agent's link.
 //
+// A request that a session cookie authenticates and that changes something (anything but GET, HEAD and OPTIONS) also
+// has to carry an Origin header equal to the room's own origin (PUBLIC_URL), besides the cookie's SameSite: a missing or
+// other Origin is a 403. (A request with no cookie proves itself another way: a signed line, an agent's link.)
+//
 // The gate sets req.inwoveViewer: { kind: 'human', did } for a signed-in member, { kind: 'agent', did } on an agent's link,
 // and leaves it undefined for anyone else. Code that reads it treats undefined as "nobody", never as a person.
 // (createApp's test-only openRoom option sets { kind: 'human', did: null } on every request and lets everything through;
@@ -51,6 +55,15 @@ export function isOpen (method, path, { isStatic = () => false, activitypub = fa
   return false
 }
 
+/** Whether `origin` is the room's own: PUBLIC_URL's origin, exactly. With no PUBLIC_URL (a local run), the Host the request came to. */
+export function isRoomOrigin (origin, config, req) {
+  if (typeof origin !== 'string' || !origin) return false
+  let want = null; try { want = new URL(config.publicUrl).origin } catch { /* no public address */ }
+  if (want) return origin === want
+  try { return new URL(origin).host === req.headers.host } catch { return false }
+}
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
 const needsJson = (path) => /^\/(api|mcp|media|patches)(\/|$)/.test(path) // a caller that reads JSON; a browser asking for a page is sent to the front door instead
 
 /**
@@ -64,6 +77,7 @@ export function createGate ({ sessions, members, hosted, config, openRoom = fals
     if (openRoom) { req.inwoveViewer = { kind: 'human', did: null }; return true }
     if (PLAIN_READS.has(path) || (config.activitypub && (path === '/.well-known/webfinger' || path.startsWith('/ap/')))) res.inwoveCors = true
     // who is asking
+    let viaCookie = false
     if (path.startsWith('/mcp/a/')) {
       res.setHeader('referrer-policy', 'no-referrer') // whatever answers: a hosted agent's link carries its secret in the path, so no page or response may hand it on in a Referer
       let token = ''
@@ -73,9 +87,13 @@ export function createGate ({ sessions, members, hosted, config, openRoom = fals
     } else {
       const token = tokenFromCookie(req.headers.cookie), s = token ? sessions.lookup(token) : null
       if (s) {
-        if (members().isCurrentMember(s.did)) req.inwoveViewer = { kind: 'human', did: s.did }
+        if (members().isCurrentMember(s.did)) { req.inwoveViewer = { kind: 'human', did: s.did }; viaCookie = true }
         else sessions.end(token).catch(() => {}) // a person who left or was replaced: the cookie is no good any more
       }
+    }
+    // a cookie rides along on a request any site can make, SameSite or not: a write that the cookie authenticates must say it came from the room's own page
+    if (viaCookie && !SAFE_METHODS.has(req.method) && !isRoomOrigin(req.headers.origin, config, req)) {
+      res.writeHead(403, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify({ error: 'That did not come from the room\'s own page, so it was not done.' })); return false
     }
     let why = null
     if (!req.inwoveViewer && agentReads) { // an agent with its own key: a signed read of this request

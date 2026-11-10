@@ -152,4 +152,40 @@ describe('passkeys', () => {
     const { rows } = await room.ctx.db.query('select did from sessions where token_hash = $1', [createHash('sha256').update(token).digest('hex')])
     assert.equal(rows[0].did, me.id.did)
   })
+
+  test('a member sees their own passkeys, with no key material, and can remove one: the passkey and the key it wrapped go together', async () => {
+    const b = await room.newMember(me.id, 'Person I'), other = await room.newMember(me.id, 'Person J')
+    const wrapped = fakeWrappedSeed(), keep = new FakeAuthenticator(), lost = new FakeAuthenticator(), foreign = new FakeAuthenticator()
+    assert.equal((await register(keep, { prf: false }, { cookie: b.cookie })).status, 200)
+    assert.equal((await register(lost, { prf: true, wrappedSeed: wrapped }, { cookie: b.cookie })).status, 200)
+    assert.equal((await register(foreign, { prf: true, wrappedSeed: fakeWrappedSeed() }, { cookie: other.cookie })).status, 200)
+    assert.equal((await room.call('/api/passkeys')).status, 401)
+    const list = await room.call('/api/passkeys', { cookie: b.cookie })
+    assert.equal(list.status, 200); assert.equal(list.body.passkeys.length, 2)
+    for (const p of list.body.passkeys) { assert.deepEqual(Object.keys(p).sort(), ['canRestoreKey', 'createdAt', 'id', 'label', 'lastUsedAt']); assert.ok(Date.parse(p.createdAt) > 0) }
+    assert.deepEqual(list.body.passkeys.map((p) => [p.id, p.canRestoreKey]).sort(), [[keep.id, false], [lost.id, true]].sort())
+    assert.ok(!list.text.includes(wrapped.ct) && !list.text.includes(foreign.id), 'nothing wrapped, and nothing of anyone else\'s')
+    await signIn(lost); assert.ok((await room.call('/api/passkeys', { cookie: b.cookie })).body.passkeys.find((p) => p.id === lost.id).lastUsedAt, 'last used is shown')
+    // someone else's cannot be removed, nor an unknown one
+    for (const id of [foreign.id, 'nothing-here', undefined]) assert.equal((await room.call('/api/passkey/delete', { method: 'POST', cookie: b.cookie, body: { id } })).status, 404)
+    assert.equal(room.ctx.passkeys.count(other.id.did), 1, 'the other person\'s passkey is untouched')
+    // remove their own
+    assert.equal((await room.call('/api/passkey/delete', { method: 'POST', cookie: b.cookie, body: { id: lost.id } })).status, 200)
+    assert.equal(room.ctx.passkeys.find(lost.id), null)
+    const { rows } = await room.ctx.db.query('select wrapped_seed from passkeys where id = $1', [lost.id]); assert.equal(rows.length, 0, 'the wrapped key left the database with it')
+    assert.equal((await signIn(lost)).status, 401, 'and it opens nothing now')
+    assert.equal((await room.call('/api/passkeys', { cookie: b.cookie })).body.passkeys.length, 1)
+    assert.equal((await room.call('/api/session', { cookie: b.cookie })).body.passkeys, 1)
+    assert.equal((await room.call('/api/passkey/delete', { method: 'POST', cookie: b.cookie, body: { id: lost.id } })).status, 404, 'twice is not found')
+    assert.equal((await room.call('/api/passkey/delete', { method: 'POST', cookie: b.cookie, body: { id: keep.id }, origin: null })).status, 403, 'the Origin check covers it')
+    assert.ok(room.ctx.passkeys.find(keep.id))
+  })
+
+  test('RS256 is kept for authenticators that need it, with a 2048-bit floor', async () => {
+    const k = await room.newMember(me.id, 'Person K')
+    assert.equal((await register(new FakeAuthenticator({ kind: 'RS256' }), {}, { cookie: k.cookie })).status, 200)
+    const { keyFrom } = await import('../src/server/passkey.js'), { generateKeyPairSync } = await import('node:crypto')
+    const weak = generateKeyPairSync('rsa', { modulusLength: 1024 }).publicKey.export({ type: 'spki', format: 'der' })
+    assert.throws(() => keyFrom(weak, -257), /2048 to 8192/)
+  })
 })

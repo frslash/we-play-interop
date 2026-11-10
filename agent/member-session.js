@@ -9,7 +9,7 @@
 // A member reads people-only lines too, so what a member's tool reads is the whole record.
 import { readFileSync } from 'node:fs'
 import { identityFromSeedHex } from '../src/shared/did.js'
-import { TYPES, signedDocument } from '../src/shared/types.js'
+import { TYPES, signInPayload, signedDocument } from '../src/shared/types.js'
 
 export const NEED_KEY = 'this room is for members: set WPI_MEMBER_KEY_FILE to a file holding your key (or WPI_MEMBER_KEY), and run again'
 
@@ -43,12 +43,12 @@ export function roomFetch (base, { env = process.env, fetch: doFetch = fetch } =
     try { ch = await doFetch(`${room}/api/session/key/challenge`, { method: 'POST', signal: AbortSignal.timeout(20_000) }) } catch { throw new RoomReadError('could not reach the room to sign in') }
     if (!ch.ok) throw new RoomReadError(SIGN_IN[ch.status] ?? `the room would not start a sign-in (HTTP ${ch.status})`)
     const { challenge } = await ch.json()
-    const document = signedDocument(me, { type: TYPES.sessionKey, payload: { challenge } })
+    const document = signedDocument(me, { type: TYPES.sessionKey, payload: signInPayload(new URL(room).origin, challenge) })
     const r = await doFetch(`${room}/api/session/key`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ document }), signal: AbortSignal.timeout(20_000) })
     if (!r.ok) throw new RoomReadError(SIGN_IN[r.status] ?? `the room refused the sign-in (HTTP ${r.status})`)
-    const m = /inwove_session=([^;]+)/.exec(r.headers.get('set-cookie') ?? '')
+    const m = /__Host-inwove_session=([^;]+)/.exec(r.headers.get('set-cookie') ?? '')
     if (!m) throw new RoomReadError('the room signed the key in but sent no session')
-    cookie = `inwove_session=${m[1]}`
+    cookie = `__Host-inwove_session=${m[1]}`
   }
   const ask = (url, init) => doFetch(url, { ...init, headers: { ...init?.headers, ...(cookie ? { cookie } : {}) } })
   return async function get (url, init = {}) {

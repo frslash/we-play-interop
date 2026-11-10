@@ -1,7 +1,8 @@
-// The person's own controls in the You tab: passkeys, inviting someone, their membership pass, signing out.
+// The person's own controls in the You tab: passkeys (listed, added, removed), where they are signed in, inviting someone,
+// their membership pass, signing out.
 // app.js gives it what it already holds (the person's key, the room's address); nothing here holds state
 // the room needs. A link made here is shown while the page stays open: the room keeps only a hash of its code.
-import { call, h, why } from '/dom.js'
+import { call, fill, h, why } from '/dom.js'
 import { b64url } from '/shared/seedwrap.js'
 import { sha256, toHex } from '/shared/crypto.js'
 import { TYPES, signedDocument } from '/shared/types.js'
@@ -11,29 +12,67 @@ import { passkeysAvailable, registerPasskey } from '/passkey.js'
 const INVITE = TYPES.invite ?? 'urn:we-play-interop:tasks:spec:member:invite:0.1'
 const DAYS = 7
 const madeLinks = [] // newest first; kept only in this page
-let counted = { n: null, at: 0 }
 
 /** The cards for a member who is signed in. `me`: their key (or null when this browser has none); `origin`: the room's public address. */
 export function memberCards ({ me, origin, session, toast, redraw }) {
-  if (counted.n === null && Number.isInteger(session?.passkeys)) counted = { n: session.passkeys, at: Date.now() }
-  return [passkeys(), inviting(), pass(), signOut()]
+  return [passkeys(), signedInHere(), inviting(), pass(), signOut()]
+
+  const when = (iso) => { const t = Date.parse(iso); return Number.isFinite(t) ? new Date(t).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '' }
 
   function passkeys () {
-    const count = h('strong', null, counted.n === null ? '…' : String(counted.n))
-    if (Date.now() - counted.at > 15000) call('/api/session').then((r) => { if (r.ok && Number.isInteger(r.body.passkeys)) { counted = { n: r.body.passkeys, at: Date.now() }; count.textContent = String(counted.n) } }).catch(() => {})
+    const list = h('div', { class: 'member-list' }, h('p', { class: 'meta' }, 'Loading your passkeys…'))
+    const msg = h('p', { class: 'gate-error', role: 'alert', hidden: true })
+    const load = async () => {
+      let r; try { r = await call('/api/passkeys') } catch { r = null }
+      if (!r?.ok || !Array.isArray(r.body?.passkeys)) return fill(list, h('p', { class: 'meta' }, 'Your passkeys could not be loaded. Try again in a moment.'))
+      fill(list, r.body.passkeys.length ? r.body.passkeys.map(row) : h('p', { class: 'meta' }, 'You have no passkeys yet.'))
+    }
+    const row = (p) => h('div', { class: 'row member-item' },
+      h('div', { class: 'grow' }, h('strong', null, p.label || 'Passkey'),
+        h('div', { class: 'meta' }, `Added ${when(p.createdAt)} · ${p.lastUsedAt ? `last used ${when(p.lastUsedAt)}` : 'not used yet'}`),
+        h('div', { class: 'meta' }, p.canRestoreKey ? 'It can bring your key back on a new device.' : 'It cannot bring your key back; it only signs you in.')),
+      h('button', { class: 'btn small', onclick: async (ev) => {
+        if (!confirm(`Remove "${p.label || 'this passkey'}"? It will stop signing you in, and it will no longer be able to bring your key back on a new device. You can add it again later.`)) return
+        const btn = ev.currentTarget; btn.disabled = true; msg.hidden = true
+        const out = await call('/api/passkey/delete', { id: p.id }).catch(() => null)
+        if (!out?.ok) { btn.disabled = false; msg.textContent = out ? why(out, 'That passkey could not be removed.') : 'That passkey could not be removed. Try again in a moment.'; msg.hidden = false; return }
+        toast('Passkey removed.'); load()
+      } }, 'Remove'))
+    load()
     const add = h('button', { class: 'btn', disabled: !passkeysAvailable(), onclick: async (ev) => {
       const btn = ev.currentTarget; btn.disabled = true
       const r = await registerPasskey({ seed: me?.seed, did: me?.did, label: `Added ${new Date().toLocaleDateString()}` })
       btn.disabled = false
       if (!r.ok) return toast(r.error)
-      counted = { n: (counted.n ?? 0) + 1, at: 0 }
       toast(r.wrapped || !me ? 'Passkey added.' : 'Passkey added. It cannot carry your key to another device, so keep your key backed up.')
-      redraw()
+      load()
     } }, 'Add a passkey on this device')
     return h('div', { class: 'card' }, h('h2', null, 'Passkeys'),
-      h('p', { class: 'why' }, 'A passkey is how you sign in: your fingerprint, your face or your screen lock, with no password. You have ', count, counted.n === 1 ? ' passkey.' : ' passkeys.', ' Add one on each device you use.'),
+      h('p', { class: 'why' }, 'A passkey is how you sign in: your fingerprint, your face or your screen lock, with no password. Add one on each device you use, and remove the one from a device you have lost.'),
       passkeysAvailable() ? null : h('p', { class: 'meta' }, 'This browser cannot make passkeys.'),
-      h('div', { class: 'row' }, add))
+      list, msg, h('div', { class: 'row' }, add))
+  }
+
+  function signedInHere () {
+    const list = h('div', { class: 'member-list' }, h('p', { class: 'meta' }, 'Loading…'))
+    const msg = h('p', { class: 'gate-error', role: 'alert', hidden: true })
+    const load = async () => {
+      let r; try { r = await call('/api/sessions') } catch { r = null }
+      if (!r?.ok || !Array.isArray(r.body?.sessions)) return fill(list, h('p', { class: 'meta' }, 'This could not be loaded. Try again in a moment.'))
+      fill(list, r.body.sessions.map((x) => h('div', { class: 'row member-item' },
+        h('div', { class: 'grow' }, h('strong', null, x.current ? 'This browser, now' : 'Another sign-in'),
+          h('div', { class: 'meta' }, `Signed in ${when(x.createdAt)} · last used ${when(x.lastSeenAt)}`)),
+        x.current ? null : h('button', { class: 'btn small', onclick: async (ev) => {
+          const btn = ev.currentTarget; btn.disabled = true; msg.hidden = true
+          const out = await call('/api/sessions/end', { id: x.id }).catch(() => null)
+          if (!out?.ok) { btn.disabled = false; msg.textContent = out ? why(out, 'That could not be ended.') : 'That could not be ended. Try again in a moment.'; msg.hidden = false; return }
+          toast('Signed out there.'); load()
+        } }, 'Sign out there'))))
+    }
+    load()
+    return h('div', { class: 'card' }, h('h2', null, 'Where you\'re signed in'),
+      h('p', { class: 'why' }, 'Each browser or device that is signed in to your account. If one is not yours, or you have lost it, sign it out here.'),
+      list, msg)
   }
 
   function inviting () {
@@ -65,7 +104,7 @@ export function memberCards ({ me, origin, session, toast, redraw }) {
 
   function pass () {
     return h('div', { class: 'card' }, h('h2', null, 'Your pass'),
-      h('p', { class: 'why' }, 'A pass the room signed to say you are a member. Keep it or show it to others; anyone can check it came from this room.'),
+      h('p', { class: 'why' }, 'Your pass shows you were a member when you downloaded it, for 30 days. Anyone checking it should ask the room; if you leave, the room stops vouching.'),
       h('div', { class: 'row' }, h('a', { class: 'btn', href: '/api/me/pass', download: 'inwove-pass.json' }, 'Download my pass')))
   }
 

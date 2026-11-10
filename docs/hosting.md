@@ -145,6 +145,17 @@ And from **another computer**, check the room's own port is not reachable (this 
 curl -sS --max-time 5 http://inwove.example:3000/healthz
 ```
 
+### The first invite
+
+A room with no members cannot be joined without an invite, so at every start while it has none the room writes one of its own: good for 24 hours, one use. The link is **not** printed in the logs. The log shows only one line naming a file, `First invite written to /data/first-invite.txt …`, and the link is in that file on the room's volume (mode 0600, readable only inside the room). Read it once and give it to the person who will be the first member:
+
+```bash
+cd /srv/inwove
+docker compose exec room cat /data/first-invite.txt
+```
+
+If the 24 hours pass, or you restart the room before anyone has joined, the room writes a new one and the old link stops working (there is never more than one). When the first member joins, the invite is spent and the room deletes the file. Later members come in by invites that members make themselves.
+
 ## 5. What is on the disk
 
 Everything the room writes is in one Docker volume, `inwove_room-data`, mounted at `/data` in the room: its record (embedded Postgres, in `/data/pg`), its DID log (`/data/did.jsonl`), the update key file if the host holds one, the shelf of other projects' code, and uploads. Caddy's certificate is in `inwove_caddy-data`; losing it costs only a new certificate. Both are under `/mnt/roomdata/docker`, so both are encrypted.

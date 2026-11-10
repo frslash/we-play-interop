@@ -4,7 +4,7 @@
 // app.js awaits gate() first, so nothing else loads from the room until someone is in.
 import { call, fill, h, why } from '/dom.js'
 import { identityFromSeedHex, newIdentity } from '/shared/did.js'
-import { TYPES, signedDocument } from '/shared/types.js'
+import { TYPES, signInPayload, signedDocument } from '/shared/types.js'
 import { passkeysAvailable, registerPasskey, signInWithPasskey } from '/passkey.js'
 
 // TYPES.sessionKey arrives with the room's access change; the address is the same either way (urn:we-play-interop:tasks:spec:session:key:0.1)
@@ -15,11 +15,11 @@ const store = {
 }
 const heldKey = () => { try { const s = store.get('wpi.seed'); return s ? identityFromSeedHex(s) : null } catch { return null } }
 
-/** Sign in with the person's own key: ask for a challenge, sign it, send it. */
+/** Sign in with the person's own key: ask for a challenge, sign it, send it. What is signed is the room's address, the challenge, a two-minute expiry and the words "Sign in to InWove" (shown on the sign-in screen). */
 async function keySignIn (me) {
   const c = await call('/api/session/key/challenge', {})
   if (!c.ok) return { ok: false, error: why(c) }
-  const r = await call('/api/session/key', { document: signedDocument(me, { type: SESSION_KEY, payload: { challenge: c.body.challenge } }) })
+  const r = await call('/api/session/key', { document: signedDocument(me, { type: SESSION_KEY, payload: signInPayload(location.origin, c.body.challenge) }) })
   if (r.ok) return { ok: true }
   return { ok: false, error: r.status === 401 || r.status === 403 ? 'This key does not belong to a member of this room.' : why(r) }
 }
@@ -82,6 +82,7 @@ export async function gate () {
       card(h('h1', null, `Welcome to ${room}`),
         h('p', { class: 'why' }, 'This room is for members. Sign in with your passkey, or open the invitation link a member sent you.'),
         h('div', { class: 'gate-actions' }, pk, here),
+        here ? h('p', { class: 'meta' }, `Continuing on this browser signs “Sign in to InWove” for ${location.origin} with your key.`) : null,
         passkeysAvailable() ? null : h('p', { class: 'meta' }, 'This browser cannot use passkeys. If you have your saved key, use it below.'),
         msg,
         h('details', null, h('summary', null, 'Use my saved key'), h('label', null, 'Your key', keyIn), withKey))
@@ -94,10 +95,9 @@ export async function gate () {
       try { r = await call(`/api/invite/${invite}`) } catch { return offline() }
       if (r.status >= 500) return offline()
       if (!r.ok || !r.body.valid) {
-        const why = { used: 'Someone has already used it: each link works once.', expired: 'It has run out: a link works for 7 days.', 'inviter-left': 'The person who made it is no longer a member.' }[r.body?.reason] ?? 'The room does not know this link.'
+        const why = { used: 'Someone has already used it: each link works once.', expired: 'It has run out: a link does not work for long.', 'inviter-left': 'The person who made it is no longer a member.' }[r.body?.reason] ?? 'The room does not know this link.'
         return card(h('h1', null, 'This invitation does not work'), h('p', { class: 'why' }, `${why} Ask a member for a new link.`))
       }
-      const who = r.body.invitedBy?.name
       const name = h('input', { type: 'text', maxlength: 60, placeholder: 'How the room will see you', autocomplete: 'nickname' })
       const msg = h('p', { class: 'gate-error', role: 'alert', hidden: true }), say = problem(msg)
       const go = h('button', { class: 'btn primary', onclick: () => join(go) }, 'Join')
@@ -112,8 +112,8 @@ export async function gate () {
         if (!joined.ok) { if (made) store.set('wpi.seed', null); done(); return say(why(joined, 'The room did not take that invitation.')) }
         done(); signedIn(me, nm)
       }
-      card(h('h1', null, `You are invited to ${room}`),
-        h('p', { class: 'why' }, who ? `${who} invited you.` : 'A member invited you.'),
+      card(h('h1', null, 'You\'re invited to InWove'), // the room never says who invited you: the link is the whole answer
+        h('p', { class: 'why' }, 'This link is yours and works once. Choose how the room will see you.'),
         h('label', null, 'Your name', name), msg,
         h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'Nothing else for now. You can add more about yourself later.'), go))
     }

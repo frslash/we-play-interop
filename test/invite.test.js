@@ -2,7 +2,8 @@
 import assert from 'node:assert/strict'
 import { after, before, describe, test } from 'node:test'
 import { newIdentity } from '../src/shared/did.js'
-import { hashOf, newCode } from '../src/server/invites.js'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { firstInviteFile, hashOf, newCode } from '../src/server/invites.js'
 import { startRoom } from './helpers/room.js'
 
 describe('invites', () => {
@@ -12,32 +13,59 @@ describe('invites', () => {
   const join = (id, invite, name = 'Newcomer') => room.say(id, 'join', { name, ...(invite ? { invite } : {}) })
   const lookup = async (code) => (await room.call('/api/invite/' + code)).body
 
-  test('the room\'s first invite is printed once, in the contract\'s words, and it works', async () => {
+  test('the room\'s first invite goes to a file on the data volume (mode 0600), and only the file\'s path is printed', async () => {
     const fresh = await startRoom()
     try {
       const lines = []
       const code = await fresh.ctx.ensureFirstInvite({ print: (l) => lines.push(l) })
+      const file = firstInviteFile(fresh.config)
       assert.equal(lines.length, 1); assert.equal(code.length, 22)
-      assert.equal(lines[0], `First invite (give it to the first member): ${fresh.config.publicUrl}/i/${code}`)
-      assert.equal(await fresh.ctx.ensureFirstInvite({ print: (l) => lines.push(l) }), null, 'a restart while that one is good says nothing more')
-      assert.equal(lines.length, 1)
+      assert.ok(lines[0].includes(file), 'the line names the file'); assert.ok(!lines[0].includes(code) && !lines[0].includes('/i/'), 'and never the link or the code')
+      assert.equal(readFileSync(file, 'utf8'), `${fresh.config.publicUrl}/i/${code}\n`)
+      assert.equal(statSync(file).mode & 0o777, 0o600, 'only the owner can read it')
       const seen = await fresh.call('/api/invite/' + code)
-      assert.equal(seen.body.valid, true); assert.deepEqual(seen.body.invitedBy, { name: fresh.config.workspaceName })
-      const days = (Date.parse(seen.body.expiresAt) - Date.now()) / 86400000; assert.ok(days > 6.9 && days <= 7, `${days} days`)
-      const log = JSON.stringify(fresh.ctx.log.entries); assert.ok(!log.includes(code), 'the log holds the hash, never the code'); assert.ok(log.includes(hashOf(code)))
+      assert.deepEqual(seen.body, { valid: true }, 'the lookup says valid and nothing about who made it or when it ends')
+      const log = fresh.ctx.log.entries.filter((e) => e.document.payload?.codeHash).at(-1).document
+      const hours = (Date.parse(log.payload.expiresAt) - Date.parse(log.issuedAt)) / 3600_000; assert.ok(hours > 23.99 && hours <= 24, `good for 24 hours, not ${hours}`)
+      const log2 = JSON.stringify(fresh.ctx.log.entries); assert.ok(!log2.includes(code), 'until it is used the log holds the hash, never the code'); assert.ok(log2.includes(hashOf(code)))
       const person = newIdentity(); assert.equal((await fresh.say(person, 'join', { name: 'First', invite: code })).status, 201)
+      assert.equal(existsSync(file), false, 'with the first member in, the file is gone')
       assert.equal(await fresh.ctx.ensureFirstInvite({ print: (l) => lines.push(l) }), null, 'with a member in, the room makes no more of its own')
-      assert.equal((await fresh.call('/api/invite/' + code)).body.valid, false)
-      assert.equal(lines.length, 1)
+      assert.deepEqual((await fresh.call('/api/invite/' + code)).body, { valid: false, reason: 'used' })
+      assert.equal(lines.length, 1); assert.equal(existsSync(file), false)
     } finally { await fresh.stop() }
   })
 
-  test('a room with no members and no good invite makes a new one at the next start (the old one ran out)', async () => {
+  test('a restart while the room is still empty replaces the first invite: the old code stops working, the new one works once', async () => {
     const fresh = await startRoom()
     try {
-      const lines = []; await fresh.ctx.ensureFirstInvite({ print: (l) => lines.push(l) })
-      assert.equal(await fresh.ctx.ensureFirstInvite({ print: (l) => lines.push(l), now: Date.now() + 8 * 86400000 }) !== null, true)
-      assert.equal(lines.length, 2)
+      const first = await fresh.ctx.ensureFirstInvite({ print: () => {} }), second = await fresh.ctx.ensureFirstInvite({ print: () => {} })
+      assert.notEqual(first, second)
+      assert.deepEqual((await fresh.call('/api/invite/' + first)).body, { valid: false, reason: 'unknown' }, 'the old one is dead, not one of two')
+      assert.equal((await fresh.say(newIdentity(), 'join', { name: 'Late', invite: first })).status, 403)
+      assert.equal(readFileSync(firstInviteFile(fresh.config), 'utf8'), `${fresh.config.publicUrl}/i/${second}\n`, 'the file holds only the new one')
+      assert.equal((await fresh.say(newIdentity(), 'join', { name: 'First', invite: second })).status, 201)
+      assert.equal((await fresh.say(newIdentity(), 'join', { name: 'Again', invite: second })).status, 403, 'one use')
+    } finally { await fresh.stop() }
+  })
+
+  test('a first invite that is not used in 24 hours is dead, and the next start writes a new one', async () => {
+    const fresh = await startRoom()
+    try {
+      const old = await fresh.ctx.ensureFirstInvite({ print: () => {} })
+      fresh.ctx.log.state.invites.get(hashOf(old)).expiresAt = new Date(Date.now() - 1000).toISOString()
+      assert.deepEqual((await fresh.call('/api/invite/' + old)).body, { valid: false, reason: 'expired' })
+      const next = await fresh.ctx.ensureFirstInvite({ print: () => {} }); assert.equal((await fresh.call('/api/invite/' + next)).body.valid, true)
+    } finally { await fresh.stop() }
+  })
+
+  test('once a member is in, a room invite that was never used is dead too', async () => {
+    const fresh = await startRoom()
+    try {
+      const m = await fresh.firstMember('Person A') // joins with a first invite
+      const extra = await fresh.ctx.log.appendAsWorkspace('invite', { codeHash: hashOf('x'.repeat(22)), expiresAt: new Date(Date.now() + 3600_000).toISOString() })
+      assert.ok(extra); assert.deepEqual((await fresh.call('/api/invite/' + 'x'.repeat(22))).body, { valid: false, reason: 'unknown' })
+      void m
     } finally { await fresh.stop() }
   })
 
@@ -48,7 +76,7 @@ describe('invites', () => {
 
   test('a valid invite lets one newcomer in, once; the same code for a second person is refused', async () => {
     const code = await room.invite(a.id)
-    const v = await lookup(code); assert.equal(v.valid, true); assert.deepEqual(v.invitedBy, { name: 'Person A' }); assert.ok(Date.parse(v.expiresAt) > Date.now())
+    assert.deepEqual(await lookup(code), { valid: true }, 'valid, and nothing about who made it')
     const b = newIdentity(); assert.equal((await join(b, code, 'Person B')).status, 201)
     assert.equal(room.ctx.log.state.nameOf(b.did), 'Person B')
     assert.deepEqual(await lookup(code), { valid: false, reason: 'used' })
@@ -94,6 +122,23 @@ describe('invites', () => {
     const again = await join(b.id, code, 'Comes and goes'); assert.equal(again.status, 201)
     assert.equal(room.ctx.log.state.isCurrentMember(b.id.did), true)
     assert.deepEqual(await lookup(code), { valid: false, reason: 'used' })
+  })
+
+  test('a member who leaves and comes back does not bring their old unused invites back to life', async () => {
+    const b = await room.newMember(a.id, 'Back again'), unused = await room.invite(b.id)
+    await room.say(b.id, 'leave', {})
+    assert.deepEqual(await lookup(unused), { valid: false, reason: 'inviter-left' })
+    assert.equal((await join(b.id, await room.invite(a.id), 'Back again')).status, 201); assert.equal(room.ctx.log.state.isCurrentMember(b.id.did), true)
+    assert.deepEqual(await lookup(unused), { valid: false, reason: 'inviter-left' }, 'they are a member again, but that invite stays dead')
+    assert.equal((await join(newIdentity(), unused)).status, 403)
+  })
+
+  test('codes are compared with crypto.timingSafeEqual over every stored hash, and only an exact code finds an invite', async () => {
+    const src = readFileSync(new URL('../src/server/state.js', import.meta.url), 'utf8')
+    assert.match(src, /timingSafeEqual\(want, Buffer\.from\(hex, 'hex'\)\) && !found/, 'the comparison runs on each hash before anything is decided')
+    const code = await room.invite(a.id), st = room.ctx.log.state
+    assert.equal(st.findInvite(code)?.hash, st.invites.get(hashOf(code)).hash)
+    for (const bad of [code.slice(0, -1), code + 'x', code.toUpperCase() === code ? code.toLowerCase() : code.toUpperCase(), '', null, undefined, 42]) assert.equal(st.findInvite(bad), null)
   })
 
   test('a member who joins again to change their profile needs no invite, and spends none', async () => {

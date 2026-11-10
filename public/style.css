@@ -459,3 +459,6 @@ body.gated { padding-bottom: 0; }
 .invite-made { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
 .invite-made input[type="text"] { width: 100%; margin-bottom: 6px; font: 13px var(--mono); }
 .invite-made .qr.small { margin-top: 8px; }
+.member-item { padding: 8px 0; border-top: 1px solid var(--line); }
+.member-item:first-child { border-top: 0; }
+.member-item .grow { min-width: 0; }

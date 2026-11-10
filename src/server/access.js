@@ -1,13 +1,15 @@
 // The routes of members-only access: who is signed in, signing in (with the person's key, or with a passkey),
-// registering a passkey, signing out, an invite's page lookup, and the membership pass. The gate (gate.js) decides
+// registering, listing and removing passkeys, listing and ending sessions, signing out, an invite's page lookup, and the membership pass. The gate (gate.js) decides
 // which of them need a session; this file does what each one does. Nothing here writes to the log, and nothing it
 // answers or prints carries a cookie, a challenge, a code, a wrapped seed (except to the passkey that opens it) or a key.
+import { isRoomOrigin } from './gate.js'
 import { servePass } from './pass.js'
 import { TaskError } from './log.js'
 import { PasskeyError, Passkeys, prfSaltOf, rpOf, userHandleOf, verifyRegistration, verifySignIn } from './passkey.js'
 import { Challenges, Limiter, Sessions, setCookie, tokenFromCookie } from './session.js'
 
 const ALGS = [-7, -8, -257]
+const MINE = new Set(['/api/session/end', '/api/sessions', '/api/sessions/end', '/api/passkeys', '/api/passkey/delete', '/api/passkey/register/options', '/api/passkey/register', '/api/me/pass'])
 const REASONS = { 'inviter gone': 'inviter-left' }
 
 export async function createAccess (ctx, { send: sendIt, readBody, refuse: refuseIt, ipOf }) {
@@ -51,6 +53,9 @@ export async function createAccess (ctx, { send: sendIt, readBody, refuse: refus
         let doc
         try {
           doc = await log.verifyPrivate((await json(req)).document, 'sessionKey')
+          // the four things the person saw and signed: the room's own address, this room's one-time challenge, a short life, and the words "Sign in to InWove" (types.js holds the words)
+          if (!isRoomOrigin(doc.payload.origin, config, req)) throw new TaskError('permissionDenied', 'this sign-in was signed for another address, not this room', { status: 403 })
+          if (Date.parse(doc.payload.expiresAt) <= Date.now()) throw new TaskError('expired', 'that sign-in has run out: ask for a new challenge and sign again')
           if (doc.onBehalfOf !== undefined || doc.delegation !== undefined) throw new TaskError('permissionDenied', 'a person signs in as themselves, not for someone else', { status: 403 })
           if (!st().isCurrentMember(doc.issuer)) throw new TaskError('permissionDenied', 'this key belongs to no member of this room (an invite link brings a newcomer in)', { status: 403 })
           if (!challenges.take(doc.payload.challenge, 'key')) throw new TaskError('expired', 'that sign-in is not current (it was used, or is older than two minutes): ask for a new challenge')
@@ -73,18 +78,28 @@ export async function createAccess (ctx, { send: sendIt, readBody, refuse: refus
       if (path === '/api/invite' || path.startsWith('/api/invite/')) {
         if (req.method !== 'GET') return send(res, 405, { error: 'GET only' })
         if (!lookups.hit(ipOf(req))) return tooMany(res)
-        const r = st().inviteFor(path.slice(12))
-        if (!r.ok) return send(res, 200, { valid: false, reason: REASONS[r.reason] ?? r.reason }, { 'cache-control': 'no-store' })
-        return send(res, 200, { valid: true, invitedBy: { name: r.invite.by === st().workspace ? config.workspaceName : nameOf(r.invite.by) }, expiresAt: r.invite.expiresAt }, { 'cache-control': 'no-store' })
+        const r = st().inviteFor(path.slice(12)) // valid or not, and why not: never who made it, and nothing else about it
+        return send(res, 200, r.ok ? { valid: true } : { valid: false, reason: REASONS[r.reason] ?? r.reason }, { 'cache-control': 'no-store' })
       }
 
       // from here a person's own session is needed (the gate has already seen to it; an agent's link or an open room has no person)
-      const mine = path === '/api/session/end' || path === '/api/passkey/register/options' || path === '/api/passkey/register' || path === '/api/me/pass'
+      const mine = MINE.has(path)
       if (!mine) return false
       if (!me) return send(res, 401, { error: 'Sign in first.' })
       if (path === '/api/session/end' && post) {
         await sessions.deleteFor(me) // signing out ends the person's sessions
         return send(res, 200, { ok: true }, { 'set-cookie': setCookie(null), 'cache-control': 'no-store' })
+      }
+      if (path === '/api/sessions' && req.method === 'GET') return send(res, 200, { sessions: sessions.list(me, tokenFromCookie(req.headers.cookie)) }, { 'cache-control': 'no-store' })
+      if (path === '/api/sessions/end' && post) { // one of the person's own sessions; if it is the one asking, the cookie goes too
+        const id = (await json(req))?.id, here = sessions.list(me, tokenFromCookie(req.headers.cookie)).find((x) => x.current)?.id
+        if (!(await sessions.endById(me, id))) return send(res, 404, { error: 'You have no sign-in like that.' }, { 'cache-control': 'no-store' })
+        return send(res, 200, { ok: true }, { 'cache-control': 'no-store', ...(id === here ? { 'set-cookie': setCookie(null) } : {}) })
+      }
+      if (path === '/api/passkeys' && req.method === 'GET') return send(res, 200, { passkeys: passkeys.listFor(me) }, { 'cache-control': 'no-store' })
+      if (path === '/api/passkey/delete' && post) { // theirs only, and the seed it wrapped goes with it
+        if (!(await passkeys.delete(me, (await json(req))?.id))) return send(res, 404, { error: 'You have no passkey like that.' }, { 'cache-control': 'no-store' })
+        return send(res, 200, { ok: true }, { 'cache-control': 'no-store' })
       }
       if (path === '/api/passkey/register/options' && post) {
         const r = rp(), c = challenges.issue('register', { did: me }); if (!c) return tooMany(res)

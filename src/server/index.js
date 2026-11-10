@@ -8,7 +8,7 @@ import { createAccess } from './access.js'
 import { asSeen, canSee, headFor, hiddenFromAgents, isPerson } from './audience.js'
 import { createGithubLink } from './github-link.js'
 import { createAgentReads } from './agent-read.js'
-import { ensureFirstInvite } from './invites.js'
+import { clearFirstInvite, ensureFirstInvite } from './invites.js'
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -190,6 +190,7 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
     const isHost = NAME_OF[doc?.type] === 'host'
     if (isHost && hosted.liveFor(doc.issuer, log.state) >= MAX_HOSTED) throw new TaskError('permissionDenied', `you already have ${MAX_HOSTED} hosted agents; stop one first`, { status: 403 })
     const { entry, duplicate } = await log.accept(doc, { ip })
+    if (NAME_OF[doc.type] === 'join' && !duplicate) clearFirstInvite(config) // a first member is in: the room's own invite is dead, and its file goes
     if (isHost && !duplicate) {
       // the workspace makes and holds the agent's key, and says so in the log
       const agent = await hosted.create(entry.author, doc.payload.label)

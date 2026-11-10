@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { newIdentity } from '../../src/shared/did.js'
-import { TYPES, signedDocument } from '../../src/shared/types.js'
+import { TYPES, signInPayload, signedDocument } from '../../src/shared/types.js'
 import { config as baseConfig } from '../../src/server/config.js'
 import { createApp } from '../../src/server/index.js'
 import { fakeGithub } from './github.js'
@@ -17,8 +17,8 @@ export async function startRoom ({ extra = {}, options = {}, github = fakeGithub
   const base = `http://127.0.0.1:${ctx.server.address().port}`
   if (!extra.publicUrl) config.publicUrl = base // the room's public address: the origin and rpId a passkey must name
   /** fetch with an optional cookie and a JSON body; answers { status, headers, body (parsed when JSON), text }. */
-  const call = async (path, { method = 'GET', cookie, body, headers = {} } = {}) => {
-    const init = { method, redirect: 'manual', headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(cookie ? { cookie } : {}), ...headers }, ...(body !== undefined ? { body: typeof body === 'string' ? body : JSON.stringify(body) } : {}) }
+  const call = async (path, { method = 'GET', cookie, body, headers = {}, origin = config.publicUrl } = {}) => { // origin: the page's own by default (a browser sends it on every write); null sends none
+    const init = { method, redirect: 'manual', headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(cookie ? { cookie } : {}), ...(cookie && origin && method !== 'GET' && method !== 'HEAD' ? { origin } : {}), ...headers }, ...(body !== undefined ? { body: typeof body === 'string' ? body : JSON.stringify(body) } : {}) }
     let r
     for (let tries = 0; ; tries++) { // a connection the server closed while it sat idle is reset when reused (busy machines show it): ask again on a fresh one
       try { r = await fetch(base + path, init); break } catch (err) { if (tries >= 2 || err?.cause?.code !== 'ECONNRESET') throw err }
@@ -26,13 +26,13 @@ export async function startRoom ({ extra = {}, options = {}, github = fakeGithub
     const text = await r.text(); let parsed = null; try { parsed = JSON.parse(text) } catch { /* not JSON */ }
     return { status: r.status, headers: r.headers, body: parsed, text }
   }
-  const cookieOf = (r) => { const m = /inwove_session=([^;]*)/.exec(r.headers.get('set-cookie') ?? ''); return m ? `inwove_session=${m[1]}` : null }
+  const cookieOf = (r) => { const m = /__Host-inwove_session=([^;]*)/.exec(r.headers.get('set-cookie') ?? ''); return m ? `__Host-inwove_session=${m[1]}` : null }
   const say = (id, name, payload, extra = {}) => call('/api/entries', { method: 'POST', body: signedDocument(id, { type: TYPES[name], payload, ...extra }) })
   /** A signed line from someone already in (the signature is the credential, so no cookie). */
   /** Sign in with the person's key: the challenge, then a signed sessionKey document. Answers the response (its cookie is cookieOf(r)). */
   const signInWithKey = async (id) => {
     const { body: ch } = await call('/api/session/key/challenge', { method: 'POST' })
-    return call('/api/session/key', { method: 'POST', body: { document: signedDocument(id, { type: TYPES.sessionKey, payload: { challenge: ch.challenge } }) } })
+    return call('/api/session/key', { method: 'POST', body: { document: signedDocument(id, { type: TYPES.sessionKey, payload: signInPayload(config.publicUrl, ch.challenge) }) } })
   }
   /** The first member, through the room's own first invite. Answers { id, cookie, code }. */
   const firstMember = async (name = 'Person A') => {
