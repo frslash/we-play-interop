@@ -25,6 +25,8 @@ const OPEN_API = new Map([
   ['GET /api/session', 1], ['POST /api/session/key/challenge', 1], ['POST /api/session/key', 1],
   ['POST /api/session/passkey/options', 1], ['POST /api/session/passkey', 1], ['POST /api/entries', 1],
   ['GET /api/github/callback', 1], // GitHub sends the browser back here: the state it carries is the credential (github-link.js)
+  ['POST /api/notebook', 1], // an agent's or its person's signed private document is its own proof, as a line is (index.js checks it before anything else)
+  ['POST /api/changes', 1], // an agent's signed room:change line in its header: signature and live permission are checked before the body is read (index.js)
 ])
 
 /** A route that is switched off for good: the room answers 404 whoever asks. */

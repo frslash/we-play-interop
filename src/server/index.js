@@ -48,6 +48,7 @@ import { ActivityPub } from './activitypub.js'
 import { callerOf } from './caller.js'
 import { secretIn } from '../shared/guard.js'
 import { NAME_OF, TYPES, signedDocument } from '../shared/types.js'
+import { verifySignature } from '../shared/proof.js'
 import { createResolver } from './resolver.js'
 import * as views from './views.js'
 import { Weaver } from './weaver.js'
@@ -338,6 +339,12 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
       try {
         try { doc = JSON.parse(String(req.headers['x-wpi-change'] ?? '')) } catch { throw new TaskError('malformedRequest', 'send the signed room:change document in the x-wpi-change header, and the diff as the body') }
         if (NAME_OF[doc?.type] !== 'change') throw new TaskError('unsupportedType', 'expected a room:change document in x-wpi-change')
+        { // before reading a byte of the body (this door is open to anyone who signs): the signer must be an agent with a live permission that covers changes, and the header's signature must hold
+          const d = log.state.delegations.get(doc.delegation), now = Date.now()
+          if (!d || d.delegate !== doc.issuer || d.issuer !== doc.onBehalfOf || d.revoked || !(Date.parse(d.expiresAt) > now) || !d.scope?.includes('change')) throw new TaskError('permissionDenied', 'a change comes only from an agent whose live permission covers changes', { status: 403 })
+          let key; try { key = await log.resolver.keyFor(doc.issuer, doc.proof?.verificationMethod, doc.proof?.proofPurpose) } catch { throw new TaskError('proofInvalid', 'could not get the signer\'s key', { status: 401 }) }
+          if (!verifySignature(doc, key).ok) throw new TaskError('proofInvalid', 'the signature on the change does not hold', { status: 401 })
+        }
         const chunks = []; let size = 0
         for await (const c of req) { size += c.length; if (size > MAX_PATCH) throw new TaskError('malformedRequest', `a change is a unified diff of at most ${MAX_PATCH / 1000} KB`, { status: 413 }); chunks.push(c) }
         const bytes = Buffer.concat(chunks), text = bytes.toString('utf8')
