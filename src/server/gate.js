@@ -9,10 +9,14 @@
 //               /media and /patches; 303 to / for a page path
 //   gone        ActivityPub (unless ACTIVITYPUB=1), the Trust Task door, wallet sign-in and /api/community: 404 for all
 //
+// An agent that holds its own key may also ask with an x-inwove-agent header: a fresh, single-use signed read of this
+// very request (agent-read.js). That is the only other way past the gate besides a session and a hosted agent's link.
+//
 // The gate sets req.inwoveViewer: { kind: 'human', did } for a signed-in member, { kind: 'agent', did } on an agent's link,
 // and leaves it undefined for anyone else. Code that reads it treats undefined as "nobody", never as a person.
 // (createApp's test-only openRoom option sets { kind: 'human', did: null } on every request and lets everything through;
 // no environment variable or file can turn it on.)
+import { WHY_WORDS } from './agent-read.js'
 import { tokenFromCookie } from './session.js'
 
 const PAGE_PATHS = new Set(['/', '/index.html', '/healthz', '/rules.json', '/.well-known/did.jsonl'])
@@ -20,6 +24,7 @@ const PLAIN_READS = new Set(['/healthz', '/rules.json', '/.well-known/did.jsonl'
 const OPEN_API = new Map([
   ['GET /api/session', 1], ['POST /api/session/key/challenge', 1], ['POST /api/session/key', 1],
   ['POST /api/session/passkey/options', 1], ['POST /api/session/passkey', 1], ['POST /api/entries', 1],
+  ['GET /api/github/callback', 1], // GitHub sends the browser back here: the state it carries is the credential (github-link.js)
 ])
 
 /** A route that is switched off for good: the room answers 404 whoever asks. */
@@ -50,8 +55,8 @@ const needsJson = (path) => /^\/(api|mcp|media|patches)(\/|$)/.test(path) // a c
  * The gate itself. gate(req, res) → true to go on to the routes, false when it has answered. It never reads a body.
  * sessions: session.js. members: () => the log's State. hosted: hosted.js (for an agent's link).
  */
-export function createGate ({ sessions, members, hosted, config, openRoom = false, isStatic }) {
-  return function gate (req, res) {
+export function createGate ({ sessions, members, hosted, config, openRoom = false, isStatic, agentReads = null }) {
+  return async function gate (req, res) {
     const url = new URL(req.url, 'http://local'), path = url.pathname
     if (isGone(path, config)) { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); res.end('not found'); return false }
     if (openRoom) { req.inwoveViewer = { kind: 'human', did: null }; return true }
@@ -69,8 +74,14 @@ export function createGate ({ sessions, members, hosted, config, openRoom = fals
         else sessions.end(token).catch(() => {}) // a person who left or was replaced: the cookie is no good any more
       }
     }
+    let why = null
+    if (!req.inwoveViewer && agentReads) { // an agent with its own key: a signed read of this request
+      const a = await agentReads.identify(req)
+      if (a?.did) req.inwoveViewer = { kind: 'agent', did: a.did }
+      else if (a?.why) why = a.why
+    }
     if (req.inwoveViewer || isOpen(req.method, path, { isStatic, activitypub: config.activitypub })) return true
-    if (needsJson(path)) { res.writeHead(401, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify({ error: 'Sign in first.' })) } else { res.writeHead(303, { location: '/', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }); res.end() }
+    if (needsJson(path)) { res.writeHead(401, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify({ error: 'Sign in first.', ...(why ? { agent: WHY_WORDS[why] ?? 'the signed read was refused' } : {}) })) } else { res.writeHead(303, { location: '/', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }); res.end() }
     return false
   }
 }

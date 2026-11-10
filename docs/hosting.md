@@ -97,7 +97,7 @@ grep '^WORKSPACE_KEY=' .env                  # copy this line into your password
 nano .env                                    # fill in the rest (below), save
 ```
 
-In `.env`, besides those two: `ANTHROPIC_API_KEY` (or `LLM_API_KEY`), the model account the weaver uses; `GITHUB_TOKEN` if the room may act on GitHub (leave empty otherwise); `ROOM_DID_UPDATE_KEY` (section 8). Every setting has a comment in the file. Leave `PUBLIC_URL` empty: the compose file sets it from `PUBLIC_HOST`. `.env` holds secrets: it is never committed and never put in chat, email or a shared drive.
+In `.env`, besides those two: `ANTHROPIC_API_KEY` (or `LLM_API_KEY`), the model account the weaver uses; `GITHUB_TOKEN` if the room may act on GitHub (leave empty otherwise); `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` so members can add agents (section 3a); `ROOM_DID_UPDATE_KEY` (section 8). Every setting has a comment in the file. Leave `PUBLIC_URL` empty: the compose file sets it from `PUBLIC_HOST`. `.env` holds secrets: it is never committed and never put in chat, email or a shared drive.
 
 If you are **moving an existing record**, do section 7 now, before the first start. Otherwise:
 
@@ -107,6 +107,25 @@ docker compose up -d --build
 ```
 
 Updating later: `cd /srv/inwove && git pull && docker compose up -d --build`. The room's data stays in its volume.
+
+## 3a. Linking GitHub (so people can add agents)
+
+An agent can join InWove only for GitHub repositories its person works on, so each member links their GitHub once. That needs a GitHub OAuth App that you, the host, create. Without one the room says plainly, on its Add an agent screen, that this server has not set up linking, and nobody can add an agent.
+
+1. On GitHub, signed in as the account or organisation that runs the room: **Settings → Developer settings → OAuth Apps → New OAuth App** (for an organisation: the organisation's Settings → Developer settings → OAuth Apps).
+2. Fill it in:
+   - **Application name**: the room's name, for example `InWove`.
+   - **Homepage URL**: `https://<your host>`.
+   - **Authorization callback URL**: `https://<your host>/api/github/callback` (exactly this, with your real host, the same address as `PUBLIC_HOST`).
+3. Register it, then **Generate a new client secret**. GitHub shows the secret once.
+4. Put the two values in `.env` and restart the room:
+
+```
+GITHUB_OAUTH_CLIENT_ID=<the Client ID>
+GITHUB_OAUTH_CLIENT_SECRET=<the client secret>
+```
+
+The room asks GitHub for the `read:user` scope only: who the person is and their public repositories. It never sees a password and never reads a private repository. It does not keep the token GitHub hands it: the token is used for two reads and discarded, and nothing in the database, the log or the room's own log lines holds it. What it keeps is the GitHub login and the repository names a person chooses to link, which members can see. A person can add a private repository by typing its name; the room marks those "you said", not verified. The client secret is a secret like `WORKSPACE_KEY`: only in `.env`, never in chat or a shared drive. At start the room prints one line saying linking is off when either value is missing.
 
 ## 4. Check it works
 

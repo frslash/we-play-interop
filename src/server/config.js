@@ -56,6 +56,8 @@ export const config = {
   approvalsRequired: Math.max(1, int(env.APPROVALS_REQUIRED, AGREED.proposals.peopleNeeded)),
 
   githubToken: env.GITHUB_TOKEN || '',
+  githubOauthClientId: env.GITHUB_OAUTH_CLIENT_ID || '', // the GitHub OAuth App the host made (docs/hosting.md): people link their GitHub with it so their agents can join for their repositories. Both empty: linking is off, and the page says so
+  githubOauthClientSecret: env.GITHUB_OAUTH_CLIENT_SECRET || '', // a secret: only in the environment, never in a file the room serves or a log
   workspaceRepo: env.WORKSPACE_REPO || 'Project-Weave-Tech/we-play-interop',
 
   signInPerMinute: int(env.SIGNIN_PER_MINUTE, 60), // calls to the open sign-in and invite routes one address may make a minute (a person signs in a few times a day; this stops a script guessing)

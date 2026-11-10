@@ -45,6 +45,7 @@ export class Log extends EventEmitter {
     this.rate = new Map()
     this.verified = null
     this.boardSlugs = () => new Set() // set by the board once it has loaded
+    this.githubVerification = () => null // set by github-link.js: (did) => { login, repos: Set of lowercase owner/name } for the last ten minutes, or null
   }
 
   async load () {
@@ -191,7 +192,17 @@ export class Log extends EventEmitter {
     const p = doc.payload, st = this.state
     const proposal = (h) => { const pr = st.proposals.get(h); if (!pr) throw new TaskError('malformedRequest', 'no proposal with that hash'); return pr }
     switch (name) {
+      case 'repos': { // linking: GitHub told the room this login and these repositories, in the last ten minutes, for this person
+        const v = st.isHuman(doc.issuer) ? this.githubVerification(doc.issuer) : null
+        if (!v || v.login.toLowerCase() !== p.github.toLowerCase()) throw new TaskError('permissionDenied', 'Link your GitHub first: press "Link GitHub" and come back here (the link lasts ten minutes).', { status: 403 })
+        const had = new Set((st.participants.get(doc.issuer)?.repos ?? []).filter((r) => r.verified).map((r) => r.name.toLowerCase())) // ones GitHub vouched for before keep their mark
+        const stray = p.repos.find((r) => r.verified && !v.repos.has(r.name.toLowerCase()) && !had.has(r.name.toLowerCase()))
+        if (stray) throw new TaskError('permissionDenied', `GitHub did not list ${stray.name} for ${v.login}; add it as a private repository instead`, { status: 403 })
+        break
+      }
+      case 'host': this.#needRepos(doc); break
       case 'delegate': {
+        this.#needRepos(doc)
         if (p.delegate === doc.issuer || p.delegate === st.workspace || st.isHuman(p.delegate)) throw new TaskError('permissionDenied', 'an agent needs a DID of its own, not a person\'s', { status: 403 })
         const other = st.participants.get(p.delegate)
         if (other?.kind === 'agent' && other.principal !== doc.issuer && st.participants.get(other.principal)?.replacedBy !== doc.issuer) throw new TaskError('permissionDenied', 'that agent already acts for someone else', { status: 403 }) // a replaced key's agents can be signed for again by its new key
@@ -289,6 +300,17 @@ export class Log extends EventEmitter {
         }
         break
     }
+  }
+
+  /**
+   * An agent joins only for repositories its person linked: a host or delegate line names 1 or more, each among the
+   * person's. (A test room, openRoom, may leave them out; one that names some is checked all the same.)
+   */
+  #needRepos (doc) {
+    const repos = doc.payload.repos
+    if (repos === undefined && this.openRoom) return
+    const mine = new Set((this.state.participants.get(doc.issuer)?.repos ?? []).map((r) => r.name.toLowerCase()))
+    if (!mine.size || !Array.isArray(repos) || !repos.length || repos.some((r) => !mine.has(String(r).toLowerCase()))) throw new TaskError('permissionDenied', 'Link the GitHub repositories you work on first.', { status: 403 })
   }
 
   /** Rate limit: a person (with their agents) and an address each get a steady allowance. */

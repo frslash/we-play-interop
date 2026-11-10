@@ -22,6 +22,7 @@ import { dirname, join } from 'node:path'
 import QRCode from 'qrcode'
 import { identityFromSeedHex, newIdentity } from '../src/shared/did.js'
 import { TYPES, signedDocument } from '../src/shared/types.js'
+import { AGENT_HEADER, agentReadHeader } from '../src/shared/agent-read.js'
 
 const say = (...a) => console.error(...a) // stdout belongs to MCP
 const base = (process.env.WPI_URL || '').replace(/\/$/, '')
@@ -40,10 +41,12 @@ function loadKey () {
 const me = loadKey()
 const link = `${base}/#delegate=${encodeURIComponent(me.did)}`
 
-async function api (path, opts) {
-  const res = await fetch(base + path, opts)
+// The room is for members, so every call carries a fresh signed read of that very request (x-inwove-agent): the room
+// lets it in while this agent has a live permission from its person. Each call signs its own; one is never reused.
+async function api (path, opts = {}) {
+  const res = await fetch(base + path, { ...opts, headers: { ...opts.headers, [AGENT_HEADER]: agentReadHeader(me, opts.method ?? 'GET', path) } })
   const body = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(body?.payload?.message ?? body?.error ?? `HTTP ${res.status}`)
+  if (!res.ok) throw new Error(body?.payload?.message ?? (body?.agent ? `the room did not let this agent in: ${body.agent}` : body?.error) ?? `HTTP ${res.status}`)
   return body
 }
 async function showLink () {

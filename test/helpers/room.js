@@ -7,11 +7,12 @@ import { newIdentity } from '../../src/shared/did.js'
 import { TYPES, signedDocument } from '../../src/shared/types.js'
 import { config as baseConfig } from '../../src/server/config.js'
 import { createApp } from '../../src/server/index.js'
+import { fakeGithub } from './github.js'
 
-export async function startRoom ({ extra = {}, options = {} } = {}) {
+export async function startRoom ({ extra = {}, options = {}, github = fakeGithub() } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'wpi-access-'))
-  const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: newIdentity().seedHex, production: true, githubToken: '', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://room.example', boardDataUrl: '', checkEveryMinutes: 0, activitypub: false, signInPerMinute: 100000, llm: { ...baseConfig.llm, apiKey: '' }, ...extra }
-  const ctx = await createApp(config, { awayGatherMs: 0, hostWelcomeMs: null, ...options })
+  const config = { ...baseConfig, dataDir: dir, databaseUrl: '', workspaceKey: newIdentity().seedHex, production: true, githubToken: '', githubOauthClientId: 'test-client-id', githubOauthClientSecret: 'test-client-secret', weaverIntervalMinutes: 0, weaverQuietMinutes: 0, ratePerMinute: 1000, publicUrl: 'https://room.example', boardDataUrl: '', checkEveryMinutes: 0, activitypub: false, signInPerMinute: 100000, llm: { ...baseConfig.llm, apiKey: '' }, ...extra }
+  const ctx = await createApp(config, { awayGatherMs: 0, hostWelcomeMs: null, githubFetch: github.fetch, ...options })
   await new Promise((r) => ctx.server.listen(0, '127.0.0.1', r))
   const base = `http://127.0.0.1:${ctx.server.address().port}`
   if (!extra.publicUrl) config.publicUrl = base // the room's public address: the origin and rpId a passkey must name
@@ -52,5 +53,15 @@ export async function startRoom ({ extra = {}, options = {} } = {}) {
     if (r.status !== 201) throw new Error(`join: ${r.status} ${r.text}`)
     return { id, cookie: cookieOf(await signInWithKey(id)) }
   }
-  return { ctx, config, base, call, cookieOf, say, signInWithKey, firstMember, invite, newMember, stop: async () => { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) } }
+  /**
+   * Link a member's GitHub through the room's own routes with the fake GitHub: start, "GitHub" sends the browser back, then the
+   * member:repos line. Answers the line's response. `repos` are the ones GitHub lists; `typed` are private ones the person adds.
+   */
+  const linkGithub = async (member, { login = 'octo-' + member.id.did.slice(-6).toLowerCase(), repos = ['acme/app'], typed = [], pick = repos } = {}) => {
+    const start = await call('/api/github/start', { cookie: member.cookie })
+    const state = new URL(start.headers.get('location')).searchParams.get('state')
+    await call(`/api/github/callback?code=${github.grant(login, repos)}&state=${state}`, { cookie: member.cookie })
+    return say(member.id, 'repos', { github: login, repos: [...pick.map((name) => ({ name, verified: true })), ...typed.map((name) => ({ name, verified: false }))] })
+  }
+  return { ctx, config, base, github, linkGithub, call, cookieOf, say, signInWithKey, firstMember, invite, newMember, stop: async () => { await ctx.stop(); rmSync(dir, { recursive: true, force: true }) } }
 }
