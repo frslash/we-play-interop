@@ -1,6 +1,6 @@
 // The workspace's current state, folded from the log entry by entry.
 // Nothing here is stored on its own: restart, replay the log, same state.
-import { createHash } from 'node:crypto'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import { checkPermissionCredential, claimsOf, grantMismatch } from '../shared/credential.js'
 import { DEFAULT_MODE, NAME_OF, resourceKey } from '../shared/types.js'
 
@@ -82,12 +82,22 @@ export class State {
    * a current member (or the room) wrote, still in date and not used. Reasons: unknown, expired, used, inviter gone.
    */
   inviteFor (code, now = Date.now()) {
-    const inv = typeof code === 'string' ? this.invites.get(createHash('sha256').update(code, 'utf8').digest('hex')) : null
+    const inv = this.findInvite(code)
     if (!inv) return { ok: false, reason: 'unknown' }
     if (inv.usedBy) return { ok: false, reason: 'used' }
     if (Date.parse(inv.expiresAt) <= now) return { ok: false, reason: 'expired' }
+    if (inv.dead) return { ok: false, reason: 'inviter gone' } // its maker left or was replaced, even if they are a member again later
+    if (inv.by === this.workspace && (inv.replacedBy || this.humanCount() > 0)) return { ok: false, reason: 'unknown' } // the room's own invite is for the first member only, and a newer one replaces it
     if (inv.by !== this.workspace && !this.isCurrentMember(inv.by)) return { ok: false, reason: 'inviter gone' }
     return { ok: true, invite: inv }
+  }
+  /** The invite a code opens, or null. Every stored hash is compared with timingSafeEqual and none is skipped, so the time taken says nothing about which hashes exist. */
+  findInvite (code) {
+    if (typeof code !== 'string') return null
+    const want = createHash('sha256').update(code, 'utf8').digest()
+    let found = null
+    for (const [hex, inv] of this.invites) if (timingSafeEqual(want, Buffer.from(hex, 'hex')) && !found) found = inv
+    return found
   }
   nameOf (did) { return this.participants.get(did)?.name ?? (did === this.workspace ? 'the weaver' : did.slice(0, 18) + '…') }
 
@@ -114,14 +124,17 @@ export class State {
       case 'join': {
         const prev = this.participants.get(e.author)
         if (p.invite && !(prev?.kind === 'human' && !prev.left && !prev.replacedBy)) { // a newcomer's join uses its invite up
-          const inv = this.invites.get(createHash('sha256').update(p.invite, 'utf8').digest('hex'))
+          const inv = this.findInvite(p.invite)
           if (inv && !inv.usedBy) { inv.usedBy = e.author; inv.usedAt = e.timestamp }
         }
         this.participants.set(e.author, { ...prev, left: undefined, did: e.author, kind: 'human', name: p.name, projects: p.projects ?? [], about: p.about ?? '', since: prev?.since ?? e.timestamp })
         break
       }
       case 'repos': { const who = this.participants.get(e.author); if (who) { who.github = p.github; who.repos = p.repos.map((r) => ({ name: r.name, verified: r.verified })) } break } // what a person linked: the latest line stands
-      case 'invite': this.invites.set(p.codeHash, { hash: e.hash, by: e.author, at: e.timestamp, expiresAt: p.expiresAt, usedBy: null, usedAt: null }); break
+      case 'invite':
+        if (e.author === this.workspace) for (const old of this.invites.values()) if (old.by === this.workspace) old.replacedBy ??= e.hash // the room has one invite of its own at a time: a restart while it has no members replaces it
+        this.invites.set(p.codeHash, { hash: e.hash, by: e.author, at: e.timestamp, expiresAt: p.expiresAt, usedBy: null, usedAt: null })
+        break
       case 'delegate': {
         this.delegations.set(e.hash, { hash: e.hash, issuer: e.author, delegate: p.delegate, scope: p.scope, ask: p.ask ?? [], label: p.label ?? '', expiresAt: doc.expiresAt, revoked: false, endedBy: null, seq: e.seq, credential: credentialOf(doc, this.workspace), repos: p.repos ?? [] })
         const prev = this.participants.get(p.delegate)
@@ -140,6 +153,7 @@ export class State {
       case 'leave': {
         const who = this.participants.get(e.author)
         if (who) { who.left = e.timestamp }
+        for (const inv of this.invites.values()) if (inv.by === e.author && !inv.usedBy) inv.dead = true // their unused invites die with their membership, for good
         for (const p of this.participants.values()) if (p.kind === 'agent' && p.principal === e.author) { p.removed = true; p.removedAt = e.timestamp }
         for (const d of this.delegations.values()) if (d.issuer === e.author && !d.revoked) { d.revoked = true; d.endedBy = e.hash }
         break
@@ -152,6 +166,7 @@ export class State {
         const l = this.links.get(p.request), was = l && this.participants.get(l.old), now = l && this.participants.get(l.from)
         if (!l || !was || !now) break
         l.replacedAt = e.timestamp
+        for (const inv of this.invites.values()) if (inv.by === l.old && !inv.usedBy) inv.dead = true
         was.replacedBy = l.from; was.replacedAt = e.timestamp
         now.replaces = [...new Set([...(now.replaces ?? []), l.old])]
         now.projects = [...new Set([...(now.projects ?? []), ...(was.projects ?? [])])].slice(0, 5); was.projects = []
