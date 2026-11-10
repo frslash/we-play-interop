@@ -38,3 +38,4 @@ All other settings are in `.env.example`.
 - The room's `did:webvh` for the permanent address (Railroad and Security are saying what a clean handover of its roles needs). Until it exists the room's DID is a `did:key`.
 - Moving people's sealed notebooks: opt-in per person, with the old copy kept until they confirm. Real people's keys and notes stay out until Security has read the final code.
 - Whether any paper is needed for the gift (Legal and Governance have been asked).
+- A public side of InWove, for builders who have no wallet: a suggestion, not built, in `docs/public-side.md`.
