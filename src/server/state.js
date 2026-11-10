@@ -66,6 +66,7 @@ export class State {
     this.notFor = new Map() // agent -> { kinds, onlyFor, at, because }
     this.doers = new Map() // agent -> { took, results, checks, code: { took, results, checks }, at }
     this.counts = {}
+    this.peopleNotes = 0 // how many people-only lines there are: kept apart from counts, which agents read, and shown to no one
     this.seq = -1
   }
 
@@ -101,6 +102,7 @@ export class State {
   apply (e) {
     const doc = e.document, p = doc.payload, name = NAME_OF[e.type]
     this.seq = e.seq
+    if (name === 'note' && p.audience === 'people') { this.peopleNotes++; return } // a people-only line makes no task, count or summary: what the state holds, agents read (audience.js)
     this.counts[name] = (this.counts[name] ?? 0) + 1
     const by = this.participants.get(e.author)
     if (by?.kind === 'agent') { by.firstSaid ??= e.timestamp; by.lastSaid = e.timestamp } // when an agent first arrived and last acted
