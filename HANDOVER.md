@@ -14,8 +14,61 @@ and in what order. It holds no secrets and names no people.
 | **The domain** | `inwove.org`, moved to Project Weave's own DNS and registrar accounts. Keeping the name keeps the room's identity and every passkey: a passkey is bound to the name. |
 | **The host** | One Linux server Project Weave runs: [`docs/hosting.md`](docs/hosting.md) is the whole guide, from creating it to backups. |
 | **The record** | Exported from the old room by a member and imported into the new one (`docs/hosting.md`, section 7). |
-| **The room's signing key** (`WORKSPACE_KEY`) | The founder has chosen to **carry the record over**, so the key moves. Every entry in the record is countersigned by this one key, and the record only continues under it. It moves **only from the old host's sealed settings to the new host's sealed settings**: never through chat, email, the bus, a repository, a card, or a password manager's share between people. The security reviewer writes the exact steps before anything moves. The old host's copy is then retired, and the date is written down here. |
+| **The room's signing key** (`WORKSPACE_KEY`) | The founder has chosen to **carry the record over**, so the key moves. Every entry in the record is countersigned by this one key, and the record only continues under it. It moves **only from the old host's sealed settings to the new host's sealed settings**: never through chat, email, the bus, a repository, a card, or a password manager's share between people. The exact steps are in "Moving the room's signing key" below. The old host's copy is then retired, and the date is written down here. |
 | **The power to change the room's identity** | The room's DID (`did:webvh` at `inwove.org`) changes only with its update key. Project Weave makes a key on its own computer (`node agent/keygen.js`) and sends only the public half; the old host is given it as `ROOM_DID_UPDATE_KEY`, and on its next start the old room writes the entry that hands the update power over. The DID's log is public, so the new server just serves the same file. |
+
+## Moving the room's signing key
+
+The key has three lawful places and no others: the old host until it is retired; the new host's sealed settings; and one backup
+copy wrapped to the recovery public key (step 8). It never appears in chat, email, the bus, a repository, a card, a log, a screenshot
+or a person-to-person share. Nobody, the founder included, ever sees its value. Two one-time commands do the carrying, so no person
+has to: `agent/import-workspace-key.js` (run on the new host: `init`, then `open`) and `agent/export-workspace-key.js` (run on the old
+host). The key is never typed as an argument; the commands refuse one. Each prints only public values.
+
+1. **Before anything** (Project Weave, with the founder). The new host is up with SSH by key only, two-factor sign-in on the provider
+   account, the root console holder named, a restore of last night's backup proven on it (`docs/hosting.md`, section 6), and the
+   passphrases sealed. *Done when:* those are written down with their dates, and the founder has said go, in chat or on a card.
+2. **Freeze the old room** (the founder). Stop the old service once, so nothing is written during the move; write the time down. Take a
+   last backup and restore it on the new host **before the key moves**. *Done when:* the restore starts, passes `verify-log.js`, and the
+   old room is stopped.
+3. **The new host makes a one-time wrapping key** (Project Weave). `node agent/import-workspace-key.js init /root/key-move` makes a
+   fresh pair, keeps the private half in `/root/key-move/wrap-key` (readable only by its owner; it never leaves that host), and prints
+   the public half and an 8-character fingerprint. *Done when:* those two lines are on the screen.
+4. **Carry the public half to the old host** (Project Weave to the founder; a public value, so any route will do). On the old host:
+   `node agent/export-workspace-key.js <public half> /root/wrapped-key --env-file <the old room's env file>`. It reads the key from
+   the room's own settings, writes only ciphertext, and prints the file's name, the wrapping fingerprint and the key's public
+   fingerprint (the room's `did:key`). *Done when:* the file exists and the two fingerprints are printed.
+5. **Copy the file host to host, and compare** (the founder, with one person from Project Weave). Copy `/root/wrapped-key` to the new
+   host with `scp` or `rsync` over SSH, key only: not by chat, not by email. Then say both public fingerprints to each other on a
+   second channel (a call); they are public, so saying them is safe. *Done when:* the wrapping fingerprint matches what step 3 printed,
+   and both people have heard the key's `did:key` from the old host.
+6. **The new host unwraps and seals** (Project Weave). Make the new room's env file readable only by its owner
+   (`umask 077; touch /srv/inwove/.env`, if it is not there yet), then
+   `node agent/import-workspace-key.js open /root/key-move /root/wrapped-key --env-file /srv/inwove/.env`. It writes `WORKSPACE_KEY=`
+   into that one line of the env file, prints only the key's `did:key`, then overwrites and deletes the file and the wrapping private
+   half. An overwrite is not a guarantee on every filesystem (journaling, copy-on-write and flash drives can keep old blocks); the
+   encrypted disk is what covers that. If the new host's secrets are kept somewhere other than `.env`, the same line goes there by
+   the same one command, never by hand. *Done when:* the printed `did:key` is the one from step 5 and both files are gone.
+7. **Prove it** (Project Weave, with Security looking). Start the new room. It opens one old note and one old room entry, the test
+   members', and `verify-log.js` gives the same head as before. Only then does DNS or the proxy move. *Done when:* the `did:key` from
+   step 6 equals the old host's, and the entries open.
+8. **One backup copy, and only one** (the founder and Project Weave). The key wrapped to the recovery public key from the recovery
+   sitting (2 of 3 across Project Weave's people, owed before the cut-over; Security sends its exact steps separately). On the old
+   host: the same export command with `--recovery <recovery public half>` writes a second file, `<out file>.recovery`; it is kept in the
+   encrypted backup, and a person holding one share cannot open it. *Done when:* the file is in the backup and the sitting has proved it
+   opens. The sitting itself is not built yet.
+9. **Retire the old copy, with a date** (the founder). On the old host, delete the setting, the wrapped files and any env file or shell
+   history that held the key; then take the host down or wipe its volume. Write into the key register: the key's name, its new holder,
+   the date it moved, the date the old copy was destroyed, and the proof (the match in step 7). If the old host stays up for any
+   reason, the register says so and why. *Done when:* the register row is full; write the date here too: `retired on ____-__-__`.
+10. **Rotate the key within a week of the move** (Project Weave, made on the new host only). The key lived on a host Project Weave did
+    not run, so a new key replaces it and the record is re-signed under it. **This needs code that does not exist yet:** a log entry
+    that hands witnessing from the old key to a new one, which the verifier accepts. It goes to the security reviewer before it is
+    built. Until it exists the room runs under the moved key, and that is stated, with the date, in the key register. *Done when:* the
+    rotation entry is in the record and `verify-log.js` accepts it.
+
+Note for whoever runs it: Node reads an `--env-file` written after a script's name for itself and stops if that file is missing. On the
+new host `open` also takes `--into <path>` in its place, which Node leaves alone.
 
 ## Settings Project Weave sets on its server
 
@@ -31,7 +84,7 @@ and in what order. It holds no secrets and names no people.
 | 1 | Project Weave | Create the server, its encrypted volume and firewall, and install Docker (`docs/hosting.md`, sections 1 to 3). Make the GitHub OAuth App (section 3a). | The server is up; nothing runs yet. |
 | 2 | Project Weave | Make the DID update key on its own computer; send the founder the public half only. | The founder has a `z6Mk…` string. |
 | 3 | Founder | On the old host, set `ROOM_DID_UPDATE_KEY` to that string and let the room restart. | `https://inwove.org/.well-known/did.jsonl` has one more entry whose update key is Project Weave's. |
-| 4 | Founder, with Security | Once the security reviewer has written the exact steps, move `WORKSPACE_KEY` from the old host's sealed settings to the new host's sealed settings, and nowhere else. | Project Weave's server has it in its sealed settings; no copy exists in any chat, email, repository, card or shared password manager. |
+| 4 | Founder, with Security | Move `WORKSPACE_KEY` from the old host's sealed settings to the new host's sealed settings, and nowhere else, by the ten steps in "Moving the room's signing key" below. | Project Weave's server has it in its sealed settings; no copy exists in any chat, email, repository, card or shared password manager. |
 | 5 | Project Weave | Export the record with a member's key, import it, copy the DID's log, start the room (`docs/hosting.md`, section 7). The person running it must be a member: a member's export holds the people-only lines too, so the file stays private and is deleted after. | `verify-log.js` gives the same head for both rooms. |
 | 6 | Founder | Point `inwove.org` at the new server (DNS only, no proxy). Project Weave checks https, a passkey sign-in, and an agent's link. | A member signs in with their passkey on the new server. |
 | 7 | Founder | Transfer the repository to `Project-Weave-Tech`, and the domain to Project Weave's accounts. | Both show Project Weave as owner. |
