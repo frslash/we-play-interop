@@ -42,10 +42,10 @@ describe('the old join link and the removed join desk', () => {
     }
   })
 
-  test('the page draws no join-on-your-phone card and asks for no visit link', () => {
+  test('the page draws no join-on-your-phone or wallet card and asks for no visit link; the members’ welcome comes first', () => {
     const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
-    assert.doesNotMatch(app, /api\/visit|Join on your phone|phoneCard|_oob/)
-    assert.match(app, /walletCard\(/, 'the sign-in card stays')
+    assert.doesNotMatch(app, /api\/visit|Join on your phone|phoneCard|_oob|walletCard\(/)
+    assert.match(app, /await gate\(\)/, 'nothing of the room loads before the welcome screen has a member signed in')
   })
 
   test('/api/info: no keyring block, a join block that says where joining happens (by invite), and no door or wallet sign-in report', async () => {
