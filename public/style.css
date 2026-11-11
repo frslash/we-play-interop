@@ -275,8 +275,6 @@ body[data-view="tech"] .plain-only { display: none !important; }
   .watch-grid .caps-card { margin: 0; height: calc(100vh - 230px); min-height: 520px; overflow-y: auto; }
   .watch-about { text-align: left; margin-left: 4px; }
   #tab-talk { max-width: 1240px; margin: 0 auto; }
-  #tab-talk.on.has-tasks { max-width: 1240px; display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 16px; align-items: start; }
-  #tab-talk.on.has-tasks .tasks-side { display: block; position: sticky; top: 110px; max-height: calc(100vh - 140px); overflow-y: auto; margin: 0; }
   .chat { max-height: calc(100vh - 290px); min-height: 50vh; }
   .msg { max-width: 72%; }
   .map-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; align-items: start; }
@@ -389,22 +387,51 @@ label.check { display: flex; gap: 8px; align-items: center; }
 .waiting-strip .waiting-head { margin-bottom: 6px; }
 @media (max-width: 420px) { .tabs .ok-count { margin-left: 2px; padding: 0 4px; font-size: 10px; } }
 
-/* Talk's two windows: "People only" (no AI can read it) on the left, "People and AIs" on the right. Under 760px they are
-   two tabs at the top of Talk, and one shows at a time. */
-.talk-windows { display: block; }
-.talk-win h2 { font-size: 16px; margin: 0 0 2px; }
+/* Talk's panes (panes.js): your tasks, "People only" (no AI can read it) and "People and AIs", side by side on a computer.
+   Each can be moved by its header, made wider or narrower at the line between two, or sent to the side bar on the left,
+   where it waits as a tab. Under 760px one pane shows at a time, with tabs at the top. */
+.pane-tabs { display: flex; margin: 0 0 8px; }
+.pane-tabs button { flex: 1 1 0; }
+.pane-tabs .count, .pane-head .count, .rail-tab .count { font-size: 12px; font-weight: 600; padding: 0 7px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); }
+.pane-tabs .count { margin-left: 6px; }
+.pane-rail[hidden], .talk-pane[hidden], .pane-divider[hidden], .count[hidden] { display: none; }
+.talk-pane { min-width: 0; }
+.pane-head { display: flex; align-items: center; gap: 6px; margin: 0 0 4px; }
+.pane-head h2 { font-size: 16px; margin: 0; }
+.pane-grip, .pane-hide { display: none; }
 .talk-win .win-note { margin: 0 0 6px; }
-.talk-pane-tabs { display: flex; margin: 0 0 8px; }
-.talk-pane-tabs button { flex: 1 1 0; }
-.talk-windows[data-pane="people"] .win-all, .talk-windows[data-pane="all"] .win-people { display: none; }
+.pane-tasks .tasks-side { margin: 0 0 8px; max-height: none; }
 @media (min-width: 760px) {
-  .talk-pane-tabs { display: none; }
-  .talk-windows, .talk-windows[data-pane] { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
-  .talk-windows[data-pane] .talk-win { display: block; }
-  .talk-win { min-width: 0; }
-  .talk-win .msg { max-width: 92%; }
   #tab-talk { max-width: none; }
+  .pane-tabs { display: none; }
+  .pane-layout { display: flex; gap: 14px; align-items: flex-start; }
+  .talk-panes { flex: 1 1 auto; min-width: 0; display: flex; align-items: flex-start; }
+  .talk-pane { flex: 1 1 0; min-width: 220px; }
+  .pane-grip { display: inline-block; cursor: grab; user-select: none; opacity: 0.55; font-size: 15px; line-height: 1; padding: 2px; }
+  .pane-grip:hover { opacity: 1; }
+  .pane-grip:active { cursor: grabbing; }
+  .pane-hide { display: inline-block; background: none; border: 1px solid transparent; color: var(--muted); border-radius: 8px; padding: 0 6px; font-size: 15px; line-height: 22px; cursor: pointer; }
+  .pane-hide:hover, .pane-hide:focus-visible { border-color: var(--line); color: var(--ink); }
+  .one-pane .pane-hide { visibility: hidden; }
+  .pane-divider { flex: 0 0 14px; align-self: stretch; cursor: col-resize; position: relative; touch-action: none; }
+  .pane-divider::after { content: ''; position: absolute; left: 6px; top: 4px; bottom: 4px; width: 2px; border-radius: 2px; background: var(--line); }
+  .pane-divider:hover::after, .pane-divider.active::after, .pane-divider:focus-visible::after { background: var(--accent); }
+  .pane-divider:focus-visible { outline: none; }
+  .talk-pane.drop-before { box-shadow: -4px 0 0 0 var(--accent); }
+  .talk-pane.drop-after { box-shadow: 4px 0 0 0 var(--accent); }
+  .pane-rail { flex: 0 0 172px; position: sticky; top: 110px; display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+  .pane-rail h3 { font-size: 13px; margin: 0; color: var(--muted); font-weight: 600; }
+  .pane-rail .meta { font-size: 12px; margin: 0 0 4px; }
+  .pane-rail.drop-here { outline: 2px dashed var(--accent); outline-offset: 2px; }
+  .rail-tab { display: flex; align-items: center; justify-content: space-between; gap: 6px; text-align: left; width: 100%; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--soft); color: var(--ink); font: inherit; font-size: 14px; cursor: pointer; }
+  .rail-tab:hover, .rail-tab:focus-visible { border-color: var(--accent); }
+  .rail-tab.arrived { animation: rail-bounce 0.55s ease-out; }
+  .rail-reset { margin-top: 6px; align-self: flex-start; }
+  .talk-win .msg { max-width: 92%; }
+  .pane-tasks .tasks-side { max-height: calc(100vh - 200px); overflow-y: auto; margin: 0; }
 }
+@keyframes rail-bounce { 0% { transform: translateX(48px); opacity: 0; } 60% { transform: translateX(-6px); opacity: 1; } 80% { transform: translateX(3px); } 100% { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .rail-tab.arrived { animation: none; } }
 .win-people .chat-people { border-left: 3px solid var(--accent); padding-left: 8px; }
 .win-people .composer textarea { background: var(--soft); }
 .msg .grip { cursor: grab; user-select: none; opacity: 0.6; padding: 0 2px; font-size: 14px; line-height: 1; }
@@ -419,9 +446,6 @@ label.check { display: flex; gap: 8px; align-items: center; }
 
 /* ---------- your tasks, beside the chat ---------- */
 .tasks-side { margin: 0 0 8px; padding: 10px 12px; max-height: 32vh; overflow-y: auto; }
-.tasks-side[hidden], #tab-talk.tasks-quiet .tasks-side { display: none; }
-.tasks-side h2 { font-size: 16px; margin: 0 0 6px; display: flex; align-items: center; gap: 6px; }
-.tasks-side h2 .count { font-size: 12px; font-weight: 600; padding: 0 7px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); }
 .tasks-side h3 { font-size: 13px; margin: 12px 0 4px; color: var(--muted); font-weight: 600; }
 .tasks-side .empty { font-size: 13px; margin: 4px 0; }
 .task { padding: 7px 0; border-top: 1px solid var(--line); font-size: 14px; }

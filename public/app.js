@@ -17,6 +17,7 @@ import { ROUTINE_URL, WAKE_ON as KIT_WAKE_ON, agentParagraph, bridgeCommand, cla
 import { WAITING_FOR_PERSON, allDrafts, heard, lineIsFor, waitingForOk, waitingLabel, waitsForPerson } from '/shared/presence.js'
 import { gate } from '/welcome.js'
 import { memberCards } from '/member.js'
+import { makePanes } from '/panes.js'
 
 // The door comes first: signed out, only the welcome screen shows and nothing below runs until someone is in.
 const session = await gate()
@@ -699,21 +700,18 @@ function boardRow (s) {
     h('div', { class: 'meta' }, why, ' · ', h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); go('steps') } }, 'Open in Steps')))
 }
 function drawTasks () {
-  const root = $('#tab-talk'), side = talk.side
+  const side = talk.side
   if (!side) return
   const mine = myTasks(), open = mine.filter((t) => !t.doneAt).sort((a, b) => (a.at < b.at ? 1 : -1)), done = mine.filter((t) => t.doneAt).sort((a, b) => (a.doneAt < b.doneAt ? 1 : -1))
   const board = myBoard()
-  side.hidden = !joined()
-  root.classList.toggle('has-tasks', joined())
-  root.classList.toggle('tasks-quiet', !open.length && !board.length) // on a phone the list only takes room when something is on it
+  talk.panes?.setAvailable('tasks', Boolean(joined())) // the pane is there once you are in the room
   if (!joined()) { talk.tasksKey = null; return }
+  talk.panes?.setCount('tasks', open.length + board.length) // the count rides on the pane's header, its tab, and its place in the side bar
   // redrawn only when something on it changed, so a click or a tick in progress is never swept away by the room's next line
   const key = JSON.stringify([open.map((t) => t.hash), done.map((t) => [t.hash, ago(t.doneAt)]), open.map((t) => ago(t.at)), board.map((s) => [s.id, s.state, s.waitingOn?.who, s.offeredTo, s.owner])])
   if (key === talk.tasksKey) return
   talk.tasksKey = key
-  const n = open.length + board.length
   fill(side,
-    h('h2', null, 'Your tasks', n ? h('span', { class: 'count' }, String(n)) : null),
     open.length ? open.map(taskRow) : h('p', { class: 'empty' }, 'Nothing asked of you right now. When someone in the room asks you to do something, it lands here.'),
     board.length ? [h('h3', null, 'On the board for you'), board.map(boardRow)] : null,
     done.length ? h('details', { class: 'tasks-done' }, h('summary', null, `Done lately (${done.length})`), done.map((t) => h('div', { class: 'task done' }, h('div', null, t.text), h('div', { class: 'meta' }, `done ${ago(t.doneAt)}`)))) : null)
@@ -807,19 +805,27 @@ function renderTalk (scrollDown, { holdAt = null } = {}) {
     root.addEventListener('dragover', (ev) => { if (!hasFiles(ev)) return; ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; root.classList.add('dropping') })
     root.addEventListener('dragleave', (ev) => { if (!root.contains(ev.relatedTarget)) root.classList.remove('dropping') })
     root.addEventListener('drop', (ev) => { if (!hasFiles(ev)) return; ev.preventDefault(); root.classList.remove('dropping'); if (!joined()) return toast('Join the room first to share a photo or file.'); addPhotos([...ev.dataTransfer.files]); talk.input.focus() })
-    // two windows side by side: "People only" (no AI can read it) and "People and AIs" (the room, as it was); under 760px, two tabs
-    talk.pane = store.get('wpi.talkPane') === 'people' ? 'people' : 'all'
+    // three panes, laid out as each person likes (panes.js): your tasks, "People only" (no AI can read it) and
+    // "People and AIs" (the room, as it was). Any can go to the side bar, move, or be made wider; on a phone, one at a time
     talk.plist = h('div', { class: 'chat chat-people', 'aria-live': 'polite' })
     talk.plist.addEventListener('scroll', () => { talk.pscrolled = true }, { passive: true })
     talk.pinput = keep(h('textarea', { rows: 1, maxlength: 2000, placeholder: 'People only…', 'aria-label': 'A message only people can read' }), 'chat.people')
     talk.pinput.addEventListener('input', () => { talk.pinput.style.height = 'auto'; talk.pinput.style.height = Math.min(160, talk.pinput.scrollHeight) + 'px' })
     talk.pinput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && matchMedia('(min-width: 760px)').matches) { ev.preventDefault(); sendPeople() } })
     const pcomposer = h('div', { class: 'composer' }, h('div', { class: 'composer-row' }, talk.pinput, h('button', { class: 'btn primary send', onclick: sendPeople, 'aria-label': 'Send to People only' }, '↑')))
-    talk.paneTabs = h('div', { class: 'seg small talk-pane-tabs', role: 'group', 'aria-label': 'Which window' })
-    talk.winPeople = h('section', { class: 'talk-win win-people', 'aria-labelledby': 'win-people-title' },
-      h('h2', { id: 'win-people-title' }, 'People only'), h('p', { class: 'meta win-note' }, 'The room’s AIs can’t read this. The host of this room can read everything said here.'), talk.plist, pcomposer)
-    talk.winAll = h('section', { class: 'talk-win win-all talk-main', 'aria-labelledby': 'win-all-title' },
-      h('h2', { id: 'win-all-title' }, 'People and AIs'), talk.goals, talk.waiting, talk.list, talk.composer)
+    talk.side = h('div', { class: 'tasks-side card' })
+    talk.panes = makePanes({
+      label: 'Talk',
+      panes: [
+        { id: 'tasks', title: 'Your tasks', className: 'pane-tasks', body: talk.side },
+        { id: 'people', title: 'People only', className: 'talk-win win-people', body: [h('p', { class: 'meta win-note' }, 'The room’s AIs can’t read this. The host of this room can read everything said here.'), talk.plist, pcomposer] },
+        { id: 'all', title: 'People and AIs', className: 'talk-win win-all talk-main', body: [talk.goals, talk.waiting, talk.list, talk.composer] },
+      ],
+      weights: { tasks: 0.6, people: 1, all: 1 },
+      load: () => store.get('wpi.talkLayout') ?? (store.get('wpi.talkPane') === 'people' ? JSON.stringify({ current: 'people' }) : null), // the phone tab chosen before panes
+      save: (text) => store.set('wpi.talkLayout', text),
+    })
+    talk.winAll = talk.panes.pane('all')
     // a line of yours dragged from People only into People and AIs is shared after asking (a drag is only ever offered on your own lines)
     const sharing = (ev) => [...(ev.dataTransfer?.types ?? [])].includes(SHARE_TYPE)
     talk.winAll.addEventListener('dragover', (ev) => { if (!sharing(ev)) return; ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; talk.winAll.classList.add('sharing') })
@@ -830,12 +836,10 @@ function renderTalk (scrollDown, { holdAt = null } = {}) {
       const hash = ev.dataTransfer.getData(SHARE_TYPE), line = [...feed, ...talk.older].find((x) => x.hash === hash)
       if (line && peopleOnly(line)) shareWithAIs(line)
     })
-    talk.windows = h('div', { class: 'talk-windows' }, talk.winPeople, talk.winAll)
-    talk.side = h('aside', { class: 'tasks-side card', 'aria-label': 'Your tasks' })
-    fill(root, talk.side, h('div', { class: 'talk-main-wrap' }, talk.paneTabs, talk.windows))
+    fill(root, talk.panes.el)
+    talk.panes.setAvailable('tasks', Boolean(joined()))
+    talk.panes.render()
   }
-  talk.windows.dataset.pane = talk.pane
-  fill(talk.paneTabs, [['people', 'People only'], ['all', 'People and AIs']].map(([k, l]) => h('button', { type: 'button', class: talk.pane === k ? 'on' : '', 'aria-pressed': String(talk.pane === k), onclick: () => { talk.pane = k; store.set('wpi.talkPane', k); renderTalk(true) } }, l)))
   drawTasks()
   const held = S.proposals.filter((p) => p.kind === 'goal' && p.status !== 'vetoed' && p.tally.for > p.tally.against)
   fill(talk.goals, held.length ? [h('strong', null, 'The room is going for: '), held.slice(0, 3).map((g) => g.title).join(' · ')] : h('span', { class: 'meta' }, 'Just talk. The weaver picks up what people want and suggests goals and next steps here.'))
