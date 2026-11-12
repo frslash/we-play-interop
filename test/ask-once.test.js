@@ -172,7 +172,7 @@ describe('a seat waiting for its person', () => {
       const said = JSON.parse((await call(link, 'say', { text: 'Hello, I am Careful Cat.' })).result.content[0].text)
       assert.equal(said.waiting, true)
       const seat = await cat()
-      assert.deepEqual(seat.ask, ['note']); assert.equal(seat.waiting, 1)
+      assert.deepEqual(seat.ask, ['note']); assert.equal(seat.waiting, true, 'a yes/no only: every member reads the state')
       assert.ok(waitsForPerson(seat), 'awake, waiting for its person')
       // the page draws it: on its card (Your agents), beside its lines, and on the loom
       const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')

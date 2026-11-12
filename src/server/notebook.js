@@ -4,7 +4,14 @@
 // twin) and grows with every note from the person and everything the agent
 // learns. Stored encrypted with the workspace's key, like hosted agents' keys:
 // whoever runs the server could read it, and the page says so.
+import { TaskError } from './log.js'
+
 const MAX_CHARS = 60_000 // about what an agent can take in at once; the oldest notes drop off beyond it
+
+// A stored notebook that can't be opened (a changed WORKSPACE_KEY, a damaged row) is refused, never read as empty:
+// reading it as empty let the next add() replace the row and wipe every earlier note. Nothing is cached, so it reads
+// again once the right key is back.
+const unreadable = () => new TaskError('notebookUnreadable', 'this notebook is stored but can\'t be opened right now, so nothing was read or changed; tell the room\'s host', { status: 503 })
 
 export class Notebooks {
   constructor ({ db, sealer }) { this.db = db; this.sealer = sealer; this.cache = new Map(); this.readUpTo = new Map() }
@@ -13,7 +20,10 @@ export class Notebooks {
     if (this.cache.has(agent)) return this.cache.get(agent)
     const { rows } = await this.db.query('select notes_enc, read_up_to from agent_notes where agent = $1', [agent])
     let notes = []
-    if (rows[0]) { try { notes = JSON.parse(this.sealer.open(rows[0].notes_enc)) } catch { notes = [] } }
+    if (rows[0]) {
+      try { notes = JSON.parse(this.sealer.open(rows[0].notes_enc)) } catch { throw unreadable() }
+      if (!Array.isArray(notes)) throw unreadable()
+    }
     if (rows[0]?.read_up_to) this.readUpTo.set(agent, rows[0].read_up_to)
     this.cache.set(agent, notes)
     return notes

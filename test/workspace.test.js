@@ -668,7 +668,7 @@ describe('the workspace, end to end', () => {
     await send(other, 'delegate', { delegate: made.did, scope: ['note', 'vote'], ask: ['note'], label: 'Careful Cat' }, { expiresAt: new Date(Date.now() + 86400000).toISOString() })
     const waiting = JSON.parse((await call(link, 'say', { text: 'Hello, I am Careful Cat.' })).result.content[0].text)
     assert.equal(waiting.waiting, true)
-    assert.equal((await get('/api/state')).people.find((x) => x.did === made.did).waiting, 1)
+    assert.equal((await get('/api/state')).people.find((x) => x.did === made.did).waiting, true, 'a yes/no only: every member reads the state')
     assert.equal((await priv('/api/drafts', human, 'draft', { agent: made.did, op: 'list' })).status, 403, 'only its person sees its drafts')
     const listed = (await priv('/api/drafts', other, 'draft', { agent: made.did, op: 'list' })).body.drafts
     assert.equal(listed.length, 1); assert.equal(listed[0].payload.text, 'Hello, I am Careful Cat.')
