@@ -55,6 +55,12 @@ export const config = {
   voteMinutes: int(env.VOTE_MINUTES, AGREED.votes.closeAfterMinutes), // a vote that isn't a goal or an outside change closes this long after it was proposed, and the room prompts whoever has to act
   approvalsRequired: Math.max(1, int(env.APPROVALS_REQUIRED, AGREED.proposals.peopleNeeded)),
 
+  // InWove on Geb (docs/geb.md): the room's own Geb identity, run by Geb's CLI. Set GEB_HOME and GEB_ROOM_DID together
+  // (the start refuses one without the other); with neither, the room is not on Geb and says so at start.
+  gebHome: (env.GEB_HOME || '').trim(),
+  gebRoomDid: (env.GEB_ROOM_DID || '').trim(),
+  gebBin: (env.GEB_BIN || 'geb').trim(), // the CLI, or the path of its geb.mjs
+
   githubToken: env.GITHUB_TOKEN || '',
   githubOauthClientId: env.GITHUB_OAUTH_CLIENT_ID || '', // the GitHub OAuth App the host made (docs/hosting.md): people link their GitHub with it so their agents can join for their repositories. Both empty: linking is off, and the page says so
   githubOauthClientSecret: env.GITHUB_OAUTH_CLIENT_SECRET || '', // a secret: only in the environment, never in a file the room serves or a log

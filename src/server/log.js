@@ -14,6 +14,7 @@ import { AGENT_SCOPES, buildDocument, checkPayload, checkShape, NAME_OF, scopeOf
 import { insertEntry, loadEntries } from './db.js'
 import { isPeopleOnly } from './audience.js'
 import { State } from './state.js'
+import { GEB_LINK_HOSTS_ONLY } from './geb.js'
 
 const ERROR_TYPE = 'https://trusttasks.org/spec/trust-task-error/0.6'
 /** Why an invite does not let someone in (never the code itself). */
@@ -223,6 +224,18 @@ export class Log extends EventEmitter {
         if (!l) throw new TaskError('malformedRequest', 'no request to link an old name with that hash')
         if (l.replacedAt) throw new TaskError('permissionDenied', 'that old name is already linked', { status: 403 })
         if (doc.issuer === l.from || doc.issuer === l.old) throw new TaskError('permissionDenied', 'someone else has to vouch for you: people who know you', { status: 403 })
+        break
+      }
+      case 'linkGeb': { // a person links their own Geb identity: their signed line here, and the code the room gave them, sent from that identity over Geb (geb.js)
+        const had = st.gebLinks.get(doc.issuer)
+        if (p.end) { if (had?.did !== p.did) throw new TaskError('permissionDenied', 'that Geb identity is not linked to you', { status: 403 }); break }
+        if (GEB_LINK_HOSTS_ONLY && !this.config.hosts?.includes(doc.issuer)) throw new TaskError('permissionDenied', 'for now only the room\'s host links a Geb identity; members can once the room has the go-ahead to open it', { status: 403 })
+        if (p.did === st.gebRoom?.did) throw new TaskError('permissionDenied', 'that is the room\'s own Geb identity', { status: 403 })
+        const owner = st.gebByDid.get(p.did)
+        if (owner && owner !== doc.issuer) throw new TaskError('permissionDenied', 'that Geb identity is linked to someone else', { status: 403 })
+        if (had?.did === p.did) throw new TaskError('permissionDenied', 'that Geb identity is already linked to you', { status: 403 })
+        if (!this.gebProof) throw new TaskError('permissionDenied', 'this room is not on Geb yet', { status: 403 })
+        if (!this.gebProof(doc.issuer, p.did)) throw new TaskError('permissionDenied', 'the room has not heard your code from that Geb identity: ask for a code, send it to the room over Geb, then link', { status: 403 })
         break
       }
       case 'replace': {

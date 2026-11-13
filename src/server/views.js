@@ -68,6 +68,7 @@ export function state (ctx) {
     score: board.score(),
     board: { fetchedAt: board.fetchedAt, error: board.error },
     steps: ctx.facilitator?.view() ?? null, // the facilitator's board: goals with their done-tests, the steps in work, last night
+    geb: ctx.geb?.status() ?? null, // InWove on Geb: whether the room is on Geb, as which identity, in which Geb room (geb.js)
     counts: st.counts,
   }
 }

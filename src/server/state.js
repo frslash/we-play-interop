@@ -25,6 +25,8 @@ const TASKS_KEPT = 2000
 // the weaver's task line reads "Name: what to do (asked by Name)" for the room; the list shows just what to do
 const taskWords = (text, byWeaver) => (byWeaver && /^[^:\n]{1,80}: ([\s\S]+?) \(asked by [^()\n]{1,80}\)$/.exec(text)?.[1]) || text
 
+const GEB_SEEN_KEEP = 5000 // Geb replays only what it queued while the listener was down, so the latest few thousand ids are plenty
+
 export class State {
   constructor () {
     this.workspace = null // the workspace DID (author of the genesis)
@@ -65,6 +67,12 @@ export class State {
     // is not here for (it fades, see facilitator.js), and the steps it took, the results it posted and the checks it made
     this.notFor = new Map() // agent -> { kinds, onlyFor, at, because }
     this.doers = new Map() // agent -> { took, results, checks, code: { took, results, checks }, at }
+    // InWove on Geb (geb.js): each member's linked Geb identity, the other way round, the Geb room the room keeps, and the
+    // ids of the latest Geb lines relayed here (so a line Geb replays after a restart is not written twice; the record keeps them all)
+    this.gebLinks = new Map() // member DID -> { did, at, hash }
+    this.gebByDid = new Map() // Geb DID -> member DID
+    this.gebRoom = null // { did, group, name, at }
+    this.gebSeen = new Set() // the latest GEB_SEEN_KEEP relayed Geb message ids, oldest first
     this.counts = {}
     this.peopleNotes = 0 // how many people-only lines there are: kept apart from counts, which agents read, and shown to no one
     this.seq = -1
@@ -130,6 +138,15 @@ export class State {
         this.participants.set(e.author, { ...prev, left: undefined, did: e.author, kind: 'human', name: p.name, projects: p.projects ?? [], about: p.about ?? '', since: prev?.since ?? e.timestamp })
         break
       }
+      case 'linkGeb': {
+        const had = this.gebLinks.get(e.author)
+        if (had) { this.gebByDid.delete(had.did); this.gebLinks.delete(e.author) }
+        if (!p.end) { this.gebLinks.set(e.author, { did: p.did, at: e.timestamp, hash: e.hash }); this.gebByDid.set(p.did, e.author) }
+        const who = this.participants.get(e.author); if (who) who.gebDid = p.end ? undefined : p.did // shown on the person: their link is a line in the record
+        break
+      }
+      case 'gebRoom': this.gebRoom = { did: p.did, group: p.group, name: p.name, at: e.timestamp }; break
+      case 'gebRelayed': this.gebSeen.add(p.id); if (this.gebSeen.size > GEB_SEEN_KEEP) this.gebSeen.delete(this.gebSeen.values().next().value); break
       case 'repos': { const who = this.participants.get(e.author); if (who) { who.github = p.github; who.repos = p.repos.map((r) => ({ name: r.name, verified: r.verified })) } break } // what a person linked: the latest line stands
       case 'invite':
         if (e.author === this.workspace) for (const old of this.invites.values()) if (old.by === this.workspace) old.replacedBy ??= e.hash // the room has one invite of its own at a time: a restart while it has no members replaces it
@@ -152,7 +169,8 @@ export class State {
       case 'away': this.away.set(p.agent, { enabled: p.enabled, on: p.on, perHour: p.perHour, model: p.model, since: e.timestamp }); break
       case 'leave': {
         const who = this.participants.get(e.author)
-        if (who) { who.left = e.timestamp }
+        if (who) { who.left = e.timestamp; who.gebDid = undefined }
+        const geb = this.gebLinks.get(e.author); if (geb) { this.gebByDid.delete(geb.did); this.gebLinks.delete(e.author) } // leaving ends their Geb link: the bridge takes them out of the Geb room
         for (const inv of this.invites.values()) if (inv.by === e.author && !inv.usedBy) inv.dead = true // their unused invites die with their membership, for good
         for (const p of this.participants.values()) if (p.kind === 'agent' && p.principal === e.author) { p.removed = true; p.removedAt = e.timestamp }
         for (const d of this.delegations.values()) if (d.issuer === e.author && !d.revoked) { d.revoked = true; d.endedBy = e.hash }
@@ -168,6 +186,7 @@ export class State {
         l.replacedAt = e.timestamp
         for (const inv of this.invites.values()) if (inv.by === l.old && !inv.usedBy) inv.dead = true
         was.replacedBy = l.from; was.replacedAt = e.timestamp
+        const oldGeb = this.gebLinks.get(l.old); if (oldGeb) { this.gebByDid.delete(oldGeb.did); this.gebLinks.delete(l.old); was.gebDid = undefined } // a new key links its Geb identity again
         now.replaces = [...new Set([...(now.replaces ?? []), l.old])]
         now.projects = [...new Set([...(now.projects ?? []), ...(was.projects ?? [])])].slice(0, 5); was.projects = []
         now.card ??= was.card

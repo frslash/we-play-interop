@@ -486,3 +486,8 @@ body.gated { padding-bottom: 0; }
 .member-item { padding: 8px 0; border-top: 1px solid var(--line); }
 .member-item:first-child { border-top: 0; }
 .member-item .grow { min-width: 0; }
+/* InWove on Geb: a line said in the room's Geb room, and the commands to link your own Geb identity */
+.badge.geb { background: var(--soft); color: var(--muted); font-size: 11px; padding: 0 6px; }
+.geb-steps li { margin: 6px 0; }
+.geb-cmd { margin-top: 4px; align-items: center; }
+.geb-cmd code { font: 12px var(--mono); overflow-wrap: anywhere; background: var(--soft); padding: 4px 6px; border-radius: 6px; }

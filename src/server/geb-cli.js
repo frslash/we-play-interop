@@ -1,0 +1,96 @@
+// Geb's CLI as the bridge's node (geb.js). One `geb listen --json` process for the room's Geb identity, and one-shot
+// commands for posting, rooms and members, all against the room's own Geb home (GEB_HOME, beside the room's other keys).
+// Pinned to the release below: Geb's `listen --json` output and its wire are not versioned yet, so an upgrade is a
+// deliberate change, checked against what the release prints. Shapes are from Geb CLI 0.5.18 as run on throwaway
+// identities (docs/geb.md lists each fact and the ones still to confirm).
+import { spawn as spawnDefault, execFile as execFileDefault } from 'node:child_process'
+import { createInterface } from 'node:readline'
+
+export const GEB_CLI_VERSION = '0.5.18'
+const RESTART_MS = [1_000, 5_000, 15_000, 60_000] // a listener that stops comes back, more slowly each time it keeps stopping
+
+/**
+ * One line of `geb listen --json`, as an event the bridge reads, or null when the line is not one (some lines under
+ * --json are not JSON, such as `room.presumed {…}`). A message's `at` is epoch milliseconds; a room event's is a string.
+ */
+export function parseListenLine (line) {
+  let j
+  try { j = JSON.parse(line) } catch { return null }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return null
+  switch (j.event) {
+    case 'gmessage':
+      if (typeof j.id !== 'string' || typeof j.from !== 'string' || typeof j.group !== 'string') return null
+      return { type: 'message', id: j.id, group: j.group, groupName: typeof j.name === 'string' ? j.name : '', direct: j.direct === true, from: j.from, text: typeof j.text === 'string' ? j.text : '', at: typeof j.at === 'number' ? j.at : Date.parse(j.at) || Date.now(), replay: j.via === 'replay', signed: j.sig === 'signed' }
+    case 'group': return { type: 'group', id: typeof j.id === 'string' ? j.id : null, name: j.name ?? '', members: j.members ?? null, epoch: j.epoch ?? null }
+    case 'request': return { type: 'request', from: typeof j.from === 'string' ? j.from : typeof j.did === 'string' ? j.did : null }
+    case 'listening': return { type: 'listening', did: typeof j.did === 'string' ? j.did : null }
+    default: return { type: 'other', event: typeof j.event === 'string' ? j.event : '' }
+  }
+}
+
+export class GebCli {
+  /**
+   * `bin`: the CLI (`geb`, or the path of its `geb.mjs`, run with this Node). `home`: the room's Geb home. `did`: the
+   * room's Geb identity, as the CLI made it (GEB_ROOM_DID). `spawn` and `execFile` are for tests.
+   */
+  constructor ({ bin = 'geb', home, did, spawn = spawnDefault, execFile = execFileDefault, timeoutMs = 30_000, restartMs = RESTART_MS }) {
+    if (!home) throw new Error('GEB_HOME: the room\'s Geb home is not set')
+    if (!did) throw new Error('GEB_ROOM_DID: the room\'s Geb identity is not set')
+    const [cmd, pre] = bin.endsWith('.mjs') || bin.endsWith('.js') ? [process.execPath, [bin]] : [bin, []]
+    Object.assign(this, { cmd, pre, home, did, spawn, execFile, timeoutMs, restartMs })
+    this.child = null
+    this.stopping = false
+    this.restarts = 0
+  }
+
+  args (...a) { return [...this.pre, ...a, '--home', this.home] }
+  /** One command; its standard output. Arguments go as an array, never through a shell. */
+  run (...a) {
+    return new Promise((resolve, reject) => this.execFile(this.cmd, this.args(...a), { timeout: this.timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) return reject(new Error(`geb ${a[0]}: ${(stderr || err.message).toString().trim().split('\n')[0].slice(0, 200)}`))
+      resolve(String(stdout))
+    }))
+  }
+  async json (...a) { const out = await this.run(...a); try { return JSON.parse(out) } catch { throw new Error(`geb ${a[0]}: the answer was not JSON`) } }
+
+  /** The listener: every line it prints becomes an event; if it stops, it is started again, and the bridge is told. */
+  async start (onEvent) {
+    this.onEvent = onEvent
+    this.stopping = false
+    this.listen()
+  }
+  listen () {
+    const child = this.child = this.spawn(this.cmd, this.args('listen', '--json'), { stdio: ['ignore', 'pipe', 'pipe'] })
+    createInterface({ input: child.stdout }).on('line', (line) => { const ev = parseListenLine(line); if (ev) this.onEvent(ev) })
+    child.stderr?.resume()
+    child.on('exit', (code) => {
+      if (this.child === child) this.child = null
+      if (this.stopping) return
+      this.onEvent({ type: 'stopped', code })
+      const wait = this.restartMs[Math.min(this.restarts++, this.restartMs.length - 1)]
+      this.timer = setTimeout(() => { if (!this.stopping) this.listen() }, wait)
+      this.timer.unref?.()
+    })
+  }
+  async stop () { this.stopping = true; clearTimeout(this.timer); this.child?.kill('SIGTERM'); this.child = null }
+
+  send (did, text) { return this.run('send', did, text) }
+  gsend (group, text) { return this.run('gsend', group, text) }
+  accept (did) { return this.run('accept', did, '--agree') }
+  /** A new MLS room with these members; its id, read back from the room list by its name (the newest of that name). */
+  async groupNew (name, dids) {
+    await this.run('group', 'new', '--mls', name, ...dids)
+    const rooms = await this.json('groups', '--json')
+    const mine = (Array.isArray(rooms) ? rooms : rooms?.groups ?? []).filter((r) => r?.name === name)
+    const id = mine.at(-1)?.id
+    if (typeof id !== 'string') throw new Error(`geb group new: no room named ${name} afterwards`)
+    return id
+  }
+  groupAdd (group, dids) { return this.run('group', 'add', group, ...dids) }
+  groupRemove (group, dids) { return this.run('group', 'remove', group, ...dids) } // to confirm on 0.5.18 before step 1 (docs/geb.md)
+  async members (group) {
+    const list = await this.json('gmembers', group, '--json')
+    if (!Array.isArray(list)) throw new Error('geb gmembers: not a list')
+    return list.map((m) => m?.did).filter((d) => typeof d === 'string')
+  }
+}

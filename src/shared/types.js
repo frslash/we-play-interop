@@ -47,6 +47,9 @@ export const TYPES = {
   sessionKey: T('session/key'),
   repos: T('member/repos'),
   agentRead: T('agent/read'),
+  linkGeb: T('member/link-geb'),
+  gebRoom: T('geb/room'),
+  gebRelayed: T('geb/relayed'),
 }
 export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v, k]))
 
@@ -54,6 +57,7 @@ export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => 
 export const WHO = {
   genesis: 'workspace', round: 'workspace', step: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', forYou: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
   link: 'human', vouch: 'human', replace: 'human', // a lost key: people only, never agents (room lines 772-821)
+  linkGeb: 'human', gebRoom: 'workspace', gebRelayed: 'workspace', // InWove on Geb (src/server/geb.js): a person links their own Geb identity; the room says which Geb room it keeps and relays what is said there
   join: 'human', invite: 'human', repos: 'human', sessionKey: 'private', agentRead: 'private', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone', resource: 'anyone',
 }
@@ -133,6 +137,9 @@ export const SIGN_IN_STATEMENT = 'Sign in to InWove'
 /** What a browser (or a tool) signs to sign in: the room's origin, the room's challenge, the words, and two minutes. */
 export const signInPayload = (origin, challenge, now = Date.now()) => ({ challenge, origin, statement: SIGN_IN_STATEMENT, expiresAt: new Date(now + 110_000).toISOString() })
 export const HASH_RE = /^[0-9a-f]{64}$/
+/** A Geb identity: did:peer:2 with its key elements (.A, .V, .E, each multibase z base58btc) and an optional .S service element (Geb's guide, did_peer.rs). */
+export const GEB_DID_RE = /^did:peer:2(?:\.[AVE]z[1-9A-HJ-NP-Za-km-z]{40,60}){2,6}(?:\.S[A-Za-z0-9_-]{1,1500})?$/
+export const GEB_TEXT_MAX = 4000 // a line relayed from the room's Geb room, at most this long (longer is cut)
 export const DID_RE = /^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$/
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
@@ -232,6 +239,20 @@ export function checkPayload (name, doc) {
       const ahead = Date.parse(p.expiresAt) - Date.parse(doc.issuedAt)
       return ahead > 0 && ahead <= 14 * 86400000 ? null : 'expiresAt: after issuedAt and within 14 days'
     }
+    case 'linkGeb': // a person links (or, with end, unlinks) their own Geb identity; the room checks it was them over Geb too (log.js)
+      if (!GEB_DID_RE.test(p.did ?? '')) return 'did: your Geb identity (a did:peer:2)'
+      if (p.end !== undefined && p.end !== true) return 'end: true to unlink, or leave it out'
+      return Object.keys(p).some((k) => !['did', 'end'].includes(k)) ? 'linkGeb takes did and, to unlink, end' : null
+    case 'gebRoom': // the room's own Geb identity and the Geb room it keeps in step with this one
+      if (!GEB_DID_RE.test(p.did ?? '')) return 'did: the room\'s Geb identity'
+      if (!str(p.group, 1, 200) || !str(p.name, 1, 100)) return 'group and name: the Geb room\'s id and name'
+      return null
+    case 'gebRelayed': // a line said in the room's Geb room by a linked member, written here by the room
+      if (!GEB_DID_RE.test(p.from ?? '')) return 'from: the sender\'s Geb identity'
+      if (typeof p.member !== 'string' || !/^did:[a-z0-9]+:/.test(p.member)) return 'member: the InWove member that Geb identity is linked to'
+      if (!str(p.group, 1, 200) || !/^[A-Za-z0-9_-]{1,100}$/.test(p.id ?? '')) return 'group and id: the Geb room and the message\'s id'
+      if (typeof p.text !== 'string' || !p.text.trim() || p.text.length > GEB_TEXT_MAX) return `text: 1 to ${GEB_TEXT_MAX} characters`
+      return RFC3339.test(p.at ?? '') ? null : 'at: when it was said in Geb (RFC 3339)'
     case 'repos': { // the repositories a person linked: the room checked them against GitHub (log.js), and each says whether GitHub listed it
       if (!GITHUB_LOGIN_RE.test(p.github ?? '')) return 'github: the GitHub login you linked'
       if (!Array.isArray(p.repos) || p.repos.some((r) => !isObj(r) || typeof r.verified !== 'boolean' || Object.keys(r).some((k) => !['name', 'verified'].includes(k)))) return 'repos: [ { name: owner/repo, verified: true | false } ]'

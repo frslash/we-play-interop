@@ -78,6 +78,12 @@ create table if not exists passkeys (
   last_used_ms bigint
 );
 create index if not exists passkeys_did on passkeys (did);
+create table if not exists geb_counts (
+  day  text not null,
+  what text not null,
+  n    integer not null,
+  primary key (day, what)
+);
 `
 
 export async function openDb ({ databaseUrl, dataDir }) {

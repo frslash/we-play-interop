@@ -291,6 +291,9 @@ function says (e) {
     case 'join': return `joined${p.projects?.length ? ' for ' + p.projects.map(projectName).join(', ') : ''}.`
     case 'delegate': return `let an agent act for them: ${p.scope.join(', ')}, until ${new Date(e.document.expiresAt).toLocaleDateString()}.`
     case 'repos': return `linked GitHub repositories: ${p.repos.map((r) => r.name).join(', ')}.`
+    case 'linkGeb': return p.end ? 'unlinked their Geb identity.' : 'linked their Geb identity.'
+    case 'gebRoom': return `opened the room's Geb room, ${p.name}.`
+    case 'gebRelayed': return p.text
     case 'revoke': return 'revoked an agent.'
     case 'remove': return `removed ${nameOf(p.agent)}.`
     case 'note': return p.kind === 'message' ? p.text : `${p.kind}: ${p.text}`
@@ -310,7 +313,7 @@ function says (e) {
     default: return name
   }
 }
-const who = (e) => e.author === e.onBehalfOf ? nameOf(e.author) : `${nameOf(e.author)} for ${nameOf(e.onBehalfOf)}`
+const who = (e) => NAME_OF[e.type] === 'gebRelayed' ? `${nameOf(e.document.payload.member)} (in Geb)` : e.author === e.onBehalfOf ? nameOf(e.author) : `${nameOf(e.author)} for ${nameOf(e.onBehalfOf)}`
 
 // ---------- small shared pieces ----------
 const wayName = (id) => B?.ways?.find((w) => w.id === id)?.name ?? id
@@ -563,6 +566,11 @@ function shareGrip (e, bubble) {
 }
 function chatItem (e) {
   const name = NAME_OF[e.type], d = e.document, p = d.payload
+  if (name === 'gebRelayed') { // said in the room's Geb room by a linked member; the room wrote it here, naming them (src/server/geb.js)
+    const bubble = chatItem({ ...e, author: p.member, onBehalfOf: p.member, type: TYPES.note, document: { ...d, payload: { kind: 'message', text: p.text } } })
+    bubble?.querySelector('.who .time')?.before(h('span', { class: 'badge geb', title: 'Said in the room\'s Geb room' }, 'in Geb'), ' ')
+    return bubble
+  }
   const time = h('span', { class: 'time' }, ago(e.timestamp))
   const techLine = tech(h('div', { class: 'tech-line' }, `${name}${p.kind ? ':' + p.kind : ''} · #${e.seq} · ${e.hash.slice(0, 12)} · ${short(e.author)}`))
   const system = (text) => h('div', { class: 'sys' }, text, ' ', time, techLine)
@@ -1166,6 +1174,44 @@ function lostKeyPanel (mine) {
     !S.hosts?.length ? h('p', { class: 'meta' }, 'This room has no host named yet (ROOM_HOSTS), so the last step waits until it has one.') : null)
 }
 
+// InWove on Geb (src/server/geb.js, docs/geb.md): linking your own Geb identity, in two proofs: a code the room gives you,
+// sent from that identity to the room over Geb, then your own signed line. Shown while the room is on Geb; for now to a host only.
+function gebPanel () {
+  const g = S.geb
+  if (!g?.running || !joined() || !(S.hosts ?? []).includes(me.did)) return null
+  const mine = person(me.did)?.gebDid
+  const copyable = (text) => h('div', { class: 'row geb-cmd' }, h('code', { class: 'grow' }, text), h('button', { class: 'btn tiny', onclick: () => (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject(new Error('no clipboard'))).then(() => toast('Copied.'), () => toast('Select it and copy it by hand.')) }, 'Copy'))
+  if (mine) {
+    return h('div', { class: 'card' }, h('h2', null, 'Geb'),
+      h('p', { class: 'why' }, 'Your Geb identity is linked. What is said in People and AIs reaches the room\'s Geb room, and what you say there shows here. People only lines never go to Geb.'),
+      g.paused ? h('p', { class: 'gate-error' }, `Nothing is going out to Geb right now: ${g.paused}.`) : null,
+      tech(h('p', { class: 'meta' }, h('code', null, mine))),
+      h('div', { class: 'row' }, h('button', { class: 'btn small', onclick: async () => { if (confirm('Unlink your Geb identity? You leave the room\'s Geb room; your InWove membership stays as it is.') && await post('linkGeb', { did: mine, end: true })) toast('Unlinked.') } }, 'Unlink')))
+  }
+  const box = h('div')
+  const check = async () => {
+    const r = await api('/api/geb/link-code')
+    if (!r.body?.proven) return toast(r.body?.waiting ? 'The room has not heard your code yet. Send it, then press Link it again.' : 'Your code ran out. Get a new one.')
+    if (!confirm(`Link this Geb identity to your InWove name?\n\n${r.body.did}`)) return
+    if (await post('linkGeb', { did: r.body.did })) toast('Linked. You are in the room\'s Geb room.')
+  }
+  const start = async (ev) => {
+    const btn = ev.currentTarget; btn.disabled = true
+    const r = await api('/api/geb/link-code', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    btn.disabled = false
+    if (!r.ok) return toast(r.body?.error ?? 'No code right now. Try again in a moment.')
+    fill(box, h('ol', { class: 'geb-steps' },
+      h('li', null, 'In Geb, ask to talk to the room:', copyable(`geb connect ${g.roomDid}`)),
+      h('li', null, 'Send the room this code within ten minutes:', copyable(`geb send ${g.roomDid} ${r.body.code}`)),
+      h('li', null, 'Then come back here: ', h('button', { class: 'btn primary small', onclick: check }, 'Link it'))))
+  }
+  fill(box, h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: start }, 'Get a code')))
+  return h('div', { class: 'card' }, h('h2', null, 'Link your Geb identity'),
+    h('p', { class: 'why' }, 'Link your own Geb identity, and the room\'s Geb room stays in step with People and AIs here, both ways. People only lines never go to Geb. The host of this room can read the Geb room too, as it can read everything said here.'),
+    h('p', { class: 'meta' }, 'For now only the room\'s host can link. Members can once the room has the go-ahead.'),
+    box)
+}
+
 function renderYou () {
   const el = $('#tab-you')
   const origin = S.publicUrl || location.origin // the address others can reach (PUBLIC_URL), not necessarily this one
@@ -1228,6 +1274,7 @@ function renderYou () {
         } }, 'Leave the room')),
       h('details', null, h('summary', null, 'Forget this key in this browser'), h('button', { class: 'btn danger small', onclick: () => { if (confirm('Remove your key from this browser? Without a backup you cannot act as yourself here again.')) { store.set('wpi.seed', null); me = null; render() } } }, 'Forget my key'))),
     ...(session ? memberCards({ me, origin, session, toast, redraw: renderYou }) : []),
+    gebPanel(),
     cardPanel(mine),
     h('div', { class: 'card', id: 'agents' }, h('h2', null, 'Your agents'),
       h('p', { class: 'why' }, 'Your agent acts only with the permission you signed: what it may do, until when. Approving, vetoing and bringing agents stay with you.'),

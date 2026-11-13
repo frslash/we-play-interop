@@ -9,6 +9,8 @@ import { asSeen, canSee, headFor, hiddenFromAgents, isPerson } from './audience.
 import { createGithubLink } from './github-link.js'
 import { createAgentReads } from './agent-read.js'
 import { clearFirstInvite, ensureFirstInvite } from './invites.js'
+import { GebBridge, GEB_LINK_HOSTS_ONLY } from './geb.js'
+import { GebCli } from './geb-cli.js'
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -127,7 +129,7 @@ function workspaceIdentity (config) {
  * `openRoom` is for tests only: no gate (every request is a person, with no DID) and a join needs no invite. It is an
  * argument, never read from the environment or a file, so a running room cannot be started open.
  */
-export async function createApp (config = defaultConfig, { openRoom = false, resolver = createResolver(), gh, wakeFetch, apFetch, awayGatherMs, hostWelcomeMs = 3000, sources, shelf, githubFetch } = {}) {
+export async function createApp (config = defaultConfig, { openRoom = false, resolver = createResolver(), gh, wakeFetch, apFetch, awayGatherMs, hostWelcomeMs = 3000, sources, shelf, githubFetch, gebNode } = {}) {
   const identity = workspaceIdentity(config)
   const db = await openDb(config)
   const log = new Log({ db, identity, resolver, config, openRoom: openRoom === true })
@@ -173,6 +175,11 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
   ctx.never = new NeverLists({ db })
   await ctx.never.load()
   log.guards = [(doc) => secretIn(doc.payload), (doc, principal) => ctx.never.check(principal, doc.payload)]
+  // InWove on Geb (geb.js, docs/geb.md): the room's own Geb identity keeps one Geb room in step with this one. On only when
+  // the room has a Geb identity (GEB_HOME and GEB_ROOM_DID, both, or the start stops and says which is missing); tests pass a fake node.
+  const geb = gebNode ?? (config.gebHome || config.gebRoomDid ? new GebCli({ bin: config.gebBin, home: config.gebHome, did: config.gebRoomDid }) : null)
+  ctx.geb = geb ? new GebBridge({ ctx, node: geb }) : null
+  if (ctx.geb) log.on('entry', (e) => ctx.geb.onEntry(e))
   weaver.skip = () => ctx.check.dids() // the check walks the path; it is not part of the conversation
   ctx.facilitator = new Facilitator({ ctx }) // the board of steps toward the held goals (facilitate mode)
   weaver.facilitator = ctx.facilitator
@@ -292,6 +299,17 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
     if (path === '/api/map' || path === '/api/board') return send(res, 200, views.mapView(ctx))
     if (path === '/api/resources') return send(res, 200, views.resourcesView(ctx, q))
     if (path === '/api/log') return send(res, 200, views.entries(ctx, q, req.inwoveViewer))
+    if (path === '/api/geb' || path === '/api/geb/link-code') { // InWove on Geb: where the room stands, and a person linking their own Geb identity
+      const v = req.inwoveViewer, me = v?.kind === 'human' ? v.did : null
+      if (!me) return send(res, 403, { error: 'Only a person in the room can see this.' })
+      if (!ctx.geb) return send(res, 200, { running: false })
+      const host = config.hosts?.includes(me)
+      if (path === '/api/geb') return send(res, 200, { ...ctx.geb.status(), mine: log.state.gebLinks.get(me)?.did ?? null, ...(host ? { counts: await ctx.geb.tally() } : {}) }, { 'cache-control': 'no-store' })
+      if (GEB_LINK_HOSTS_ONLY && !host) return send(res, 403, { error: 'For now only the room\'s host links a Geb identity.' })
+      if (!ctx.geb.running) return send(res, 503, { error: 'The room\'s Geb bridge is not running right now.' })
+      if (req.method === 'POST') return send(res, 200, ctx.geb.linkCode(me), { 'cache-control': 'no-store' })
+      return send(res, 200, ctx.geb.linkStatus(me), { 'cache-control': 'no-store' })
+    }
     if (path === '/api/messages') return send(res, 200, views.messages(ctx, req.inwoveViewer?.did ? { ...q, me: req.inwoveViewer.did } : openRoom ? q : { ...q, me: undefined, forMe: undefined }, req.inwoveViewer)) // a caller is only ever themselves: the lines meant for you are the signed-in member's, whatever ?me= says
     if (path === '/api/wait') { // held open until something is for this agent, or the timeout
       const a = await ctx.waits.wait(q)
@@ -532,12 +550,13 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
     timers.push(setInterval(() => executor.tick().catch((e) => console.error('executor:', e)), 30_000))
     if (config.checkEveryMinutes !== 0) ctx.check.start(server.address()?.port)
     await ctx.host.start()
+    if (ctx.geb) await ctx.geb.start().catch((err) => console.error(`Geb: the bridge did not start: ${err.message}`))
     ctx.changes.start()
     ctx.workshop.start()
     ctx.sources.start()
     timers.push(setInterval(() => closeVotes(ctx).catch((e) => console.error('closing votes:', e)), 30_000))
   }
-  ctx.stop = async () => { ctx.waits.stop(); timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.sources.stop(); ctx.shelf.flush(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); for (const r of sse.keys()) r.end(); server.close(); await db.close() }
+  ctx.stop = async () => { await ctx.geb?.stop().catch(() => {}); ctx.waits.stop(); timers.forEach(clearInterval); ctx.check.stop(); ctx.host.stop(); ctx.changes.stop(); ctx.workshop.stop(); ctx.sources.stop(); ctx.shelf.flush(); ctx.cursors.save(); ctx.activitypub.stop(); waker.stop(); ctx.away.stop(); for (const r of sse.keys()) r.end(); server.close(); await db.close() }
   ctx.server = server
   return ctx
 }
@@ -551,6 +570,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     console.log(`${defaultConfig.workspaceName} on :${defaultConfig.port} · workspace ${ctx.identity.did} · ${ctx.db.kind} · ${ctx.log.entries.length} entries`)
     console.log(ctx.llm.configured ? `weaver model: ${ctx.llm.model ?? 'picked at the first round'} via ${ctx.llm.endpoint ?? defaultConfig.llm.baseUrl}` : 'No model key (ANTHROPIC_API_KEY or LLM_API_KEY) is set: the weaver runs its built-in tally instead of a model, and every round says so.')
     if (!defaultConfig.githubToken) console.warn('GITHUB_TOKEN is not set: approved actions are prepared as links for a person to open, and the log says so.')
+    if (!ctx.geb) console.log('Geb: this room is not on Geb (GEB_HOME and GEB_ROOM_DID are not set; docs/geb.md says how).')
   })
   await ctx.start()
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, async () => { await ctx.stop(); process.exit(0) })
