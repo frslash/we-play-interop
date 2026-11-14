@@ -310,6 +310,7 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
       if (req.method === 'POST') return send(res, 200, ctx.geb.linkCode(me), { 'cache-control': 'no-store' })
       return send(res, 200, ctx.geb.linkStatus(me), { 'cache-control': 'no-store' })
     }
+    if (path === '/api/export/public') { const now = new Date(); return send(res, 200, views.publicRecord(ctx, { now }), { 'content-disposition': `attachment; filename="inwove-public-record-${now.toISOString().slice(0, 10)}.json"`, 'cache-control': 'no-store' }) } // the Log tab's download: what the AIs can read, never a People only line
     if (path === '/api/messages') return send(res, 200, views.messages(ctx, req.inwoveViewer?.did ? { ...q, me: req.inwoveViewer.did } : openRoom ? q : { ...q, me: undefined, forMe: undefined }, req.inwoveViewer)) // a caller is only ever themselves: the lines meant for you are the signed-in member's, whatever ?me= says
     if (path === '/api/wait') { // held open until something is for this agent, or the timeout
       const a = await ctx.waits.wait(q)

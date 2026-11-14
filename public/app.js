@@ -294,6 +294,7 @@ function says (e) {
     case 'linkGeb': return p.end ? 'unlinked their Geb identity.' : 'linked their Geb identity.'
     case 'gebRoom': return `opened the room's Geb room, ${p.name}.`
     case 'gebRelayed': return p.text
+    case 'invite': return 'made an invitation.'
     case 'revoke': return 'revoked an agent.'
     case 'remove': return `removed ${nameOf(p.agent)}.`
     case 'note': return p.kind === 'message' ? p.text : `${p.kind}: ${p.text}`
@@ -1072,6 +1073,19 @@ function renderMap () {
 // ---------- Log ----------
 function renderLog () {
   const out = h('div')
+  // the public record as a file: what the room's AIs can read (People and AIs), never a People only line (views.js publicRecord)
+  const downloadText = async (ev) => {
+    const btn = ev.currentTarget; btn.disabled = true
+    try {
+      const r = await api('/api/export/public')
+      if (!r.ok || !Array.isArray(r.body?.entries)) return toast('The record could not be downloaded. Try again in a moment.')
+      const when = (iso) => iso.replace('T', ' ').slice(0, 16) + ' UTC'
+      const lines = r.body.entries.map((e) => `${when(e.timestamp)} · ${who(e)}: ${String(says(e) ?? '').replace(/\n/g, '\n    ')}`)
+      const head = `${r.body.room || 'InWove'}: the public record\nDownloaded ${when(r.body.exportedAt)}. Every line the room's AIs can read, with who said it and when. People only lines are left out.\n\n`
+      const a = h('a', { href: URL.createObjectURL(new Blob([head + lines.join('\n') + '\n'], { type: 'text/plain' })), download: `inwove-public-record-${r.body.exportedAt.slice(0, 10)}.txt` })
+      a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+    } finally { btn.disabled = false }
+  }
   const verifyHere = async () => {
     fill(out, h('p', { class: 'meta' }, 'Downloading and checking…'))
     const all = []
@@ -1087,6 +1101,8 @@ function renderLog () {
     h('div', { class: 'card' }, h('h2', null, 'The record'),
       h('p', { class: 'why' }, 'Everything anyone does here is signed and chained, so nobody can quietly change what was said. Anyone can check the whole record.'),
       tech(h('p', { class: 'why' }, 'Each entry is a Trust Task document (eddsa-jcs-2022) in a SHA-256 hash chain: author, onBehalfOf, parent, timestamp, and the workspace\'s witness signature.')),
+      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: downloadText }, 'Download the public record'), tech(h('a', { class: 'btn', href: '/api/export/public', download: '' }, 'Signed lines (JSON)'))),
+      h('p', { class: 'meta' }, 'The public record is everything the room’s AIs can read: every line in People and AIs, with who said it and when. People only lines are left out. Once it is downloaded, the file can go anywhere, so share it with care.'),
       h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: verifyHere }, 'Check it in this browser'), tech(h('a', { class: 'btn', href: '/api/verify', target: '_blank' }, 'Server check'), ' ', h('a', { class: 'btn', href: '/api/log', target: '_blank' }, 'Raw JSON'))), out),
     h('div', { class: 'card plain-only' }, h('ul', { class: 'plain' }, feed.slice(0, 80).map((e) => h('li', { class: 'feed-item' }, h('strong', null, who(e)), h('span', { class: 'meta' }, ago(e.timestamp)), h('span', { class: 'what' }, says(e)))))),
     h('div', { class: 'card tech-only' }, h('ul', { class: 'plain' }, feed.slice(0, 80).map((e) => h('li', null, h('details', null,
