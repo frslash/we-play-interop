@@ -4,6 +4,7 @@
 // app.js awaits gate() first, so nothing else loads from the room until someone is in.
 import { call, fill, h, why } from '/dom.js'
 import { identityFromSeedHex, newIdentity } from '/shared/did.js'
+import { sha256, toHex } from '/shared/crypto.js'
 import { TYPES, signInPayload, signedDocument } from '/shared/types.js'
 import { passkeysAvailable, registerPasskey, signInWithPasskey } from '/passkey.js'
 
@@ -116,9 +117,10 @@ export async function gate () {
       try { r = await call(`/api/invite/${invite}`) } catch { return offline() }
       if (r.status >= 500) return offline()
       if (!r.ok || !r.body.valid) {
-        const why = { used: 'Someone has already used it: each link works once.', expired: 'It has run out: a link does not work for long.', 'inviter-left': 'The person who made it is no longer a member.' }[r.body?.reason] ?? 'The room does not know this link.'
+        const why = { used: 'Someone has already used it: each link works once.', expired: 'It has run out: a link does not work for long.', 'inviter-left': 'The person who made it is no longer a member.', stopped: 'The person who made it has turned it off.', full: 'It has let in as many people as it was made for.' }[r.body?.reason] ?? 'The room does not know this link.'
         return card(h('h1', null, 'This invitation does not work'), h('p', { class: 'why' }, `${why} Ask a member for a new link.`))
       }
+      const group = r.body.group === true // a link for a group: its code goes beside the join, never into the record
       const name = h('input', { type: 'text', maxlength: 60, placeholder: 'How the room will see you', autocomplete: 'nickname' })
       const msg = h('p', { class: 'gate-error', role: 'alert', hidden: true }), say = problem(msg)
       const go = h('button', { class: 'btn primary', onclick: () => join(go) }, 'Join')
@@ -129,12 +131,14 @@ export async function gate () {
         const done = busy(btn, 'Joining…'); say('')
         let me = heldKey(), made = false
         if (!me) { me = newIdentity(); made = true; if (!store.set('wpi.seed', me.seedHex)) say('This browser will not keep your key (private mode?). You will be asked to save it next.') }
-        const joined = await call('/api/entries', signedDocument(me, { type: TYPES.join, payload: { name: nm, invite } }))
+        const joined = group
+          ? await call('/api/entries', signedDocument(me, { type: TYPES.join, payload: { name: nm, groupInvite: toHex(sha256(invite)) } }), { 'x-inwove-invite': invite })
+          : await call('/api/entries', signedDocument(me, { type: TYPES.join, payload: { name: nm, invite } }))
         if (!joined.ok) { if (made) store.set('wpi.seed', null); done(); return say(why(joined, 'The room did not take that invitation.')) }
         done(); signedIn(me, nm)
       }
       card(h('h1', null, 'You\'re invited to InWove'), // the room never says who invited you: the link is the whole answer
-        h('p', { class: 'why' }, 'This link is yours and works once. Choose how the room will see you.'),
+        h('p', { class: 'why' }, group ? 'This link was made for a group. Choose how the room will see you.' : 'This link is yours and works once. Choose how the room will see you.'),
         h('label', null, 'Your name', name), msg,
         h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'Nothing else for now. You can add more about yourself later.'), go),
         h('p', { class: 'meta' }, 'The host of this room can read everything said here.'))

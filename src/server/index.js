@@ -192,11 +192,11 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
    * someone who leaves deleted). POST /api/entries and the Trust Task door both come here, so they check, refuse and
    * act alike. Returns { entry, duplicate, hosted? } or throws a TaskError.
    */
-  ctx.acceptEntry = async (doc, { ip = '', origin = config.publicUrl } = {}) => {
+  ctx.acceptEntry = async (doc, { ip = '', origin = config.publicUrl, inviteCode = null } = {}) => {
     if (NAME_OF[doc?.type] === 'wake') throw new TaskError('malformedRequest', 'send wake settings to /api/wake, with the link')
     const isHost = NAME_OF[doc?.type] === 'host'
     if (isHost && hosted.liveFor(doc.issuer, log.state) >= MAX_HOSTED) throw new TaskError('permissionDenied', `you already have ${MAX_HOSTED} hosted agents; stop one first`, { status: 403 })
-    const { entry, duplicate } = await log.accept(doc, { ip })
+    const { entry, duplicate } = await log.accept(doc, { ip, inviteCode })
     if (NAME_OF[doc.type] === 'join' && !duplicate) clearFirstInvite(config) // a first member is in: the room's own invite is dead, and its file goes
     if (isHost && !duplicate) {
       // the workspace makes and holds the agent's key, and says so in the log
@@ -482,7 +482,8 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
       let doc
       try {
         doc = JSON.parse(await readBody(req))
-        const { entry, duplicate, hosted: made } = await ctx.acceptEntry(doc, { ip: ipOf(req), origin: baseOf(req) })
+        const code = req.headers['x-inwove-invite'] // a group link's code rides beside a join, never inside the signed line (log.js)
+        const { entry, duplicate, hosted: made } = await ctx.acceptEntry(doc, { ip: ipOf(req), origin: baseOf(req), inviteCode: typeof code === 'string' && /^[A-Za-z0-9_-]{22,64}$/.test(code) ? code : null })
         return send(res, duplicate ? 200 : 201, made ? { ...entry, hosted: made } : entry)
       } catch (err) { return refuse(res, err, doc) }
     }

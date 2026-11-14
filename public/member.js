@@ -1,5 +1,5 @@
 // The person's own controls in the You tab: passkeys (listed, added, removed), where they are signed in, inviting someone,
-// their membership pass, signing out.
+// for the room's host a link for a group, their membership pass, signing out.
 // app.js gives it what it already holds (the person's key, the room's address); nothing here holds state
 // the room needs. A link made here is shown while the page stays open: the room keeps only a hash of its code.
 import { call, fill, h, why } from '/dom.js'
@@ -12,10 +12,13 @@ import { passkeysAvailable, registerPasskey } from '/passkey.js'
 const INVITE = TYPES.invite ?? 'urn:we-play-interop:tasks:spec:member:invite:0.1'
 const DAYS = 7
 const madeLinks = [] // newest first; kept only in this page
+const madeGroupLinks = [] // the same for links made for a group
+const GROUP_DAYS = 7, GROUP_DAYS_MAX = 13 // a group link lasts to the end of a day the host picks: a week unless they say, under the room's 14-day most
 
-/** The cards for a member who is signed in. `me`: their key (or null when this browser has none); `origin`: the room's public address. */
-export function memberCards ({ me, origin, session, toast, redraw }) {
-  return [host(), passkeys(), signedInHere(), inviting(), pass(), signOut()]
+/** The cards for a member who is signed in. `me`: their key (or null when this browser has none); `origin`: the room's public address; `hosts`: the room's hosts' DIDs. */
+export function memberCards ({ me, origin, session, toast, redraw, hosts = [] }) {
+  const isHost = Boolean(me && hosts.includes(me.did))
+  return [host(), passkeys(), signedInHere(), inviting(), isHost ? groupLink() : null, pass(), signOut()].filter(Boolean)
 
   function host () {
     const who = session?.room?.host
@@ -102,12 +105,73 @@ export function memberCards ({ me, origin, session, toast, redraw }) {
       me ? null : h('p', { class: 'meta' }, 'Inviting needs your key, and this browser does not have it yet.'),
       msg, h('div', { class: 'row' }, make),
       madeLinks.length ? h('p', { class: 'meta' }, 'Copy a link now: it is shown only while this page stays open.') : null,
-      madeLinks.map(({ link }) => h('div', { class: 'invite-made' },
-        h('input', { type: 'text', readonly: true, value: link, 'aria-label': 'Invitation link', onfocus: (ev) => ev.currentTarget.select() }),
-        h('div', { class: 'row' },
-          h('button', { class: 'btn small', onclick: () => (navigator.clipboard ? navigator.clipboard.writeText(link) : Promise.reject()).then(() => toast('Link copied.'), () => toast('Select the link and copy it by hand.')) }, 'Copy'),
-          typeof navigator.share === 'function' ? h('button', { class: 'btn small', onclick: () => navigator.share({ title: 'An invitation', text: 'You are invited to InWove.', url: link }).catch(() => {}) }, 'Share') : null),
-        h('img', { class: 'qr small', src: `/api/qr.svg?text=${encodeURIComponent(link)}`, alt: 'QR code of the invitation link' }))))
+      madeLinks.map(({ link }) => linkShown(link)))
+  }
+
+  function linkShown (link, label = 'Invitation link') {
+    return h('div', { class: 'invite-made' },
+      h('input', { type: 'text', readonly: true, value: link, 'aria-label': label, onfocus: (ev) => ev.currentTarget.select() }),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn small', onclick: () => (navigator.clipboard ? navigator.clipboard.writeText(link) : Promise.reject()).then(() => toast('Link copied.'), () => toast('Select the link and copy it by hand.')) }, 'Copy'),
+        typeof navigator.share === 'function' ? h('button', { class: 'btn small', onclick: () => navigator.share({ title: 'An invitation', text: 'You are invited to InWove.', url: link }).catch(() => {}) }, 'Share') : null),
+      h('img', { class: 'qr small', src: `/api/qr.svg?text=${encodeURIComponent(link)}`, alt: `QR code of the ${label.toLowerCase()}` }))
+  }
+
+  // a link for a group (the room's host only): everyone it reaches can join until the day picked, until it is turned off,
+  // or until it has let in the most it was made for; each person still joins with their own key, under their own name
+  function groupLink () {
+    const msg = h('p', { class: 'gate-error', role: 'alert', hidden: true })
+    const day = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
+    const forWho = h('input', { type: 'text', maxlength: 60, placeholder: 'e.g. the retreat group chat' })
+    const until = h('input', { type: 'date', min: day(0), max: day(GROUP_DAYS_MAX), value: day(GROUP_DAYS) })
+    const most = h('input', { type: 'number', min: 2, max: 1000, step: 1, placeholder: 'No limit', inputmode: 'numeric' })
+    const list = h('div', { class: 'member-list' }, h('p', { class: 'meta' }, 'Loading your group links…'))
+    const say = (text) => { msg.textContent = text; msg.hidden = !text }
+    const load = async () => {
+      let r; try { r = await call('/api/group-links') } catch { r = null }
+      if (!r?.ok || !Array.isArray(r.body?.links)) return fill(list, h('p', { class: 'meta' }, 'Your group links could not be loaded. Try again in a moment.'))
+      fill(list, r.body.links.length ? r.body.links.map(row) : h('p', { class: 'meta' }, 'No group links yet.'))
+    }
+    const STATE = { open: (l) => `Works until ${when(l.expiresAt)}`, stopped: (l) => `Turned off ${when(l.stoppedAt)}`, full: () => 'Full: it let in as many people as it was made for', ended: (l) => `Ended ${when(l.expiresAt)}`, 'maker gone': () => 'Stopped: the person who made it is no longer a member' }
+    const row = (l) => h('div', { class: 'row member-item' },
+      h('div', { class: 'grow' }, h('strong', null, l.name),
+        h('div', { class: 'meta' }, `${(STATE[l.state] ?? STATE.ended)(l)} · ${l.joined.length}${l.max ? ` of ${l.max}` : ''} joined`),
+        l.joined.length ? h('details', null, h('summary', null, 'Who joined through it'), h('ul', { class: 'plain' }, l.joined.map((j) => h('li', null, `${j.name || 'Someone'}, ${when(j.at)}`)))) : null),
+      l.state === 'open' ? h('button', { class: 'btn small', onclick: async (ev) => {
+        if (!confirm(`Turn off the link for "${l.name}"? Nobody else can join with it. The people who joined through it stay members.`)) return
+        const btn = ev.currentTarget; btn.disabled = true; say('')
+        const out = await call('/api/entries', signedDocument(me, { type: TYPES.inviteStop, payload: { invite: l.hash } })).catch(() => null)
+        if (!out?.ok) { btn.disabled = false; return say(out ? why(out, 'That link could not be turned off.') : 'That link could not be turned off. Try again in a moment.') }
+        toast('Link turned off.'); load()
+      } }, 'Turn off') : null)
+    const make = h('button', { class: 'btn primary', onclick: async (ev) => {
+      const name = forWho.value.trim(), [y, m, d] = until.value.split('-').map(Number), max = most.value.trim() ? Number(most.value) : null
+      if (!name) { forWho.focus(); return say('Say who the link is for, so you can tell your links apart.') }
+      if (!y || !m || !d) { until.focus(); return say('Pick the last day the link works.') }
+      if (max !== null && !(Number.isInteger(max) && max >= 2 && max <= 1000)) { most.focus(); return say('The most people it lets in: a whole number from 2 to 1000, or leave it empty.') }
+      const expiresAt = new Date(y, m - 1, d, 23, 59, 59)
+      if (expiresAt.getTime() <= Date.now()) { until.focus(); return say('Pick a day that has not ended yet.') }
+      const btn = ev.currentTarget; btn.disabled = true; say('')
+      try {
+        const code = b64url(crypto.getRandomValues(new Uint8Array(16)))
+        const r = await call('/api/entries', signedDocument(me, { type: INVITE, payload: { codeHash: toHex(sha256(code)), expiresAt: expiresAt.toISOString(), group: { name, ...(max ? { max } : {}) } } }))
+        if (!r.ok) return say(why(r, 'The room did not take that link.'))
+        madeGroupLinks.unshift({ link: `${origin}/i/${code}`, name })
+        madeGroupLinks.length = Math.min(madeGroupLinks.length, 2)
+        redraw()
+      } finally { btn.disabled = false }
+    } }, 'Make a group link')
+    load()
+    return h('div', { class: 'card' }, h('h2', null, 'A link for a group'),
+      h('p', { class: 'why' }, 'Make one link to post in a group chat. Everyone who opens it can join until the day you pick, each with their own passkey and their own name. Anyone the link is passed on to can join too, so post it only where you mean to. You can turn it off at any time, and the people who joined stay members.'),
+      h('p', { class: 'meta' }, 'Only the room\'s host can make these. Everyone in the room sees which link a person joined through.'),
+      h('label', null, 'Who it\'s for', forWho),
+      h('label', null, 'Last day it works', until),
+      h('label', null, 'Stop after this many people join (optional)', most),
+      msg, h('div', { class: 'row' }, make),
+      madeGroupLinks.length ? h('p', { class: 'meta' }, 'Copy the link now: it is shown only while this page stays open. The room keeps only a fingerprint of it.') : null,
+      madeGroupLinks.map(({ link, name }) => h('div', null, h('p', { class: 'meta' }, `For ${name}:`), linkShown(link, 'Group link'))),
+      h('h3', null, 'Your group links'), list)
   }
 
   function pass () {

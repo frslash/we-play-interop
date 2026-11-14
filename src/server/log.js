@@ -23,6 +23,8 @@ const INVITE_WORDS = {
   expired: 'that invite has run out; ask the member who invited you for a new link',
   used: 'that invite was already used; ask the member who invited you for a new link',
   'inviter gone': 'the member who made that invite is no longer in the room; ask another member for a link',
+  stopped: 'that link was turned off by the person who made it; ask a member for a new link',
+  full: 'that link has let in as many people as it was made for; ask a member for a new link',
 }
 
 /** A refusal, answered as a Trust Task error document (trust-task-error). */
@@ -38,7 +40,7 @@ export class Log extends EventEmitter {
     this.openRoom = openRoom === true // tests only (createApp's option): joins need no invite. Never from the environment.
     this.copied = new Map() // hash of a people-only line -> the hash of its shared copy (a line is copied once)
     this.copying = new Set() // originals a copy is being appended for right now, so two copies cannot both pass
-    this.reserved = new Set() // invite codes (hashed) a join is being appended with right now, so two joins cannot spend one invite
+    this.reserved = new Map() // invite code hash -> joins being appended with it right now, so two joins cannot spend one invite, or a group link's last place
     this.db = db; this.identity = identity; this.resolver = resolver; this.config = config
     this.entries = []; this.byHash = new Map(); this.byDocId = new Map()
     this.state = new State()
@@ -104,7 +106,7 @@ export class Log extends EventEmitter {
   }
 
   /** Accept a document from a person or an agent, or throw a TaskError. */
-  async accept (doc, { ip = '', approved = false } = {}) {
+  async accept (doc, { ip = '', approved = false, inviteCode = null } = {}) { // inviteCode: a group link's code, sent beside a join (never in it, so the record never holds a live code)
     const shape = checkShape(doc)
     if (shape) throw new TaskError('malformedRequest', shape)
     const name = NAME_OF[doc.type], st = this.state, now = Date.now()
@@ -166,18 +168,25 @@ export class Log extends EventEmitter {
     // a newcomer may join only with an invite a member (or the room) made that is still good: checked and held in one step, no await between
     let spending = null
     if (name === 'join' && !this.openRoom && !st.isCurrentMember(doc.issuer)) {
-      if (!doc.payload.invite) throw new TaskError('permissionDenied', 'this room is for members: join with the invite link a member gave you', { status: 403 })
-      const ok = st.inviteFor(doc.payload.invite, Date.now()), h = createHash('sha256').update(doc.payload.invite, 'utf8').digest('hex')
+      const group = doc.payload.groupInvite
+      if (!doc.payload.invite && !group) throw new TaskError('permissionDenied', 'this room is for members: join with the invite link a member gave you', { status: 403 })
+      const code = group ? inviteCode : doc.payload.invite
+      if (group && !(typeof code === 'string' && createHash('sha256').update(code, 'utf8').digest('hex') === group)) throw new TaskError('permissionDenied', 'a group link\'s code goes beside the join, and it must be the code of the link this join names: open the link again', { status: 403 })
+      const ok = st.inviteFor(code, Date.now()), h = createHash('sha256').update(code, 'utf8').digest('hex')
       if (!ok.ok) throw new TaskError('permissionDenied', INVITE_WORDS[ok.reason], { status: 403 })
-      if (this.reserved.has(h)) throw new TaskError('permissionDenied', INVITE_WORDS.used, { status: 403 })
-      this.reserved.add(h); spending = h
+      if (!group && ok.invite.group) throw new TaskError('permissionDenied', 'that is a group link: join from its page, so its code stays out of the record', { status: 403 })
+      if (group && !ok.invite.group) throw new TaskError('permissionDenied', 'that link is for one person: join with it as an invite', { status: 403 })
+      const busy = this.reserved.get(h) ?? 0
+      if (!group && busy) throw new TaskError('permissionDenied', INVITE_WORDS.used, { status: 403 })
+      if (group && ok.invite.group.max && ok.invite.joined.length + busy >= ok.invite.group.max) throw new TaskError('permissionDenied', INVITE_WORDS.full, { status: 403 })
+      this.reserved.set(h, busy + 1); spending = h
     }
     if (name === 'note' && doc.payload.copiedFrom) this.copying.add(doc.payload.copiedFrom) // held with no await since the check above
     this.verified = null
     try {
       const entry = await this.#append(doc, { author: doc.issuer, onBehalfOf: principal, delegation: delegation?.hash })
       return { entry, duplicate: false }
-    } finally { if (spending) this.reserved.delete(spending); if (name === 'note' && doc.payload.copiedFrom) this.copying.delete(doc.payload.copiedFrom) }
+    } finally { if (spending) { const n = (this.reserved.get(spending) ?? 1) - 1; if (n > 0) this.reserved.set(spending, n); else this.reserved.delete(spending) } if (name === 'note' && doc.payload.copiedFrom) this.copying.delete(doc.payload.copiedFrom) }
   }
 
   /** A grant carrying its permission as a credential: the person's signature on it, and that it says what the grant says. */
@@ -236,6 +245,16 @@ export class Log extends EventEmitter {
         if (had?.did === p.did) throw new TaskError('permissionDenied', 'that Geb identity is already linked to you', { status: 403 })
         if (!this.gebProof) throw new TaskError('permissionDenied', 'this room is not on Geb yet', { status: 403 })
         if (!this.gebProof(doc.issuer, p.did)) throw new TaskError('permissionDenied', 'the room has not heard your code from that Geb identity: ask for a code, send it to the room over Geb, then link', { status: 403 })
+        break
+      }
+      case 'invite': // a link for a group widens who can get in, so only the room's host makes one
+        if (p.group && !this.config.hosts?.includes(doc.issuer)) throw new TaskError('permissionDenied', this.config.hosts?.length ? 'only the room\'s host makes a link for a group' : 'this room has no host named yet (ROOM_HOSTS), so no one can make a link for a group', { status: 403 })
+        break
+      case 'inviteStop': {
+        const inv = st.inviteLines.get(p.invite)
+        if (!inv) throw new TaskError('malformedRequest', 'no invitation link with that hash')
+        if (inv.by !== doc.issuer && !this.config.hosts?.includes(doc.issuer)) throw new TaskError('permissionDenied', 'only the person who made a link, or the room\'s host, turns it off', { status: 403 })
+        if (inv.stopped) throw new TaskError('permissionDenied', 'that link is already turned off', { status: 403 })
         break
       }
       case 'replace': {

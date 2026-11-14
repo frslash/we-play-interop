@@ -288,13 +288,14 @@ function says (e) {
   const pr = (hsh) => S?.proposals.find((x) => x.hash === hsh)?.title ?? 'a proposal'
   switch (name) {
     case 'genesis': return 'The workspace began.'
-    case 'join': return `joined${p.projects?.length ? ' for ' + p.projects.map(projectName).join(', ') : ''}.`
+    case 'join': return `joined${p.projects?.length ? ' for ' + p.projects.map(projectName).join(', ') : ''}${p.groupInvite && person(e.author)?.joinedThrough ? ` through the link for ${person(e.author).joinedThrough}` : ''}.`
+    case 'invite': return p.group ? `made a link for a group: ${p.group.name}.` : 'made an invitation.'
+    case 'inviteStop': return 'turned off a group link.'
     case 'delegate': return `let an agent act for them: ${p.scope.join(', ')}, until ${new Date(e.document.expiresAt).toLocaleDateString()}.`
     case 'repos': return `linked GitHub repositories: ${p.repos.map((r) => r.name).join(', ')}.`
     case 'linkGeb': return p.end ? 'unlinked their Geb identity.' : 'linked their Geb identity.'
     case 'gebRoom': return `opened the room's Geb room, ${p.name}.`
     case 'gebRelayed': return p.text
-    case 'invite': return 'made an invitation.'
     case 'revoke': return 'revoked an agent.'
     case 'remove': return `removed ${nameOf(p.agent)}.`
     case 'note': return p.kind === 'message' ? p.text : `${p.kind}: ${p.text}`
@@ -1043,6 +1044,7 @@ function showNode (n) {
     openSheet(h('h2', null, n.label),
       c ? h('div', null, c.goals?.length ? h('p', null, h('strong', null, 'Goals: '), c.goals.join(' · ')) : null, c.workingOn ? h('p', null, h('strong', null, 'Working on: '), c.workingOn) : null, c.lookingFor ? h('p', null, h('strong', null, 'Looking for: '), c.lookingFor) : null) : h('p', { class: 'meta' }, 'No card yet.'),
       n.projects?.length ? h('p', { class: 'meta' }, `Part of ${n.projects.map(projectName).join(', ')}`) : null,
+      person(n.id)?.joinedThrough ? h('p', { class: 'meta' }, `Joined through the link for ${person(n.id).joinedThrough}`) : null,
       n.agents?.length ? h('p', { class: 'meta' }, `Agents: ${n.agents.join(', ')}`) : null,
       n.settingUp?.length ? h('p', { class: 'meta' }, `Being set up: ${n.settingUp.join(', ')} (in the room once it first speaks)`) : null,
       tech(h('p', null, h('code', null, n.id))),
@@ -1289,7 +1291,7 @@ function renderYou () {
           if (await post('leave', {})) { store.set('wpi.seed', null); store.set('wpi.links', null); me = null; toast('You have left the room. Everything private is deleted.'); location.replace('/') }
         } }, 'Leave the room')),
       h('details', null, h('summary', null, 'Forget this key in this browser'), h('button', { class: 'btn danger small', onclick: () => { if (confirm('Remove your key from this browser? Without a backup you cannot act as yourself here again.')) { store.set('wpi.seed', null); me = null; render() } } }, 'Forget my key'))),
-    ...(session ? memberCards({ me, origin, session, toast, redraw: renderYou }) : []),
+    ...(session ? memberCards({ me, origin, session, toast, redraw: renderYou, hosts: S.hosts ?? [] }) : []),
     gebPanel(),
     cardPanel(mine),
     h('div', { class: 'card', id: 'agents' }, h('h2', null, 'Your agents'),

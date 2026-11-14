@@ -14,8 +14,8 @@ export function h (tag, attrs, ...kids) {
 export const fill = (el, ...kids) => { el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false)); return el }
 
 /** GET (no body) or POST (a JSON body) to the room. Never throws on an HTTP error: { ok, status, body }. Throws only when the room cannot be reached. */
-export async function call (path, body) {
-  const res = await fetch(path, body === undefined ? { credentials: 'same-origin' } : { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+export async function call (path, body, headers = {}) {
+  const res = await fetch(path, body === undefined ? { credentials: 'same-origin' } : { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) })
   return { ok: res.ok, status: res.status, body: await res.json().catch(() => ({})) }
 }
 
