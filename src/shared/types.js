@@ -242,9 +242,11 @@ export function checkPayload (name, doc) {
       if (!HASH_RE.test(p.codeHash ?? '')) return 'codeHash: the SHA-256 (64 hex characters) of the invite code'
       if (!RFC3339.test(p.expiresAt ?? '')) return 'expiresAt: an RFC 3339 timestamp'
       if (p.group !== undefined) {
-        if (!isObj(p.group) || Object.keys(p.group).some((k) => !['name', 'max'].includes(k))) return 'group: { name, max (optional) }'
+        // max is required while no host can remove a person: a forwarded link lets a stranger in to stay, and the cap bounds
+        // how many a forward can let in (Security 17716). Once removal exists it may go back to optional.
+        if (!isObj(p.group) || Object.keys(p.group).some((k) => !['name', 'max'].includes(k))) return 'group: { name, max }'
         if (!str(p.group.name, 1, 60)) return 'group.name: who the link is for, 1 to 60 characters'
-        if (p.group.max !== undefined && !(Number.isInteger(p.group.max) && p.group.max >= 2 && p.group.max <= 1000)) return 'group.max: the most people it lets in, a whole number from 2 to 1000 (optional)'
+        if (!(Number.isInteger(p.group.max) && p.group.max >= 2 && p.group.max <= 1000)) return 'group.max: the most people it lets in, a whole number from 2 to 1000'
       }
       const ahead = Date.parse(p.expiresAt) - Date.parse(doc.issuedAt)
       return ahead > 0 && ahead <= 14 * 86400000 ? null : 'expiresAt: after issuedAt and within 14 days'

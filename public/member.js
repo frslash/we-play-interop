@@ -126,7 +126,7 @@ export function memberCards ({ me, origin, session, toast, redraw, hosts = [] })
     // no last day is filled in for them, and the cap asks for the group's size: a forwarded link lets in whoever it reaches,
     // so the page suggests the shortest life and the smallest reach that still fits the group (Security 13731, condition 5)
     const until = h('input', { type: 'date', min: day(0), max: day(GROUP_DAYS_MAX) })
-    const most = h('input', { type: 'number', min: 2, max: 1000, step: 1, placeholder: 'The group\'s size', inputmode: 'numeric' })
+    const most = h('input', { type: 'number', min: 2, max: 1000, step: 1, required: true, placeholder: 'The group\'s size', inputmode: 'numeric' })
     const list = h('div', { class: 'member-list' }, h('p', { class: 'meta' }, 'Loading your group links…'))
     const say = (text) => { msg.textContent = text; msg.hidden = !text }
     const load = async () => {
@@ -147,16 +147,16 @@ export function memberCards ({ me, origin, session, toast, redraw, hosts = [] })
         toast('Link turned off.'); load()
       } }, 'Turn off') : null)
     const make = h('button', { class: 'btn primary', onclick: async (ev) => {
-      const name = forWho.value.trim(), [y, m, d] = until.value.split('-').map(Number), max = most.value.trim() ? Number(most.value) : null
+      const name = forWho.value.trim(), [y, m, d] = until.value.split('-').map(Number), max = Number(most.value.trim())
       if (!name) { forWho.focus(); return say('Say who the link is for, so you can tell your links apart.') }
       if (!y || !m || !d) { until.focus(); return say('Pick the last day the link works.') }
-      if (max !== null && !(Number.isInteger(max) && max >= 2 && max <= 1000)) { most.focus(); return say('The most people it lets in: a whole number from 2 to 1000, or leave it empty.') }
+      if (!(Number.isInteger(max) && max >= 2 && max <= 1000)) { most.focus(); return say('The most people it lets in: a whole number from 2 to 1000.') }
       const expiresAt = new Date(y, m - 1, d, 23, 59, 59)
       if (expiresAt.getTime() <= Date.now()) { until.focus(); return say('Pick a day that has not ended yet.') }
       const btn = ev.currentTarget; btn.disabled = true; say('')
       try {
         const code = b64url(crypto.getRandomValues(new Uint8Array(16)))
-        const r = await call('/api/entries', signedDocument(me, { type: INVITE, payload: { codeHash: toHex(sha256(code)), expiresAt: expiresAt.toISOString(), group: { name, ...(max ? { max } : {}) } } }))
+        const r = await call('/api/entries', signedDocument(me, { type: INVITE, payload: { codeHash: toHex(sha256(code)), expiresAt: expiresAt.toISOString(), group: { name, max } } }))
         if (!r.ok) return say(why(r, 'The room did not take that link.'))
         madeGroupLinks.unshift({ link: `${origin}/i/#${code}`, name }) // after the #: a browser never sends it, so no proxy or Referer sees the code
         madeGroupLinks.length = Math.min(madeGroupLinks.length, 2)
@@ -170,8 +170,8 @@ export function memberCards ({ me, origin, session, toast, redraw, hosts = [] })
       h('label', null, 'Who it\'s for', forWho),
       h('label', null, 'Last day it works', until),
       h('p', { class: 'meta' }, 'The group\'s last day together is a good choice, such as the end of the retreat.'),
-      h('label', null, 'Stop after this many people join (optional)', most),
-      h('p', { class: 'meta' }, 'The group\'s size is a good choice. Leave it empty for no limit.'),
+      h('label', null, 'Stop after this many people join', most),
+      h('p', { class: 'meta' }, 'The group\'s size is a good choice.'),
       msg, h('div', { class: 'row' }, make),
       madeGroupLinks.length ? h('p', { class: 'meta' }, 'Copy the link now. It\'s shown only while this page is open. The room doesn\'t keep the link itself, so it can\'t show it to you again.') : null,
       madeGroupLinks.map(({ link, name }) => h('div', null, h('p', { class: 'meta' }, `For ${name}:`), linkShown(link, 'Group link'))),

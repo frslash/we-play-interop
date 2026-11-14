@@ -21,7 +21,7 @@ describe('a link for a group', () => {
 
   const days = (n) => new Date(Date.now() + n * 86400000).toISOString()
   /** The host (or someone) makes a group link. Answers { code, line, r }. */
-  const makeLink = async (by = host.id, group = { name: 'Retreat' }, expiresAt = days(3)) => {
+  const makeLink = async (by = host.id, group = { name: 'Retreat', max: 10 }, expiresAt = days(3)) => {
     const code = newCode(), r = await room.say(by, 'invite', { codeHash: hashOf(code), expiresAt, group })
     return { code, line: r.body?.hash, r }
   }
@@ -87,7 +87,7 @@ describe('a link for a group', () => {
   })
 
   test('turning it off: the host stops it, nobody else joins, and the people who joined stay members', async () => {
-    const { code, line } = await makeLink(host.id, { name: 'To stop' })
+    const { code, line } = await makeLink(host.id, { name: 'To stop', max: 5 })
     const guest = newIdentity(); assert.equal((await joinVia(code, 'Stays', guest)).status, 201)
     assert.equal((await room.say(member.id, 'inviteStop', { invite: line })).status, 403, 'a member who neither made it nor hosts cannot')
     assert.equal((await room.say(host.id, 'inviteStop', { invite: line })).status, 201)
@@ -106,10 +106,17 @@ describe('a link for a group', () => {
   })
 
   test('a group link lives at most 14 days, and says who it is for', async () => {
-    assert.equal((await makeLink(host.id, { name: 'Too long' }, days(15))).r.status, 400)
-    assert.equal((await makeLink(host.id, { name: '' })).r.status, 400)
+    assert.equal((await makeLink(host.id, { name: 'Too long', max: 5 }, days(15))).r.status, 400)
+    assert.equal((await makeLink(host.id, { name: '', max: 5 })).r.status, 400)
     assert.equal((await makeLink(host.id, { name: 'One', max: 1 })).r.status, 400)
-    assert.equal((await makeLink(host.id, { name: 'Odd', extra: true })).r.status, 400)
+    assert.equal((await makeLink(host.id, { name: 'Odd', max: 5, extra: true })).r.status, 400)
+  })
+
+  test('a group link must carry a cap while nobody can be removed: one with no max is refused', async () => {
+    const r = (await makeLink(host.id, { name: 'No cap' })).r
+    assert.equal(r.status, 400)
+    assert.match(r.body.payload.message, /group\.max/)
+    assert.equal((await makeLink(host.id, { name: 'Zero', max: 0 })).r.status, 400)
   })
 
   test('the host\'s card lists each link, its state and who joined through it; nobody else sees it', async () => {
@@ -125,7 +132,7 @@ describe('a link for a group', () => {
   })
 
   test('the people list shows who joined through a link, to everyone in the room', async () => {
-    const { code } = await makeLink(host.id, { name: 'Shown' })
+    const { code } = await makeLink(host.id, { name: 'Shown', max: 5 })
     const guest = newIdentity(); await joinVia(code, 'Shown guest', guest)
     const s = await room.call('/api/state', { cookie: member.cookie })
     assert.equal(s.body.people.find((p) => p.did === guest.did)?.joinedThrough, 'Shown')
@@ -134,7 +141,7 @@ describe('a link for a group', () => {
   test('when its maker leaves, their group link stops working', async () => {
     room.config.hosts = [host.id.did, member.id.did]
     try {
-      const leaver = member, { code } = await makeLink(leaver.id, { name: 'Leaver\'s' })
+      const leaver = member, { code } = await makeLink(leaver.id, { name: 'Leaver\'s', max: 5 })
       assert.equal((await room.say(leaver.id, 'leave', {})).status, 201)
       assert.deepEqual(await lookup(code), { valid: false, reason: 'inviter-left' })
     } finally { room.config.hosts = [host.id.did] }
