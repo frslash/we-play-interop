@@ -29,7 +29,12 @@ async function keySignIn (me) {
 export async function gate () {
   const root = document.getElementById('welcome')
   const open = () => { document.body.classList.remove('gated'); root.hidden = true }
-  const invite = /^\/i\/([A-Za-z0-9_-]{16,64})\/?$/.exec(location.pathname)?.[1] ?? null
+  // an invitation's code: a group link carries it after the # (/i/#<code>), which a browser never sends anywhere, so it never
+  // reaches a proxy's log or a Referer; it is read here and cleared from the address bar at once. A one-person link may still
+  // carry it in the path (/i/<code>).
+  const fromHash = /^\/i\/?$/.test(location.pathname) ? /^#([A-Za-z0-9_-]{16,64})$/.exec(location.hash)?.[1] ?? null : null
+  if (fromHash) history.replaceState(null, '', '/i/')
+  const invite = fromHash ?? /^\/i\/([A-Za-z0-9_-]{16,64})\/?$/.exec(location.pathname)?.[1] ?? null
   let session
   try { session = await call('/api/session') } catch { session = null }
   if (session?.ok && typeof session.body?.signedIn !== 'boolean') session = null // not the answer a members-only room gives: treat it as not answering, never as an open door
@@ -114,7 +119,7 @@ export async function gate () {
     async function invitation () {
       card(h('p', { class: 'why' }, 'Checking your invitation…'))
       let r
-      try { r = await call(`/api/invite/${invite}`) } catch { return offline() }
+      try { r = await call('/api/invite', { code: invite }) } catch { return offline() } // the code in the body, never a URL
       if (r.status >= 500) return offline()
       if (!r.ok || !r.body.valid) {
         const why = { used: 'Someone has already used it: each link works once.', expired: 'It has run out: a link does not work for long.', 'inviter-left': 'The person who made it is no longer a member.', stopped: 'The person who made it has turned it off.', full: 'It has let in as many people as it was made for.' }[r.body?.reason] ?? 'The room does not know this link.'
@@ -138,7 +143,7 @@ export async function gate () {
         done(); signedIn(me, nm)
       }
       card(h('h1', null, 'You\'re invited to InWove'), // the room never says who invited you: the link is the whole answer
-        h('p', { class: 'why' }, group ? 'This link was made for a group. Choose how the room will see you.' : 'This link is yours and works once. Choose how the room will see you.'),
+        h('p', { class: 'why' }, group ? 'This link was made for a group. Choose how the room will see you. Everyone in the room will see that you joined through this link.' : 'This link is yours and works once. Choose how the room will see you.'),
         h('label', null, 'Your name', name), msg,
         h('div', { class: 'row' }, h('span', { class: 'grow meta' }, 'Nothing else for now. You can add more about yourself later.'), go),
         h('p', { class: 'meta' }, 'The host of this room can read everything said here.'))

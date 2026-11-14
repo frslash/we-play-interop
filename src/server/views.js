@@ -13,6 +13,15 @@ import { asSeen, canSee, headFor, hiddenFromAgents, isPeopleOnly, isPerson } fro
 export const PUBLIC_RECORD_FORMAT = 'inwove-public-record'
 
 /**
+ * The one room notice, written by the room before the first download can happen, so people who posted in People and AIs
+ * before the button existed hear it once, in the room (Legal 12928 condition 2, Marketing's words). Written at start-up
+ * when someone has already said something there and the notice isn't in the record yet (index.js).
+ */
+export const DOWNLOAD_NOTICE = 'New: any member can now download the People and AIs record, every line the room\u2019s AIs can read, with who said it and when. That includes what\u2019s already been said here. People only lines aren\u2019t in it.'
+export const hasDownloadNotice = (log) => log.entries.some((e) => e.author === log.state.workspace && e.document?.payload?.text === DOWNLOAD_NOTICE)
+export const needsDownloadNotice = (log) => !hasDownloadNotice(log) && log.entries.some((e) => e.author !== log.state.workspace && NAME_OF[e.type] === 'note' && e.document.payload?.audience !== 'people')
+
+/**
  * The public record, as a file a member downloads (Log tab): every line the room's AIs can read, which is everything in
  * "People and AIs", with who said it and when. People only lines are left out, and so is every trace of them: they are
  * read here exactly as an agent reads the log (audience.js), so a line that followed one names the nearest earlier line

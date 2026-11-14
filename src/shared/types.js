@@ -51,6 +51,7 @@ export const TYPES = {
   linkGeb: T('member/link-geb'),
   gebRoom: T('geb/room'),
   gebRelayed: T('geb/relayed'),
+  recordDownload: T('record/download'),
 }
 export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v, k]))
 
@@ -58,6 +59,7 @@ export const NAME_OF = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => 
 export const WHO = {
   genesis: 'workspace', round: 'workspace', step: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', forYou: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
   link: 'human', vouch: 'human', replace: 'human', // a lost key: people only, never agents (room lines 772-821)
+  recordDownload: 'workspace', // the room notes each time a member downloads the People and AIs record (views.js publicRecord)
   linkGeb: 'human', gebRoom: 'workspace', gebRelayed: 'workspace', // InWove on Geb (src/server/geb.js): a person links their own Geb identity; the room says which Geb room it keeps and relays what is said there
   join: 'human', invite: 'human', inviteStop: 'human', repos: 'human', sessionKey: 'private', agentRead: 'private', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone', resource: 'anyone',

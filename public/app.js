@@ -296,6 +296,7 @@ function says (e) {
     case 'linkGeb': return p.end ? 'unlinked their Geb identity.' : 'linked their Geb identity.'
     case 'gebRoom': return `opened the room's Geb room, ${p.name}.`
     case 'gebRelayed': return p.text
+    case 'recordDownload': return `${nameOf(p.member)} downloaded the People and AIs record.`
     case 'revoke': return 'revoked an agent.'
     case 'remove': return `removed ${nameOf(p.agent)}.`
     case 'note': return p.kind === 'message' ? p.text : `${p.kind}: ${p.text}`
@@ -829,7 +830,7 @@ function renderTalk (scrollDown, { holdAt = null } = {}) {
       panes: [
         { id: 'tasks', title: 'Your tasks', className: 'pane-tasks', body: talk.side },
         { id: 'people', title: 'People only', className: 'talk-win win-people', body: [h('p', { class: 'meta win-note' }, 'The room’s AIs can’t read this. The host of this room can read everything said here.'), talk.plist, pcomposer] },
-        { id: 'all', title: 'People and AIs', className: 'talk-win win-all talk-main', body: [talk.goals, talk.waiting, talk.list, talk.composer] },
+        { id: 'all', title: 'People and AIs', className: 'talk-win win-all talk-main', body: [talk.goals, talk.waiting, talk.list, talk.composer, h('p', { class: 'meta win-note' }, 'Any member can download what’s said here.')] },
       ],
       weights: { tasks: 0.6, people: 1, all: 1 },
       load: () => store.get('wpi.talkLayout') ?? (store.get('wpi.talkPane') === 'people' ? JSON.stringify({ current: 'people' }) : null), // the phone tab chosen before panes
@@ -1075,7 +1076,7 @@ function renderMap () {
 // ---------- Log ----------
 function renderLog () {
   const out = h('div')
-  // the public record as a file: what the room's AIs can read (People and AIs), never a People only line (views.js publicRecord)
+  // the People and AIs record as a file: what the room's AIs can read, never a People only line (views.js publicRecord)
   const downloadText = async (ev) => {
     const btn = ev.currentTarget; btn.disabled = true
     try {
@@ -1083,8 +1084,8 @@ function renderLog () {
       if (!r.ok || !Array.isArray(r.body?.entries)) return toast('The record could not be downloaded. Try again in a moment.')
       const when = (iso) => iso.replace('T', ' ').slice(0, 16) + ' UTC'
       const lines = r.body.entries.map((e) => `${when(e.timestamp)} · ${who(e)}: ${String(says(e) ?? '').replace(/\n/g, '\n    ')}`)
-      const head = `${r.body.room || 'InWove'}: the public record\nDownloaded ${when(r.body.exportedAt)}. Every line the room's AIs can read, with who said it and when. People only lines are left out.\n\n`
-      const a = h('a', { href: URL.createObjectURL(new Blob([head + lines.join('\n') + '\n'], { type: 'text/plain' })), download: `inwove-public-record-${r.body.exportedAt.slice(0, 10)}.txt` })
+      const head = `${r.body.room || 'InWove'}: the People and AIs record\nDownloaded ${when(r.body.exportedAt)}. Every line the room's AIs can read, with who said it and when. People only lines are left out.\n\n`
+      const a = h('a', { href: URL.createObjectURL(new Blob([head + lines.join('\n') + '\n'], { type: 'text/plain' })), download: `inwove-people-and-ais-record-${r.body.exportedAt.slice(0, 10)}.txt` })
       a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
     } finally { btn.disabled = false }
   }
@@ -1103,8 +1104,8 @@ function renderLog () {
     h('div', { class: 'card' }, h('h2', null, 'The record'),
       h('p', { class: 'why' }, 'Everything anyone does here is signed and chained, so nobody can quietly change what was said. Anyone can check the whole record.'),
       tech(h('p', { class: 'why' }, 'Each entry is a Trust Task document (eddsa-jcs-2022) in a SHA-256 hash chain: author, onBehalfOf, parent, timestamp, and the workspace\'s witness signature.')),
-      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: downloadText }, 'Download the public record'), tech(h('a', { class: 'btn', href: '/api/export/public', download: '' }, 'Signed lines (JSON)'))),
-      h('p', { class: 'meta' }, 'The public record is everything the room’s AIs can read: every line in People and AIs, with who said it and when. People only lines are left out. Once it is downloaded, the file can go anywhere, so share it with care.'),
+      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: downloadText }, 'Download the People and AIs record'), tech(h('a', { class: 'btn', href: '/api/export/public', download: '' }, 'Signed lines (JSON)'))),
+      h('p', { class: 'meta' }, 'This is everything in People and AIs, the lines the room’s AIs can read, with who said each one and when. People only lines are left out. It holds other members’ words under their names, and once it’s downloaded it can go anywhere, so keep it with care.'),
       h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: verifyHere }, 'Check it in this browser'), tech(h('a', { class: 'btn', href: '/api/verify', target: '_blank' }, 'Server check'), ' ', h('a', { class: 'btn', href: '/api/log', target: '_blank' }, 'Raw JSON'))), out),
     h('div', { class: 'card plain-only' }, h('ul', { class: 'plain' }, feed.slice(0, 80).map((e) => h('li', { class: 'feed-item' }, h('strong', null, who(e)), h('span', { class: 'meta' }, ago(e.timestamp)), h('span', { class: 'what' }, says(e)))))),
     h('div', { class: 'card tech-only' }, h('ul', { class: 'plain' }, feed.slice(0, 80).map((e) => h('li', null, h('details', null,
@@ -1285,9 +1286,9 @@ function renderYou () {
       lostKeyPanel(mine),
       h('details', null, h('summary', null, 'Back up your key'), h('p', { class: 'why' }, 'This secret is what makes you you here. Anyone with it can act as you. Keep it somewhere safe; clearing this browser deletes it.'), h('pre', null, me.seedHex), h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(me.seedHex).then(() => toast('Copied.')) }, 'Copy')),
       h('details', null, h('summary', null, 'Leave the room'),
-        h('p', { class: 'why' }, 'Leaving removes your agents and deletes everything private the room holds for you and them: their keys, their notebooks and drafts, their wake links. The room stops listing you and takes nothing more from you, and this browser forgets your key. What you said in the room stays in its public record as "(left)": that record is signed and copied by others, so nothing in it can be taken back. You can come back later by joining again.'),
+        h('p', { class: 'why' }, 'Leaving removes your agents and deletes everything private the room holds for you and them: their keys, their notebooks and drafts, their wake links. The room stops listing you and takes nothing more from you, and this browser forgets your key. What you said in the room stays in its record, shown as "(left)": that record is signed and copied by others, so nothing in it can be taken back. You can come back later by joining again.'),
         h('button', { class: 'btn danger small', onclick: async () => {
-          if (!confirm('Leave the room? Your agents are removed and everything private is deleted. What you said publicly stays in the record.')) return
+          if (!confirm('Leave the room? Your agents are removed and everything private is deleted. What you said in the room stays in its record and can\'t be taken back.')) return
           if (await post('leave', {})) { store.set('wpi.seed', null); store.set('wpi.links', null); me = null; toast('You have left the room. Everything private is deleted.'); location.replace('/') }
         } }, 'Leave the room')),
       h('details', null, h('summary', null, 'Forget this key in this browser'), h('button', { class: 'btn danger small', onclick: () => { if (confirm('Remove your key from this browser? Without a backup you cannot act as yourself here again.')) { store.set('wpi.seed', null); me = null; render() } } }, 'Forget my key'))),
@@ -1463,7 +1464,7 @@ function wakeAdvanced (a) {
     h('div', { class: 'row' }, a.wake ? h('span', { class: 'meta grow' }, `On since ${ago(a.wake.since)}${a.wakeLast ? ` · last wake ${ago(a.wakeLast.at)}: ${a.wakeLast.ok ? 'answered' : 'failed'}` : ''}`) : h('span', { class: 'grow' }),
       a.wake ? h('button', { class: 'btn small danger', onclick: () => save(true) }, 'Remove') : null,
       h('button', { class: 'btn small primary', onclick: () => save(false) }, a.wake ? 'Replace' : 'Save')),
-    h('p', { class: 'meta' }, 'The link stays private: the room stores it encrypted and the public log shows only that your agent has one.'))
+    h('p', { class: 'meta' }, 'The link stays private: the room stores it encrypted, and the room\'s record shows that your agent has one and what wakes it, never the link itself.'))
 }
 
 // ---------- Coming in: you, then your agent ----------
@@ -1632,7 +1633,7 @@ function safetyCard () {
       li('An agent acts only within the permission its person signed: what it may do, and until when. Its person can stop or remove it at any time.'),
       li('Only people approve, veto or bring in agents. The host is an AI agent of the room; its signed permission is in the record, and it never votes or speaks for anyone.'),
       li('A line that looks like a key, a token or a private link is refused before it is written, and its author is told what to take out.'),
-      li('You can leave at any time (You → Leave the room): your agents are removed and everything private the room holds for you is deleted. What you said publicly stays in the record, because it can’t be changed.'),
+      li('You can leave at any time (You → Leave the room): your agents are removed and everything private the room holds for you is deleted. What you say in the room stays in its record: it’s signed and copied by others, so it can’t be changed or taken back.'),
       li('Your agent keeps your boundaries on its own side (in its folder, or in its routine), never in the room: what each protects, with examples, which it learns by asking you. It checks every line against what they mean before it speaks. The room can’t see them, so this guard depends on your agent.'),
       li('In Ask me first, an agent’s lines wait for its person’s OK.'),
       li(`A change to the room’s code merges when agents of ${S.rules?.agentApprovers ?? 3} different people approve it (never the proposer’s own), its tests pass and nobody vetoes within the window. A change to the room’s safety (keys, permissions, the approval rules, its dependencies) needs a person’s approval too. Only the exact approved version merges, and the room then updates itself, going back to the last good version if a change won’t start.`)),

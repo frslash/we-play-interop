@@ -13,7 +13,7 @@ const INVITE = TYPES.invite ?? 'urn:we-play-interop:tasks:spec:member:invite:0.1
 const DAYS = 7
 const madeLinks = [] // newest first; kept only in this page
 const madeGroupLinks = [] // the same for links made for a group
-const GROUP_DAYS = 7, GROUP_DAYS_MAX = 13 // a group link lasts to the end of a day the host picks: a week unless they say, under the room's 14-day most
+const GROUP_DAYS_MAX = 13 // a group link lasts to the end of a day the host picks (none is filled in for them), under the room's 14-day most
 
 /** The cards for a member who is signed in. `me`: their key (or null when this browser has none); `origin`: the room's public address; `hosts`: the room's hosts' DIDs. */
 export function memberCards ({ me, origin, session, toast, redraw, hosts = [] }) {
@@ -123,8 +123,10 @@ export function memberCards ({ me, origin, session, toast, redraw, hosts = [] })
     const msg = h('p', { class: 'gate-error', role: 'alert', hidden: true })
     const day = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
     const forWho = h('input', { type: 'text', maxlength: 60, placeholder: 'e.g. the retreat group chat' })
-    const until = h('input', { type: 'date', min: day(0), max: day(GROUP_DAYS_MAX), value: day(GROUP_DAYS) })
-    const most = h('input', { type: 'number', min: 2, max: 1000, step: 1, placeholder: 'No limit', inputmode: 'numeric' })
+    // no last day is filled in for them, and the cap asks for the group's size: a forwarded link lets in whoever it reaches,
+    // so the page suggests the shortest life and the smallest reach that still fits the group (Security 13731, condition 5)
+    const until = h('input', { type: 'date', min: day(0), max: day(GROUP_DAYS_MAX) })
+    const most = h('input', { type: 'number', min: 2, max: 1000, step: 1, placeholder: 'The group\'s size', inputmode: 'numeric' })
     const list = h('div', { class: 'member-list' }, h('p', { class: 'meta' }, 'Loading your group links…'))
     const say = (text) => { msg.textContent = text; msg.hidden = !text }
     const load = async () => {
@@ -156,20 +158,22 @@ export function memberCards ({ me, origin, session, toast, redraw, hosts = [] })
         const code = b64url(crypto.getRandomValues(new Uint8Array(16)))
         const r = await call('/api/entries', signedDocument(me, { type: INVITE, payload: { codeHash: toHex(sha256(code)), expiresAt: expiresAt.toISOString(), group: { name, ...(max ? { max } : {}) } } }))
         if (!r.ok) return say(why(r, 'The room did not take that link.'))
-        madeGroupLinks.unshift({ link: `${origin}/i/${code}`, name })
+        madeGroupLinks.unshift({ link: `${origin}/i/#${code}`, name }) // after the #: a browser never sends it, so no proxy or Referer sees the code
         madeGroupLinks.length = Math.min(madeGroupLinks.length, 2)
         redraw()
       } finally { btn.disabled = false }
     } }, 'Make a group link')
     load()
     return h('div', { class: 'card' }, h('h2', null, 'A link for a group'),
-      h('p', { class: 'why' }, 'Make one link to post in a group chat. Everyone who opens it can join until the day you pick, each with their own passkey and their own name. Anyone the link is passed on to can join too, so post it only where you mean to. You can turn it off at any time, and the people who joined stay members.'),
-      h('p', { class: 'meta' }, 'Only the room\'s host can make these. Everyone in the room sees which link a person joined through.'),
+      h('p', { class: 'why' }, 'Make one link to post in a group chat. Everyone who opens it can join until the day you pick, or until as many people as you set have joined, each with their own passkey and their own name. Anyone the link is passed on to can join too, so post it only where you mean to. You can turn it off at any time, and the people who joined stay members.'),
+      h('p', { class: 'meta' }, 'Only the room\'s host can make group links. Everyone in the room sees which link a person joined through.'),
       h('label', null, 'Who it\'s for', forWho),
       h('label', null, 'Last day it works', until),
+      h('p', { class: 'meta' }, 'The group\'s last day together is a good choice, such as the end of the retreat.'),
       h('label', null, 'Stop after this many people join (optional)', most),
+      h('p', { class: 'meta' }, 'The group\'s size is a good choice. Leave it empty for no limit.'),
       msg, h('div', { class: 'row' }, make),
-      madeGroupLinks.length ? h('p', { class: 'meta' }, 'Copy the link now: it is shown only while this page stays open. The room keeps only a fingerprint of it.') : null,
+      madeGroupLinks.length ? h('p', { class: 'meta' }, 'Copy the link now. It\'s shown only while this page is open. The room doesn\'t keep the link itself, so it can\'t show it to you again.') : null,
       madeGroupLinks.map(({ link, name }) => h('div', null, h('p', { class: 'meta' }, `For ${name}:`), linkShown(link, 'Group link'))),
       h('h3', null, 'Your group links'), list)
   }

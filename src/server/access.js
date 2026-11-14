@@ -20,6 +20,13 @@ export async function createAccess (ctx, { send: sendIt, readBody, refuse: refus
   const challenges = ctx.challenges = new Challenges()
   const calls = new Limiter({ max: config.signInPerMinute ?? 60 }) // sign-in calls per address per minute: a person signs in a few times a day, and each sign-in is two calls
   const lookups = new Limiter({ max: config.signInPerMinute ?? 60 }) // invite lookups per address per minute: a code is 128 random bits, this only keeps the room quiet
+  // wrong invite codes (a lookup or a group join the room doesn't know) per address per minute, and how many there were:
+  // a group link stays live and can be forwarded, so guessing at codes is slowed and counted (Security 13731, condition 4)
+  const misses = ctx.inviteMisses = new Limiter({ max: config.inviteMissesPerMinute ?? 10 })
+  ctx.inviteMissCount = { lookup: 0, join: 0, slowed: 0 }
+  const missedTooOften = (ip) => { const t = Date.now(), recent = (misses.hits.get(ip) ?? []).filter((x) => x > t - misses.windowMs); return recent.length >= misses.max }
+  ctx.inviteMissed = (ip, where) => { ctx.inviteMissCount[where] = (ctx.inviteMissCount[where] ?? 0) + 1; misses.hit(ip) }
+  ctx.inviteMissedTooOften = missedTooOften
   // every answer here returns true: the request is handled (the room's own send and refuse return nothing)
   const send = (...a) => { sendIt(...a); return true }
   const refuse = (...a) => { refuseIt(...a); return true }
@@ -77,9 +84,19 @@ export async function createAccess (ctx, { send: sendIt, readBody, refuse: refus
         return await begin(res, credential.did, { did: credential.did, name: nameOf(credential.did), wrappedSeed: credential.wrappedSeed })
       }
       if (path === '/api/invite' || path.startsWith('/api/invite/')) {
-        if (req.method !== 'GET') return send(res, 405, { error: 'GET only' })
-        if (!lookups.hit(ipOf(req))) return tooMany(res)
-        const r = st().inviteFor(path.slice(12)) // valid or not, and why not: never who made it, and nothing else about it
+        // the page asks with POST /api/invite { code }, so a code never sits in a URL (a group link's stays live: Security 13731,
+        // condition 2). The older GET /api/invite/<code> still answers for a one-person link, and never for a group one.
+        const inBody = path === '/api/invite'
+        if (inBody ? req.method !== 'POST' : req.method !== 'GET') return send(res, 405, { error: inBody ? 'POST only' : 'GET only' })
+        const ip = ipOf(req)
+        if (missedTooOften(ip)) { ctx.inviteMissCount.slowed++; return tooMany(res) }
+        if (!lookups.hit(ip)) return tooMany(res)
+        let code = path.slice(12)
+        if (inBody) { try { code = JSON.parse(await readBody(req))?.code } catch { code = null } }
+        if (typeof code !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(code)) return send(res, 400, { error: 'Send the code from your invitation link.' }, { 'cache-control': 'no-store' })
+        let r = st().inviteFor(code) // valid or not, and why not: never who made it, and nothing else about it
+        if (!r.ok && r.reason === 'unknown') ctx.inviteMissed(ip, 'lookup') // a code the room doesn't know: counted, and slowed per address
+        if (!inBody && (r.invite?.group || (!r.ok && st().findInvite(code)?.group))) r = { ok: false, reason: 'unknown' } // a group code in a URL is answered as unknown: its page asks by POST
         return send(res, 200, r.ok ? { valid: true, ...(r.invite.group ? { group: true } : {}) } : { valid: false, reason: REASONS[r.reason] ?? r.reason }, { 'cache-control': 'no-store' }) // a group link says it is one, so the page words it right
       }
 
@@ -121,6 +138,7 @@ export async function createAccess (ctx, { send: sendIt, readBody, refuse: refus
         if (!config.hosts?.includes(me)) return send(res, 403, { error: 'Only the room\'s host sees the links for groups.' }, { 'cache-control': 'no-store' })
         const now = Date.now(), links = [...st().invites.values()].filter((i) => i.group).sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, GROUP_LINKS_SHOWN)
         return send(res, 200, {
+          wrongCodes: { ...ctx.inviteMissCount }, // counts only: wrong codes looked up or joined with since the room started, and how often an address was slowed
           links: links.map((i) => {
             const state = i.stopped ? 'stopped' : i.dead || !st().isCurrentMember(i.by) ? 'maker gone' : i.group.max && i.joined.length >= i.group.max ? 'full' : Date.parse(i.expiresAt) <= now ? 'ended' : 'open'
             return { hash: i.hash, name: i.group.name, max: i.group.max ?? null, by: nameOf(i.by), at: i.at, expiresAt: i.expiresAt, state, stoppedAt: i.stopped?.at ?? null, joined: i.joined.map((j) => ({ name: nameOf(j.did), at: j.at })) }
