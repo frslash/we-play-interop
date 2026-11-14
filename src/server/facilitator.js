@@ -209,10 +209,27 @@ export const decided = (s) => (s?.decision && s.decision.stateKey === stateKey(s
 export const BUGFIX = /\b(fix(es|ed)?|bug|broken|regress(ion)?|crash(es)?|fails?|failing|wrong)\b/i
 /** A step an agreement made (from) was voted in the room already; one nobody agreed (the weaver's own) must serve a goal. */
 export const servesAGoal = (s) => Boolean(s.goal || s.test || s.from || BUGFIX.test(s.title ?? ''))
-export const isParked = (s) => Boolean(decided(s)?.parked)
+/** The step's words: when they change, the noes said to it and its parking no longer hold. */
+export const wordsKey = (s) => `${norm(s?.title)}|${norm(s?.done)}|${norm(s?.needs)}`
+/** The noes said to the step as it now reads ({ by, why, at, entry }), newest last. */
+export const declinesOf = (s) => (Array.isArray(s?.declines) ? s.declines.filter((d) => d?.by && d.key === wordsKey(s)) : [])
+/** Parked by the weaver: every active agent said no to the step as it now reads. It waits on what its label says. */
+export const parkedOn = (s) => (s?.parkedOn && s.parkedOn.key === wordsKey(s) ? s.parkedOn : null)
+export const isParked = (s) => Boolean(decided(s)?.parked || parkedOn(s))
+/** What a step nobody here can take waits on, from its own words and the reasons given: a host, a relay, keys, or a person's yes. */
+export const waitsOn = (s, whys = []) => {
+  const t = [s?.needs, ...whys, s?.title, s?.done].filter(Boolean).join(' \n ')
+  if (/\bhost(s|ed|ing)?\b|\bserver\b|\bdomain\b|\bdeploy/i.test(t)) return 'a host'
+  if (/\brelay|\bmediator\b/i.test(t)) return 'a relay'
+  if (/\bkeys?\b|\bcredential|\btoken\b|\bsecret|\baccount\b|\bwallet\b/i.test(t)) return 'keys'
+  if (/\b(person|people|human|someone['’]s (yes|ok|approval)|approv|sign[- ]?off|consent|permission)\b/i.test(t)) return 'a person’s yes'
+  return 'someone who can take it'
+}
+/** A plain "I can take it", at the start of a line: it brings a parked step back. */
+export const TAKES = /^\W*(i\s+(can|could|will|['’]ll)\s+(take|do|build|handle|pick up|own)\b|i['’]ll\s+(take|do|build|handle)\b|i['’]?m\s+(on it|taking it|happy to take)\b|mine\b|let me take\b|(give|hand|send)\s+it\s+to\s+me\b)/i
 const sameAsk = (a, b) => String(a ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '') === String(b ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '')
 const median = (xs) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2 }
-const FIELDS = ['goal', 'title', 'done', 'owner', 'state', 'from', 'sources', 'test', 'needs', 'waitingOn', 'offeredTo', 'previousOwner', 'chases', 'chasedAt', 'lastWordAt', 'result', 'evidence', 'checkedBy', 'checkAsked', 'checkAskedAt', 'agreedAt', 'words', 'aside', 'replaced', 'checkDeclined', 'decision', 'reopens', 'stuck', 'decided', 'blockedAt', 'askedAt', 'askedKey', 'settled']
+const FIELDS = ['goal', 'title', 'done', 'owner', 'state', 'from', 'sources', 'test', 'needs', 'waitingOn', 'offeredTo', 'previousOwner', 'chases', 'chasedAt', 'lastWordAt', 'result', 'evidence', 'checkedBy', 'checkAsked', 'checkAskedAt', 'agreedAt', 'words', 'aside', 'replaced', 'checkDeclined', 'decision', 'reopens', 'stuck', 'decided', 'blockedAt', 'askedAt', 'askedKey', 'settled', 'declines', 'parkedOn']
 
 export const ROUND_PROMPT = `Facilitate mode: you drive the held goals to done; you do not propose new directions. Goals come first: what moves a held goal's done-test comes before work on the room's own process (its rules, its board, its code), which matters only when it blocks a goal or a person asks for it. The board ("board") holds the steps in work: each has a goal, what done looks like, an owner and a state (${STEP_STATES.join(', ')}). The code keeps the board, the timers and the chasing; you only judge two things and write their words:
 "vague": lines in newInputs that claim progress, a result or a plan for a step or a goal but leave out the exact thing someone would need to check it or act on it: the method, a spec link, a test value, the file or the command. Give {"entry":"<hash from newInputs>","missing":"method|spec link|test value|file|command","ask":"<one short, friendly question that asks for exactly that>"}. Only real gaps, at most two; never small talk, greetings or lines that already give the thing.
@@ -260,6 +277,7 @@ export class Facilitator {
         await this.closeAgreements(now, did)
         await this.askForTests(now, did)
         await this.goalTests(now, did)
+        await this.unparkChanged(now, did)
         await this.chase(now, did)
         await this.offerChecks(now, did)
         await this.askForChecks(now, did)
@@ -329,6 +347,8 @@ export class Facilitator {
       // a plain reply in a step's thread is a word from whoever wrote it
       const s = this.steps().find((x) => x.thread === e.document.threadId)
       if (!s || e.seq < s.seq) continue // a reply from before the step last changed is already counted in it
+      // a parked step comes back the moment someone says they can take it
+      if (parkedOn(s) && !s.owner && TAKES.test(String(p.text ?? ''))) { await this.unpark(s, e, now); did.heard++; continue }
       // a plain no from someone asked to check it: the next checker is asked at once, and a no to the kind of work is remembered
       if (s.state === 'result posted' && (s.checkAsked ?? []).includes(e.author) && !(s.checkDeclined ?? []).includes(e.author) && REFUSES.test(String(p.text ?? ''))) {
         await this.write(s, { checkDeclined: [...(s.checkDeclined ?? []), e.author] }, 'check declined', e, { heard: true })
@@ -425,9 +445,45 @@ export class Facilitator {
   async decline (s, e, to, now) {
     const asked = s.owner ?? s.offeredTo
     if (GENERAL.test(String(e.document.payload.text ?? '')) && this.st.isAgent(asked) && sameSide(this.st, e.author, asked)) await this.note(asked, [kindKey({ ask: 'take', code: isCodeStep(s) })], null, e)
-    const back = await this.write(s, { owner: null, offeredTo: null, previousOwner: asked, state: 'open', chases: 0, lastWordAt: e.timestamp }, 'declined', e, { heard: true })
+    // the no is kept on the step with its reason, and holds until the step's words change
+    const no = { by: asked, why: clip(e.document.payload.text, 300), at: e.timestamp, entry: e.hash, key: wordsKey(s) }
+    const declines = [...declinesOf(s).filter((d) => !sameSide(this.st, d.by, asked)), no].slice(-30)
+    const back = await this.write(s, { owner: null, offeredTo: null, previousOwner: asked, state: 'open', chases: 0, lastWordAt: e.timestamp, declines }, 'declined', e, { heard: true })
     if (to) return this.handTo(back, to, e, now)
-    return this.offer(back, null, now)
+    if (await this.offer(back, null, now)) return true
+    return this.park(this.st.steps.get(back.id) ?? back, now)
+  }
+
+  /** Every active agent here said no to the step (or isn't here for its kind of work): it is parked, labelled with what it waits on, said once. */
+  async park (s, now = Date.now()) {
+    const st = this.st
+    if (!s || parkedOn(s) || s.owner || s.offeredTo || s.state !== 'open') return false
+    const noes = declinesOf(s), said = new Set(noes.map((d) => person(st, d.by))), kind = { ask: 'take', code: isCodeStep(s) }, skip = this.skip()
+    const active = [...st.participants.values()].filter((p) => p.kind === 'agent' && !p.removed && !skip.includes(p.did) && st.activeDelegation(p.did) && !this.ctx.builder?.is(p.did))
+    if (!noes.length || !active.length || !active.every((p) => said.has(person(st, p.did)) || this.avoids(p.did, kind))) return false // someone here may still take it: it waits on the board
+    const label = waitsOn(s, noes.map((d) => d.why))
+    const next = await this.write(s, { parkedOn: { label, at: new Date(now).toISOString(), key: wordsKey(s) } }, 'parked', null)
+    const names = [...new Set(noes.map((d) => st.nameOf(d.by)))]
+    await this.speak(`Parked: ${this.label(next)}. Every agent here said no (${names.join(', ')}), so it waits on ${label}. I won’t offer it again. It comes back the moment someone says here they can take it, or the step changes.`, 'parked', [next], { thread: next.thread })
+    return next
+  }
+
+  /** Someone said they can take a parked step: it comes back, offered to them (an agent), or open for anyone to claim. */
+  async unpark (s, e, now = Date.now()) {
+    const st = this.st, who = e?.author ?? null, agent = who && st.isAgent(who) && !this.ctx.builder?.is(who)
+    const declines = declinesOf(s).filter((d) => !who || !sameSide(st, d.by, who)) // their own earlier no no longer holds
+    const back = await this.write(s, { parkedOn: null, declines, ...(agent ? { offeredTo: who, chasedAt: new Date(now).toISOString() } : {}), chases: 0, ...(e ? { lastWordAt: e.timestamp } : {}) }, 'unparked', e, { heard: Boolean(e) })
+    await this.speak(`${this.label(back)} is back on the board${who ? `: ${st.nameOf(who)} says they can take it` : ': the step changed'}.${agent ? ` ${st.nameOf(who)}, claim it with the step tool.` : ' Claim it with the step tool.'}`, 'unparked', [back], { thread: back.thread })
+    return back
+  }
+
+  /** A parked step whose words changed since it was parked comes back by itself, and is offered again. */
+  async unparkChanged (now, did) {
+    for (const s of this.steps()) {
+      if (!s.parkedOn || parkedOn(s)) continue
+      const back = await this.unpark(s, null, now)
+      if (await this.offer(back, null, now)) did.offered.push(back.id)
+    }
   }
 
   /** Hand a step to someone the room named: a builder takes it on (the board starts it); anyone else is offered it. */
@@ -448,7 +504,7 @@ export class Facilitator {
     if (!step || e.seq < step.seq || whyNot(step, s, who, (d) => person(st, d))) return null // older than the step's last change, or not allowed: it changes nothing
     const words = { lastWordAt: e.timestamp, chases: 0 }, heard = { heard: true }
     switch (s.say) {
-      case 'claim': return this.write(step, { ...words, owner: who, state: 'claimed', offeredTo: null, aside: false }, 'claimed', e, heard)
+      case 'claim': return this.write(step, { ...words, owner: who, state: 'claimed', offeredTo: null, aside: false, parkedOn: null }, 'claimed', e, heard)
       case 'update': return this.write(step, { ...words, state: step.state === 'claimed' ? 'in progress' : step.state, waitingOn: null }, 'update', e, heard)
       case 'result': {
         const evidence = s.evidence ?? []
@@ -593,6 +649,7 @@ export class Facilitator {
       if (!next) continue
       this.checksOfferedAt = now
       if (await this.offer(next, null, now, { not: holding })) { did.offered.push(next.id); return }
+      await this.park(next, now) // every agent here said no to it: parked, said once, not offered again
     }
   }
 
@@ -779,12 +836,15 @@ export class Facilitator {
   /** Offer a step to another agent: listening now if one is, of another person than whoever had it, not already busy. */
   async offer (step, because, now = Date.now(), { not = [] } = {}) {
     const st = this.st
-    if (step.needs) return false // a step that needs someone's keys, account or host is never handed to a different agent
-    const before = [step.previousOwner, step.offeredTo, ...not].filter(Boolean)
+    if (step.needs || parkedOn(step)) return false // a step that needs someone's keys, account or host is never handed to a different agent; a parked one is not offered
+    const noes = declinesOf(step)
+    const before = [step.previousOwner, step.offeredTo, ...noes.map((d) => d.by), ...not].filter(Boolean) // whoever said no to it, as it reads now, is never asked again
     const pick = this.candidates(before, { ask: 'take', code: isCodeStep(step) })[0]
     if (!pick) return false
     const next = await this.write(step, { offeredTo: pick, chases: 0, chasedAt: new Date(now).toISOString() }, 'offered', because)
-    await this.speak(`${st.nameOf(pick)}: will you take ${this.label(next)}?${step.previousOwner ? ` ${st.nameOf(step.previousOwner)} had it and went quiet.` : ''} Done when: ${clip(next.done, 300)} Claim it with the step tool, or say no.`, 'offer', [next], { thread: next.thread })
+    const no = step.previousOwner && noes.find((d) => sameSide(st, d.by, step.previousOwner))
+    const had = !step.previousOwner ? '' : no ? ` ${st.nameOf(step.previousOwner)} said no: ${clip(no.why, 160).replace(/[.!]$/, '')}.` : ` ${st.nameOf(step.previousOwner)} had it and went quiet.`
+    await this.speak(`${st.nameOf(pick)}: will you take ${this.label(next)}?${had} Done when: ${clip(next.done, 300)} Claim it with the step tool, or say no.`, 'offer', [next], { thread: next.thread })
     return true
   }
 
@@ -952,6 +1012,8 @@ export class Facilitator {
     if (s.settled) return s.state === 'checked' ? `Done: ${s.settled}.` : `Set aside: ${s.settled}.`
     if (s.state === 'checked') return `Checked by ${n(s.checkedBy)}.`
     if (d?.parked) return `Parked${d.provisional ? ' provisionally' : ''} by ${n(d.by)}: ${clip(d.why, 200).replace(/\.$/, '')}.`
+    const p = parkedOn(s)
+    if (p) return `Parked: waits on ${p.label}. Every agent here said no (${[...new Set(declinesOf(s).map((x) => n(x.by)))].join(', ')}). Say in its thread if you can take it.`
     const base = this.whereNow(s)
     return d && !s.waitingOn ? `${base} Decided${d.provisional ? ' provisionally' : ''} by ${n(d.by)}${d.for ? ` for ${n(d.for)}` : ''}: ${clip(d.choice, 160)}.` : base
   }
@@ -1055,7 +1117,7 @@ export class Facilitator {
   // ---------- what the page and the agents read ----------
   view (now = Date.now()) {
     const st = this.st, n = (d) => (d ? st.nameOf(d) : null)
-    const card = (s) => ({ id: s.id, thread: s.thread, goal: s.goal, goalTitle: s.goal ? st.proposals.get(s.goal)?.title ?? null : null, title: s.title, done: s.done, state: s.state, owner: s.owner ?? null, ownerName: n(s.owner), offeredTo: s.offeredTo ?? null, offeredToName: n(s.offeredTo), waitingOn: s.waitingOn ? { ...s.waitingOn, name: n(s.waitingOn.who) } : null, test: s.test ?? null, from: s.from ?? null, result: s.result ?? null, evidence: s.evidence ?? [], checkedBy: s.checkedBy ?? null, checkedByName: n(s.checkedBy), decision: s.decision ? { choice: s.decision.choice, parked: Boolean(s.decision.parked), why: s.decision.why, asked: s.decision.asked ?? null, by: s.decision.by, byName: n(s.decision.by), for: s.decision.for ?? null, forName: n(s.decision.for), held: s.decision.held ?? null, provisional: Boolean(s.decision.provisional), entry: s.decision.entry, at: s.decision.at, holds: Boolean(decided(s)) } : null, parked: isParked(s), aside: Boolean(s.aside), openedAt: s.openedAt, at: s.at, lastWordAt: s.lastWordAt ?? null, where: this.where(s) })
+    const card = (s) => ({ id: s.id, thread: s.thread, goal: s.goal, goalTitle: s.goal ? st.proposals.get(s.goal)?.title ?? null : null, title: s.title, done: s.done, state: s.state, owner: s.owner ?? null, ownerName: n(s.owner), offeredTo: s.offeredTo ?? null, offeredToName: n(s.offeredTo), waitingOn: s.waitingOn ? { ...s.waitingOn, name: n(s.waitingOn.who) } : null, test: s.test ?? null, from: s.from ?? null, result: s.result ?? null, evidence: s.evidence ?? [], checkedBy: s.checkedBy ?? null, checkedByName: n(s.checkedBy), decision: s.decision ? { choice: s.decision.choice, parked: Boolean(s.decision.parked), why: s.decision.why, asked: s.decision.asked ?? null, by: s.decision.by, byName: n(s.decision.by), for: s.decision.for ?? null, forName: n(s.decision.for), held: s.decision.held ?? null, provisional: Boolean(s.decision.provisional), entry: s.decision.entry, at: s.decision.at, holds: Boolean(decided(s)) } : null, parked: isParked(s), parkedOn: parkedOn(s) ? { label: parkedOn(s).label, at: parkedOn(s).at } : null, declined: declinesOf(s).map((x) => ({ by: x.by, byName: n(x.by), why: x.why, at: x.at })), aside: Boolean(s.aside), openedAt: s.openedAt, at: s.at, lastWordAt: s.lastWordAt ?? null, where: this.where(s) })
     const goals = this.heldGoals().map((g) => { const t = this.testOf(g.hash); return { hash: g.hash, title: g.title, test: t.map(card), checked: t.filter((s) => s.state === 'checked').length } })
     const twelve = now - 12 * 3600_000, inWindow = (t) => t && Date.parse(t) >= twelve
     const all = [...this.steps(), ...st.stepsDone]
