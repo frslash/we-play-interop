@@ -41,7 +41,8 @@ export class State {
     this.lastRoundAt = 0
     this.score = null // latest score snapshot payload
     this.scoreHistory = [] // compact score history from every snapshot
-    this.invites = new Map() // sha256 hex of an invite code -> { hash, by, at, expiresAt, usedBy, usedAt }: who may come in, and the ones already used up
+    this.invites = new Map() // sha256 hex of an invite code -> { hash, by, at, expiresAt, usedBy, usedAt, group, joined, stopped }: who may come in, and the ones already used up
+    this.inviteLines = new Map() // the hash of the line that made an invite -> the same invite (a stop names the line, never the code)
     this.mapProjects = new Map() // slug -> project the workspace added or extended
     this.links = new Map() // hash -> a request to link an old name to a new key: { hash, from, old, why, at, vouches: Map(person -> { at, hash }), replacedAt }
     this.tasks = new Map() // task line hash -> { hash, for, by, from, text, at, thread, doneAt, doneBy, doneText }: what someone was asked to do, until they say they did
@@ -87,12 +88,15 @@ export class State {
   humanCount () { let n = 0; for (const p of this.participants.values()) if (p.kind === 'human' && !p.left && !p.replacedBy) n++; return n }
   /**
    * Whether an invite code lets someone in right now: { ok: true, invite } or { ok: false, reason }. The code must be one
-   * a current member (or the room) wrote, still in date and not used. Reasons: unknown, expired, used, inviter gone.
+   * a current member (or the room) wrote, still in date and not used. Reasons: unknown, stopped, used, full, expired, inviter gone.
+   * A group link (`group`) is not used up by a join: it lets people in until it ends, is stopped, or has let in `group.max`.
    */
   inviteFor (code, now = Date.now()) {
     const inv = this.findInvite(code)
     if (!inv) return { ok: false, reason: 'unknown' }
+    if (inv.stopped) return { ok: false, reason: 'stopped' }
     if (inv.usedBy) return { ok: false, reason: 'used' }
+    if (inv.group?.max && inv.joined.length >= inv.group.max) return { ok: false, reason: 'full' }
     if (Date.parse(inv.expiresAt) <= now) return { ok: false, reason: 'expired' }
     if (inv.dead) return { ok: false, reason: 'inviter gone' } // its maker left or was replaced, even if they are a member again later
     if (inv.by === this.workspace && (inv.replacedBy || this.humanCount() > 0)) return { ok: false, reason: 'unknown' } // the room's own invite is for the first member only, and a newer one replaces it
@@ -131,11 +135,15 @@ export class State {
         break
       case 'join': {
         const prev = this.participants.get(e.author)
-        if (p.invite && !(prev?.kind === 'human' && !prev.left && !prev.replacedBy)) { // a newcomer's join uses its invite up
+        const newcomer = !(prev?.kind === 'human' && !prev.left && !prev.replacedBy)
+        if (p.invite && newcomer) { // a newcomer's join uses its invite up
           const inv = this.findInvite(p.invite)
-          if (inv && !inv.usedBy) { inv.usedBy = e.author; inv.usedAt = e.timestamp }
+          if (inv && !inv.usedBy && !inv.group) { inv.usedBy = e.author; inv.usedAt = e.timestamp }
         }
-        this.participants.set(e.author, { ...prev, left: undefined, did: e.author, kind: 'human', name: p.name, projects: p.projects ?? [], about: p.about ?? '', since: prev?.since ?? e.timestamp })
+        // a group link names itself by its code's hash (the log checked the code, which never enters the record); it counts the join
+        const group = p.groupInvite && newcomer ? this.invites.get(p.groupInvite) : null
+        if (group?.group) group.joined.push({ did: e.author, at: e.timestamp })
+        this.participants.set(e.author, { ...prev, left: undefined, did: e.author, kind: 'human', name: p.name, projects: p.projects ?? [], about: p.about ?? '', since: prev?.since ?? e.timestamp, ...(group?.group ? { joinedThrough: group.group.name } : {}) })
         break
       }
       case 'linkGeb': {
@@ -150,8 +158,10 @@ export class State {
       case 'repos': { const who = this.participants.get(e.author); if (who) { who.github = p.github; who.repos = p.repos.map((r) => ({ name: r.name, verified: r.verified })) } break } // what a person linked: the latest line stands
       case 'invite':
         if (e.author === this.workspace) for (const old of this.invites.values()) if (old.by === this.workspace) old.replacedBy ??= e.hash // the room has one invite of its own at a time: a restart while it has no members replaces it
-        this.invites.set(p.codeHash, { hash: e.hash, by: e.author, at: e.timestamp, expiresAt: p.expiresAt, usedBy: null, usedAt: null })
+        this.invites.set(p.codeHash, { hash: e.hash, by: e.author, at: e.timestamp, expiresAt: p.expiresAt, usedBy: null, usedAt: null, group: p.group ? { name: p.group.name, ...(p.group.max ? { max: p.group.max } : {}) } : null, joined: [], stopped: null })
+        this.inviteLines.set(e.hash, this.invites.get(p.codeHash))
         break
+      case 'inviteStop': { const inv = this.inviteLines.get(p.invite); if (inv && !inv.stopped) inv.stopped = { at: e.timestamp, by: e.author }; break }
       case 'delegate': {
         this.delegations.set(e.hash, { hash: e.hash, issuer: e.author, delegate: p.delegate, scope: p.scope, ask: p.ask ?? [], label: p.label ?? '', expiresAt: doc.expiresAt, revoked: false, endedBy: null, seq: e.seq, credential: credentialOf(doc, this.workspace), repos: p.repos ?? [] })
         const prev = this.participants.get(p.delegate)

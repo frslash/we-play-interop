@@ -44,6 +44,7 @@ export const TYPES = {
   replace: T('member/replace'),
   resource: T('map/resource'),
   invite: T('member/invite'),
+  inviteStop: T('member/invite-stop'),
   sessionKey: T('session/key'),
   repos: T('member/repos'),
   agentRead: T('agent/read'),
@@ -58,7 +59,7 @@ export const WHO = {
   genesis: 'workspace', round: 'workspace', step: 'workspace', score: 'workspace', result: 'workspace', hosted: 'workspace', host: 'human', wake: 'human', card: 'anyone', notebook: 'private', never: 'private', draft: 'private', forYou: 'private', upload: 'private', change: 'anyone', remove: 'human', leave: 'human', away: 'human',
   link: 'human', vouch: 'human', replace: 'human', // a lost key: people only, never agents (room lines 772-821)
   linkGeb: 'human', gebRoom: 'workspace', gebRelayed: 'workspace', // InWove on Geb (src/server/geb.js): a person links their own Geb identity; the room says which Geb room it keeps and relays what is said there
-  join: 'human', invite: 'human', repos: 'human', sessionKey: 'private', agentRead: 'private', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
+  join: 'human', invite: 'human', inviteStop: 'human', repos: 'human', sessionKey: 'private', agentRead: 'private', delegate: 'human', revoke: 'human', approve: 'human', veto: 'human', mode: 'human',
   note: 'anyone', propose: 'anyone', vote: 'anyone', project: 'anyone', way: 'anyone', run: 'anyone', resource: 'anyone',
 }
 /** What a human can let an agent do (delegation scope). Approving, vetoing and delegating stay human. */
@@ -232,10 +233,17 @@ export function checkPayload (name, doc) {
       if (p.projects !== undefined && (!Array.isArray(p.projects) || p.projects.length > 5 || !p.projects.every((s) => SLUG_RE.test(s)))) return 'projects: up to 5 board project slugs'
       if (!optStr(p.about, 280)) return 'about: at most 280 characters'
       if (p.invite !== undefined && !(typeof p.invite === 'string' && /^[A-Za-z0-9_-]{22,64}$/.test(p.invite))) return 'invite: the code from your invite link (22 to 64 characters)'
+      if (p.groupInvite !== undefined && !HASH_RE.test(p.groupInvite)) return 'groupInvite: the SHA-256 (64 hex characters) of the group link\'s code; the code itself goes beside the line, never in it'
+      if (p.invite !== undefined && p.groupInvite !== undefined) return 'invite or groupInvite, not both'
       return null
-    case 'invite': { // one code that lets one newcomer join: the log holds only its hash, the member holds the code
+    case 'invite': { // one code that lets one newcomer join, or with `group` everyone a host sent it to: the log holds only its hash, the member holds the code
       if (!HASH_RE.test(p.codeHash ?? '')) return 'codeHash: the SHA-256 (64 hex characters) of the invite code'
       if (!RFC3339.test(p.expiresAt ?? '')) return 'expiresAt: an RFC 3339 timestamp'
+      if (p.group !== undefined) {
+        if (!isObj(p.group) || Object.keys(p.group).some((k) => !['name', 'max'].includes(k))) return 'group: { name, max (optional) }'
+        if (!str(p.group.name, 1, 60)) return 'group.name: who the link is for, 1 to 60 characters'
+        if (p.group.max !== undefined && !(Number.isInteger(p.group.max) && p.group.max >= 2 && p.group.max <= 1000)) return 'group.max: the most people it lets in, a whole number from 2 to 1000 (optional)'
+      }
       const ahead = Date.parse(p.expiresAt) - Date.parse(doc.issuedAt)
       return ahead > 0 && ahead <= 14 * 86400000 ? null : 'expiresAt: after issuedAt and within 14 days'
     }
@@ -253,6 +261,7 @@ export function checkPayload (name, doc) {
       if (!str(p.group, 1, 200) || !/^[A-Za-z0-9_-]{1,100}$/.test(p.id ?? '')) return 'group and id: the Geb room and the message\'s id'
       if (typeof p.text !== 'string' || !p.text.trim() || p.text.length > GEB_TEXT_MAX) return `text: 1 to ${GEB_TEXT_MAX} characters`
       return RFC3339.test(p.at ?? '') ? null : 'at: when it was said in Geb (RFC 3339)'
+    case 'inviteStop': return HASH_RE.test(p.invite ?? '') ? null : 'invite: the hash of the line that made the link'
     case 'repos': { // the repositories a person linked: the room checked them against GitHub (log.js), and each says whether GitHub listed it
       if (!GITHUB_LOGIN_RE.test(p.github ?? '')) return 'github: the GitHub login you linked'
       if (!Array.isArray(p.repos) || p.repos.some((r) => !isObj(r) || typeof r.verified !== 'boolean' || Object.keys(r).some((k) => !['name', 'verified'].includes(k)))) return 'repos: [ { name: owner/repo, verified: true | false } ]'

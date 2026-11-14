@@ -9,7 +9,8 @@ import { PasskeyError, Passkeys, prfSaltOf, rpOf, userHandleOf, verifyRegistrati
 import { Challenges, Limiter, Sessions, setCookie, tokenFromCookie } from './session.js'
 
 const ALGS = [-7, -8, -257]
-const MINE = new Set(['/api/session/end', '/api/sessions', '/api/sessions/end', '/api/passkeys', '/api/passkey/delete', '/api/passkey/register/options', '/api/passkey/register', '/api/me/pass'])
+const MINE = new Set(['/api/session/end', '/api/sessions', '/api/sessions/end', '/api/passkeys', '/api/passkey/delete', '/api/passkey/register/options', '/api/passkey/register', '/api/me/pass', '/api/group-links'])
+const GROUP_LINKS_SHOWN = 20 // the host's card lists the newest links; every one stays in the record
 const REASONS = { 'inviter gone': 'inviter-left' }
 
 export async function createAccess (ctx, { send: sendIt, readBody, refuse: refuseIt, ipOf }) {
@@ -79,7 +80,7 @@ export async function createAccess (ctx, { send: sendIt, readBody, refuse: refus
         if (req.method !== 'GET') return send(res, 405, { error: 'GET only' })
         if (!lookups.hit(ipOf(req))) return tooMany(res)
         const r = st().inviteFor(path.slice(12)) // valid or not, and why not: never who made it, and nothing else about it
-        return send(res, 200, r.ok ? { valid: true } : { valid: false, reason: REASONS[r.reason] ?? r.reason }, { 'cache-control': 'no-store' })
+        return send(res, 200, r.ok ? { valid: true, ...(r.invite.group ? { group: true } : {}) } : { valid: false, reason: REASONS[r.reason] ?? r.reason }, { 'cache-control': 'no-store' }) // a group link says it is one, so the page words it right
       }
 
       // from here a person's own session is needed (the gate has already seen to it; an agent's link or an open room has no person)
@@ -115,6 +116,16 @@ export async function createAccess (ctx, { send: sendIt, readBody, refuse: refus
         const rec = verifyRegistration(await json(req), { did: me, rp: rp(), challenges })
         await passkeys.add(rec)
         return send(res, 200, { ok: true, id: rec.id }, { 'cache-control': 'no-store' })
+      }
+      if (path === '/api/group-links' && req.method === 'GET') { // the host's card: each link for a group, who came in through it, and whether it still works
+        if (!config.hosts?.includes(me)) return send(res, 403, { error: 'Only the room\'s host sees the links for groups.' }, { 'cache-control': 'no-store' })
+        const now = Date.now(), links = [...st().invites.values()].filter((i) => i.group).sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, GROUP_LINKS_SHOWN)
+        return send(res, 200, {
+          links: links.map((i) => {
+            const state = i.stopped ? 'stopped' : i.dead || !st().isCurrentMember(i.by) ? 'maker gone' : i.group.max && i.joined.length >= i.group.max ? 'full' : Date.parse(i.expiresAt) <= now ? 'ended' : 'open'
+            return { hash: i.hash, name: i.group.name, max: i.group.max ?? null, by: nameOf(i.by), at: i.at, expiresAt: i.expiresAt, state, stoppedAt: i.stopped?.at ?? null, joined: i.joined.map((j) => ({ name: nameOf(j.did), at: j.at })) }
+          }),
+        }, { 'cache-control': 'no-store' })
       }
       if (path === '/api/me/pass' && req.method === 'GET') { await servePass(ctx, req, res); return true } // pass.js: the room signs a DTG membership credential for a current member
       return send(res, 405, { error: 'method not allowed' })
