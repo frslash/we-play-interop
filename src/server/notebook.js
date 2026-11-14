@@ -33,8 +33,8 @@ export class Notebooks {
     const notes = [...(await this.get(agent)), { at: new Date().toISOString(), from, text: String(text).slice(0, 2000) }]
     while (JSON.stringify(notes).length > MAX_CHARS && notes.length > 1) notes.shift()
     const sealed = this.sealer.seal(JSON.stringify(notes))
-    await this.db.query('delete from agent_notes where agent = $1', [agent])
-    await this.db.query('insert into agent_notes (agent, notes_enc, updated, read_up_to) values ($1, $2, $3, $4)', [agent, sealed, new Date().toISOString(), this.readUpTo.get(agent) ?? null])
+    // one statement, so a crash or a dropped connection can't fall between a delete and an insert and lose the whole notebook (Security 10534)
+    await this.db.query('insert into agent_notes (agent, notes_enc, updated, read_up_to) values ($1, $2, $3, $4) on conflict (agent) do update set notes_enc = excluded.notes_enc, updated = excluded.updated, read_up_to = excluded.read_up_to', [agent, sealed, new Date().toISOString(), this.readUpTo.get(agent) ?? null])
     this.cache.set(agent, notes)
     return notes
   }

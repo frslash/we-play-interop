@@ -41,3 +41,16 @@ test('no stored notebook still starts empty', async () => {
   const nb = new Notebooks({ db: fakeDb(), sealer: wrongKey })
   assert.deepEqual(await nb.get('agent-new'), [])
 })
+
+test('adding a note is one write: if it fails, the notebook stored before it is still whole', async () => {
+  const db = fakeDb(), seen = []
+  const query = db.query.bind(db)
+  db.query = async (sql, args) => { seen.push(sql.split(' ')[0]); return query(sql, args) }
+  const nb = new Notebooks({ db, sealer: goodSealer })
+  await nb.add('did:key:zAgent', 'person', 'first')
+  assert.deepEqual(seen.filter((w) => w !== 'select'), ['insert'], 'no delete before the write')
+  const stored = db.rows.get('did:key:zAgent').notes_enc
+  db.query = async (sql, args) => { if (sql.startsWith('insert')) throw new Error('connection dropped'); return query(sql, args) }
+  await assert.rejects(nb.add('did:key:zAgent', 'person', 'second'))
+  assert.equal(db.rows.get('did:key:zAgent').notes_enc, stored, 'the earlier notebook is untouched')
+})
