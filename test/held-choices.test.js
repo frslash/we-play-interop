@@ -115,7 +115,7 @@ describe('a choice that touches a person is held for them', () => {
       s = r.stepFrom(p)
       assert.equal(s.waitingOn, undefined)
       assert.equal(s.decision.by, r.people.a.did); assert.equal(s.decision.for, r.people.a.did); assert.equal(s.decision.held, 'keys')
-      assert.match(r.said('decided').at(-1).payload.text, /^Decided by Person A for Person A \(Which key signs/)
+      assert.match(r.said('decided').at(-1).payload.text, /^Decided by Person A \(Which key signs/)
     } finally { await r.stop() }
   })
 
@@ -137,7 +137,7 @@ describe('a choice that touches a person is held for them', () => {
       s = r.stepFrom(p)
       assert.equal(s.waitingOn, undefined); assert.equal(s.decision.by, r.builder); assert.equal(s.decision.provisional, true)
       assert.equal(s.decision.for, r.people.b.did, 'for the person whose agreement the step serves'); assert.equal(s.decision.held, null)
-      assert.match(f.view().steps.find((x) => x.id === s.id).where, /Decided provisionally by Person A's builder for Person B: TSP first/)
+      assert.match(f.view().steps.find((x) => x.id === s.id).where, /Decided provisionally by Person A's builder \(for Person A\): TSP first/)
     } finally { await r.stop() }
   })
 })

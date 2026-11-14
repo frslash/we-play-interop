@@ -130,6 +130,22 @@ export const stepPerson = (st, s) => ownerPerson(st, s) ?? proposerOf(st, s)
  * person yet stays with the agents: any agent's answer settles it.
  */
 export const mayDecide = (st, did, s) => { if (st.isHuman(did)) return true; const p = stepPerson(st, s); return !p || person(st, did) === p }
+/**
+ * Who gave a decision, in words: an agent with the person it acts for, "Eli (for Anton)"; a person by name, and for
+ * whom when that is someone else, "Person C for Person A". So a line never reads as an agent deciding for a person it
+ * does not act for.
+ */
+export const byWhom = (st, by, forWhom = null) => {
+  const p = by && !st.isHuman(by) ? person(st, by) : null
+  if (p && p !== by) return `${st.nameOf(by)} (for ${st.nameOf(p)})`
+  return `${st.nameOf(by)}${forWhom && forWhom !== by ? ` for ${st.nameOf(forWhom)}` : ''}`
+}
+/** A whole answer, in a waiting step's own thread, from an agent that can't settle it (another person's): a suggestion. */
+const suggests = (st, e, s) => {
+  if (!s?.waitingOn || s.waitingOn.held || e.document.payload?.facilitator || e.author === st.workspace || e.document.threadId !== s.thread) return false
+  const d = decisionOf(e.document.payload?.text, s.waitingOn.decision)
+  return Boolean(d && !d.refused && !d.parked && !mayDecide(st, e.author, s))
+}
 /** A person the text names by their name in the room, if any. */
 const namedPerson = (st, text) => {
   const t = ` ${String(text ?? '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ')} `
@@ -329,6 +345,8 @@ export class Facilitator {
       // a plain reply in a step's thread is a word from whoever wrote it
       const s = this.steps().find((x) => x.thread === e.document.threadId)
       if (!s || e.seq < s.seq) continue // a reply from before the step last changed is already counted in it
+      // another person's agent answering the choice: said back as a suggestion, named with the person it acts for
+      if (suggests(st, e, s)) { await this.suggest(s, e); did.heard++ }
       // a plain no from someone asked to check it: the next checker is asked at once, and a no to the kind of work is remembered
       if (s.state === 'result posted' && (s.checkAsked ?? []).includes(e.author) && !(s.checkDeclined ?? []).includes(e.author) && REFUSES.test(String(p.text ?? ''))) {
         await this.write(s, { checkDeclined: [...(s.checkDeclined ?? []), e.author] }, 'check declined', e, { heard: true })
@@ -356,15 +374,26 @@ export class Facilitator {
     if (d.refused && !st.isHuman(e.author)) return null // "I decline" or "I won't sign" is a person's no; from an agent it settles nothing
     if (held && s.waitingOn.who && e.author !== s.waitingOn.who) return null // a choice held for a person: only that person's own line settles it, not even their agent
     if (held && !s.waitingOn.who && !st.isHuman(e.author)) return null // held for the room's people (no person has the step): a person's line, never an agent's
-    if (!held && !mayDecide(st, e.author, s)) return null // an agent of another person than the step's alone can't settle it
+    if (!held && !mayDecide(st, e.author, s)) { if (suggests(st, e, s)) await this.suggest(s, e); return null } // an agent of another person than the step's alone can't settle it: a suggestion
     const whom = (held ? s.waitingOn.who : null) ?? this.holderFor(s)
     // provisional: an agent's decision (any person can reopen it), or a person's on a step that is someone else's
     // (the step's own person can reopen it). A held choice settled by the one it is held for is not provisional.
     const own = held ? null : stepPerson(st, s), otherPerson = st.isHuman(e.author) && Boolean(own) && e.author !== own
     const provisional = !st.isHuman(e.author) || otherPerson
     const next = await this.write(s, { waitingOn: null, lastWordAt: e.timestamp, decision: { ...d, asked, by: e.author, for: whom, held, provisional, entry: e.hash, at: e.timestamp, stateKey: stateKey(s) }, decided: decidedBy(e, s) }, 'answered', e, how)
-    await this.speak(`${d.parked ? 'Parked' : 'Decided'}${provisional ? ' provisionally' : ''} by ${st.nameOf(e.author)}${whom ? ` for ${st.nameOf(whom)}` : ''}${asked ? ` (${clip(asked, 160)})` : ''}: ${d.parked ? '' : `${d.choice}. `}Why: ${clip(d.why, 200).replace(/\.$/, '')}. It’s on the board, and I won’t ask again unless someone disagrees here or the step changes.${otherPerson ? ` It’s ${st.nameOf(own)}’s step, so ${st.nameOf(own)} can reopen it by disagreeing here.` : provisional ? ' Any person can reopen it by disagreeing here.' : ''}`, d.parked ? 'parked' : 'decided', [next], { thread: next.thread })
+    await this.speak(`${d.parked ? 'Parked' : 'Decided'}${provisional ? ' provisionally' : ''} by ${byWhom(st, e.author, whom)}${asked ? ` (${clip(asked, 160)})` : ''}: ${d.parked ? '' : `${d.choice}. `}Why: ${clip(d.why, 200).replace(/\.$/, '')}. It’s on the board, and I won’t ask again unless someone disagrees here or the step changes.${otherPerson ? ` It’s ${st.nameOf(own)}’s step, so ${st.nameOf(own)} can reopen it by disagreeing here.` : provisional ? ' Any person can reopen it by disagreeing here.' : ''}`, d.parked ? 'parked' : 'decided', [next], { thread: next.thread })
     return next
+  }
+
+  /**
+   * An answer from an agent that can't decide for the step's own person: said once in the step's thread as a
+   * suggestion, naming the person the agent acts for. The step keeps waiting.
+   */
+  async suggest (s, e) {
+    const st = this.st, d = decisionOf(e.document.payload?.text, s.waitingOn?.decision)
+    if (!d || this.log.entries.some((x) => x.author === st.workspace && x.document.payload?.facilitator?.what === 'suggested' && x.document.payload.facilitator.entry === e.hash)) return null
+    const own = stepPerson(st, s)
+    return this.speak(`Suggested by ${byWhom(st, e.author)}${s.waitingOn?.decision ? ` (${clip(s.waitingOn.decision, 160)})` : ''}: ${d.choice}. Why: ${clip(d.why, 200).replace(/\.$/, '')}. Only a suggestion: it’s ${own ? `${st.nameOf(own)}’s` : 'another person’s'} step, so a person, or ${own ? `${st.nameOf(own)}’s` : 'that person’s'} own agent, decides it.`, 'suggested', [s], { thread: s.thread, entry: e.hash })
   }
 
   /** Who can settle an unheld choice, in words for the ask: a person, or the step's own person's agent; others suggest. */
@@ -953,7 +982,7 @@ export class Facilitator {
     if (s.state === 'checked') return `Checked by ${n(s.checkedBy)}.`
     if (d?.parked) return `Parked${d.provisional ? ' provisionally' : ''} by ${n(d.by)}: ${clip(d.why, 200).replace(/\.$/, '')}.`
     const base = this.whereNow(s)
-    return d && !s.waitingOn ? `${base} Decided${d.provisional ? ' provisionally' : ''} by ${n(d.by)}${d.for ? ` for ${n(d.for)}` : ''}: ${clip(d.choice, 160)}.` : base
+    return d && !s.waitingOn ? `${base} Decided${d.provisional ? ' provisionally' : ''} by ${byWhom(st, d.by, d.for)}: ${clip(d.choice, 160)}.` : base
   }
 
   whereNow (s) {
@@ -970,7 +999,7 @@ export class Facilitator {
   roundContext () {
     const st = this.st, ago = (t) => (t ? Math.round((Date.now() - Date.parse(t)) / 60_000) : null)
     return {
-      steps: this.steps().filter((s) => !s.aside).map((s) => ({ id: s.id, goal: s.goal ? clip(st.proposals.get(s.goal)?.title, 120) : null, step: clip(s.title, 200), done: clip(s.done, 200), owner: s.owner ? st.nameOf(s.owner) : null, state: s.state, ...(s.waitingOn ? { waitingOn: `${s.waitingOn.held && s.waitingOn.who ? `held for ${st.nameOf(s.waitingOn.who)} (their ${s.waitingOn.held})` : s.waitingOn.held ? `held for the room’s people (${s.waitingOn.held}; only a person)` : st.nameOf(s.waitingOn.who ?? '')}: ${s.waitingOn.decision}` } : {}), ...(s.waitingOn && s.askedAt && s.askedKey && Date.now() - Date.parse(s.askedAt) < ASK_ONCE_MS ? { askedAlready: true } : {}), ...(decided(s) ? { decided: `${decided(s).parked ? 'parked' : decided(s).choice} (by ${st.nameOf(decided(s).by)}${decided(s).for ? `, for ${st.nameOf(decided(s).for)}` : ''})` } : {}), minutesSinceWord: ago(s.lastWordAt ?? s.at) })),
+      steps: this.steps().filter((s) => !s.aside).map((s) => ({ id: s.id, goal: s.goal ? clip(st.proposals.get(s.goal)?.title, 120) : null, step: clip(s.title, 200), done: clip(s.done, 200), owner: s.owner ? st.nameOf(s.owner) : null, state: s.state, ...(s.waitingOn ? { waitingOn: `${s.waitingOn.held && s.waitingOn.who ? `held for ${st.nameOf(s.waitingOn.who)} (their ${s.waitingOn.held})` : s.waitingOn.held ? `held for the room’s people (${s.waitingOn.held}; only a person)` : st.nameOf(s.waitingOn.who ?? '')}: ${s.waitingOn.decision}` } : {}), ...(s.waitingOn && s.askedAt && s.askedKey && Date.now() - Date.parse(s.askedAt) < ASK_ONCE_MS ? { askedAlready: true } : {}), ...(decided(s) ? { decided: `${decided(s).parked ? 'parked' : decided(s).choice} (by ${byWhom(st, decided(s).by, decided(s).for)})` } : {}), minutesSinceWord: ago(s.lastWordAt ?? s.at) })),
       goalsWithoutDoneTest: this.heldGoals().filter((g) => !this.testOf(g.hash).length).map((g) => clip(g.title, 140)),
       agentsNotFor: [...st.notFor].filter(([, n]) => Date.now() - Date.parse(n.at) <= NOTE_FADE_MS).map(([did, n]) => ({ agent: st.nameOf(did), did, notFor: n.kinds, ...(n.onlyFor ? { onlyFor: n.onlyFor } : {}) })),
       doneTests: this.heldGoals().filter((g) => this.testOf(g.hash).length).map((g) => ({ goal: g.hash, title: clip(g.title, 140), whose: g.byWeaver ? null : st.nameOf(g.principal), checks: this.testOf(g.hash).map((s) => `(${s.test.n}) ${s.title}`) })),
@@ -1055,7 +1084,7 @@ export class Facilitator {
   // ---------- what the page and the agents read ----------
   view (now = Date.now()) {
     const st = this.st, n = (d) => (d ? st.nameOf(d) : null)
-    const card = (s) => ({ id: s.id, thread: s.thread, goal: s.goal, goalTitle: s.goal ? st.proposals.get(s.goal)?.title ?? null : null, title: s.title, done: s.done, state: s.state, owner: s.owner ?? null, ownerName: n(s.owner), offeredTo: s.offeredTo ?? null, offeredToName: n(s.offeredTo), waitingOn: s.waitingOn ? { ...s.waitingOn, name: n(s.waitingOn.who) } : null, test: s.test ?? null, from: s.from ?? null, result: s.result ?? null, evidence: s.evidence ?? [], checkedBy: s.checkedBy ?? null, checkedByName: n(s.checkedBy), decision: s.decision ? { choice: s.decision.choice, parked: Boolean(s.decision.parked), why: s.decision.why, asked: s.decision.asked ?? null, by: s.decision.by, byName: n(s.decision.by), for: s.decision.for ?? null, forName: n(s.decision.for), held: s.decision.held ?? null, provisional: Boolean(s.decision.provisional), entry: s.decision.entry, at: s.decision.at, holds: Boolean(decided(s)) } : null, parked: isParked(s), aside: Boolean(s.aside), openedAt: s.openedAt, at: s.at, lastWordAt: s.lastWordAt ?? null, where: this.where(s) })
+    const card = (s) => ({ id: s.id, thread: s.thread, goal: s.goal, goalTitle: s.goal ? st.proposals.get(s.goal)?.title ?? null : null, title: s.title, done: s.done, state: s.state, owner: s.owner ?? null, ownerName: n(s.owner), offeredTo: s.offeredTo ?? null, offeredToName: n(s.offeredTo), waitingOn: s.waitingOn ? { ...s.waitingOn, name: n(s.waitingOn.who) } : null, test: s.test ?? null, from: s.from ?? null, result: s.result ?? null, evidence: s.evidence ?? [], checkedBy: s.checkedBy ?? null, checkedByName: n(s.checkedBy), decision: s.decision ? { choice: s.decision.choice, parked: Boolean(s.decision.parked), why: s.decision.why, asked: s.decision.asked ?? null, by: s.decision.by, byName: n(s.decision.by), byLine: byWhom(st, s.decision.by, s.decision.for ?? null), for: s.decision.for ?? null, forName: n(s.decision.for), held: s.decision.held ?? null, provisional: Boolean(s.decision.provisional), entry: s.decision.entry, at: s.decision.at, holds: Boolean(decided(s)) } : null, parked: isParked(s), aside: Boolean(s.aside), openedAt: s.openedAt, at: s.at, lastWordAt: s.lastWordAt ?? null, where: this.where(s) })
     const goals = this.heldGoals().map((g) => { const t = this.testOf(g.hash); return { hash: g.hash, title: g.title, test: t.map(card), checked: t.filter((s) => s.state === 'checked').length } })
     const twelve = now - 12 * 3600_000, inWindow = (t) => t && Date.parse(t) >= twelve
     const all = [...this.steps(), ...st.stepsDone]

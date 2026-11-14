@@ -110,7 +110,7 @@ describe('a choice answered once stays answered', () => {
       assert.match(s.decision.asked, /Which key signs the DID document/)
       const card = f.view().steps.find((x) => x.id === s.id)
       assert.equal(card.decision.byName, 'Person A'); assert.equal(card.decision.forName, 'Person A'); assert.equal(card.decision.holds, true)
-      assert.match(card.where, /Decided by Person A for Person A: The room’s own key/)
+      assert.match(card.where, /Decided by Person A: The room’s own key/)
       assert.equal(r.said('decided').length, 1)
       assert.ok(f.roundContext().steps.find((x) => x.id === s.id).decided, 'the weaver’s round sees it as decided')
 
