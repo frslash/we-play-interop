@@ -212,7 +212,7 @@ export const servesAGoal = (s) => Boolean(s.goal || s.test || s.from || BUGFIX.t
 export const isParked = (s) => Boolean(decided(s)?.parked)
 const sameAsk = (a, b) => String(a ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '') === String(b ?? '').trim().toLowerCase().replace(/[.?!\s]+$/, '')
 const median = (xs) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2 }
-const FIELDS = ['goal', 'title', 'done', 'owner', 'state', 'from', 'sources', 'test', 'needs', 'waitingOn', 'offeredTo', 'previousOwner', 'chases', 'chasedAt', 'lastWordAt', 'result', 'evidence', 'checkedBy', 'checkAsked', 'checkAskedAt', 'agreedAt', 'words', 'aside', 'replaced', 'checkDeclined', 'decision', 'reopens', 'stuck', 'decided', 'blockedAt', 'askedAt', 'askedKey', 'settled']
+const FIELDS = ['goal', 'title', 'done', 'owner', 'state', 'from', 'sources', 'test', 'needs', 'waitingOn', 'offeredTo', 'previousOwner', 'chases', 'chasedAt', 'lastWordAt', 'result', 'evidence', 'checkedBy', 'checkAsked', 'checkAskedAt', 'agreedAt', 'words', 'aside', 'replaced', 'checkDeclined', 'decision', 'reopens', 'stuck', 'decided', 'blockedAt', 'askedAt', 'askedKey', 'settled', 'declinedBy', 'previousWhy']
 
 export const ROUND_PROMPT = `Facilitate mode: you drive the held goals to done; you do not propose new directions. Goals come first: what moves a held goal's done-test comes before work on the room's own process (its rules, its board, its code), which matters only when it blocks a goal or a person asks for it. The board ("board") holds the steps in work: each has a goal, what done looks like, an owner and a state (${STEP_STATES.join(', ')}). The code keeps the board, the timers and the chasing; you only judge two things and write their words:
 "vague": lines in newInputs that claim progress, a result or a plan for a step or a goal but leave out the exact thing someone would need to check it or act on it: the method, a spec link, a test value, the file or the command. Give {"entry":"<hash from newInputs>","missing":"method|spec link|test value|file|command","ask":"<one short, friendly question that asks for exactly that>"}. Only real gaps, at most two; never small talk, greetings or lines that already give the thing.
@@ -425,7 +425,7 @@ export class Facilitator {
   async decline (s, e, to, now) {
     const asked = s.owner ?? s.offeredTo
     if (GENERAL.test(String(e.document.payload.text ?? '')) && this.st.isAgent(asked) && sameSide(this.st, e.author, asked)) await this.note(asked, [kindKey({ ask: 'take', code: isCodeStep(s) })], null, e)
-    const back = await this.write(s, { owner: null, offeredTo: null, previousOwner: asked, state: 'open', chases: 0, lastWordAt: e.timestamp }, 'declined', e, { heard: true })
+    const back = await this.write(s, { owner: null, offeredTo: null, previousOwner: asked, previousWhy: 'declined', declinedBy: [...new Set([...(s.declinedBy ?? []), asked].filter(Boolean))], state: 'open', chases: 0, lastWordAt: e.timestamp }, 'declined', e, { heard: true }) // never offered to them again
     if (to) return this.handTo(back, to, e, now)
     return this.offer(back, null, now)
   }
@@ -464,7 +464,7 @@ export class Facilitator {
         return back
       }
       case 'release': {
-        const back = await this.write(step, { ...words, owner: null, previousOwner: step.owner, state: 'open', offeredTo: null }, 'released', e, heard)
+        const back = await this.write(step, { ...words, owner: null, previousOwner: step.owner, previousWhy: 'released', declinedBy: [...new Set([...(step.declinedBy ?? []), step.owner].filter(Boolean))], state: 'open', offeredTo: null }, 'released', e, heard)
         if (await this.offer(back, null, Date.parse(e.timestamp))) did.offered.push(back.id)
         return back
       }
@@ -718,7 +718,7 @@ export class Facilitator {
       if (quiet(s) < (building ? BUILD_MS : STALE_MS)) continue
       if (building && !s.chases && s.state !== 'open') { await this.write(s, { chases: 1, chasedAt: new Date(now).toISOString() }, 'chased', null); await this.ctx.builder.dispatch(st.steps.get(s.id), now, { again: true }); did.chased.push(s.id); continue } // a build gone quiet: started once more
       if (building && s.state !== 'open') { await this.escalate(s, this.personFor(s), `the builder went quiet twice on ${this.label(s)}: look at it, hand it to someone, or drop it`, did); continue }
-      if (s.test && s.offeredTo && !s.owner) { await this.write(s, { offeredTo: null, previousOwner: s.offeredTo, chases: 0, chasedAt: new Date(now).toISOString() }, 'offer lapsed', null); continue } // a goal check nobody took goes back, quietly, to be offered to someone else
+      if (s.test && s.offeredTo && !s.owner) { await this.write(s, { offeredTo: null, previousOwner: s.offeredTo, previousWhy: 'quiet', declinedBy: [...new Set([...(s.declinedBy ?? []), s.offeredTo])], chases: 0, chasedAt: new Date(now).toISOString() }, 'offer lapsed', null); continue } // a goal check nobody took goes back, quietly, to be offered to someone else
       if (s.offeredTo && !s.owner) { await this.escalate(s, this.personFor({ ...s, previousOwner: s.previousOwner ?? s.offeredTo }), `who takes ${this.label(s)}: ${s.previousOwner ? `it went quiet with ${st.nameOf(s.previousOwner)}, then ` : ''}${st.nameOf(s.offeredTo)} didn’t take it. Keep it, hand it to someone, or drop it`, did); continue }
       if (!s.chases) { nudges.push(await this.write(s, { chases: 1, chasedAt: new Date(now).toISOString() }, 'chased', null)); continue }
       // a second silence
@@ -780,11 +780,11 @@ export class Facilitator {
   async offer (step, because, now = Date.now(), { not = [] } = {}) {
     const st = this.st
     if (step.needs) return false // a step that needs someone's keys, account or host is never handed to a different agent
-    const before = [step.previousOwner, step.offeredTo, ...not].filter(Boolean)
+    const before = [step.previousOwner, step.offeredTo, ...(step.declinedBy ?? []), ...not].filter(Boolean) // everyone who said no or let it lapse: a step never bounces back to them
     const pick = this.candidates(before, { ask: 'take', code: isCodeStep(step) })[0]
     if (!pick) return false
     const next = await this.write(step, { offeredTo: pick, chases: 0, chasedAt: new Date(now).toISOString() }, 'offered', because)
-    await this.speak(`${st.nameOf(pick)}: will you take ${this.label(next)}?${step.previousOwner ? ` ${st.nameOf(step.previousOwner)} had it and went quiet.` : ''} Done when: ${clip(next.done, 300)} Claim it with the step tool, or say no.`, 'offer', [next], { thread: next.thread })
+    await this.speak(`${st.nameOf(pick)}: will you take ${this.label(next)}?${step.previousOwner ? ` ${st.nameOf(step.previousOwner)} ${step.previousWhy === 'declined' ? 'said no' : step.previousWhy === 'released' ? 'gave it back' : 'had it and went quiet'}.` : ''} Done when: ${clip(next.done, 300)} Claim it with the step tool, or say no.`, 'offer', [next], { thread: next.thread })
     return true
   }
 

@@ -488,3 +488,34 @@ describe('goals first: a goal’s checks reach the agents', () => {
     } finally { await r.stop() }
   })
 })
+
+describe('a no is a no: a declined step never bounces back', () => {
+  test('each agent that says no is said to have said no, and is never offered that step again', async () => {
+    const r = await room()
+    try {
+      const body = 'Done when:\n1. A room is made on host A.\n2. It moves to host B.'
+      const goal = (await r.send(r.people.a, 'propose', { kind: 'goal', title: 'Rooms move between hosts', body })).body.hash
+      await r.send(r.people.a, 'vote', { proposal: goal, choice: 'for' })
+      await r.ctx.facilitator.tick(r.at(1))
+      const first = r.ctx.facilitator.testOf(goal).find((s) => s.offeredTo)
+      const keyOf = (did) => Object.keys(r.agents).find((k) => r.agents[k].did === did)
+      const offered = [first.offeredTo]
+      let s = first
+      for (let i = 0; i < 3; i++) {
+        const k = keyOf(s.offeredTo)
+        if (!k) break
+        await r.tell(k, s, 'decline', 'Not me: I can’t run a host.')
+        await r.ctx.facilitator.tick(r.at(2 + i))
+        s = r.ctx.facilitator.find(s.id)
+        if (!s.offeredTo) break
+        assert.ok(!offered.includes(s.offeredTo), 'never back to someone who said no')
+        assert.match(r.said('offer').at(-1).payload.text, /said no\./, 'it says they said no, not that they went quiet')
+        assert.doesNotMatch(r.said('offer').at(-1).payload.text, /went quiet/)
+        offered.push(s.offeredTo)
+      }
+      assert.ok(offered.length >= 2)
+      assert.equal(new Set(offered).size, offered.length, 'each agent at most once')
+      assert.deepEqual([...r.ctx.facilitator.find(first.id).declinedBy ?? []].sort(), offered.slice(0, (r.ctx.facilitator.find(first.id).declinedBy ?? []).length).sort())
+    } finally { await r.stop() }
+  })
+})
