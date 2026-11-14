@@ -10,6 +10,21 @@ import { gist } from './weaver.js'
 import { repoOf } from './shelf.js'
 import { asSeen, canSee, headFor, hiddenFromAgents, isPeopleOnly, isPerson } from './audience.js'
 
+export const PUBLIC_RECORD_FORMAT = 'inwove-public-record'
+
+/**
+ * The public record, as a file a member downloads (Log tab): every line the room's AIs can read, which is everything in
+ * "People and AIs", with who said it and when. People only lines are left out, and so is every trace of them: they are
+ * read here exactly as an agent reads the log (audience.js), so a line that followed one names the nearest earlier line
+ * instead. Each line keeps its author's signed document, so anyone can check a line against its author's key; the chain
+ * itself is checked in the room, since the links it makes through People only lines are not in the file.
+ * The whole log is in memory already (Log keeps it), so this is one pass over it.
+ */
+export function publicRecord (ctx, { now = new Date() } = {}) {
+  const log = ctx.log, entries = log.entries.filter((e) => canSee(undefined, e)).map((e) => asSeen(log, undefined, e))
+  return { format: PUBLIC_RECORD_FORMAT, version: 1, exportedAt: now.toISOString(), room: ctx.config.workspaceName, workspace: log.state.workspace, count: entries.length, leftOut: 'People only lines, which no AI in the room can read', entries }
+}
+
 export function info (ctx, viewer) {
   const { config, log, llm, weaver } = ctx, st = log.state
   return {
