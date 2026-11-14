@@ -20,9 +20,18 @@ node); the tests are `test/geb-bridge.test.js` and `test/geb-cli.test.js`.
   code (ten minutes), they send it from their Geb identity to the room over Geb, and then they sign a `member:link-geb`
   line naming that identity, which the record takes only if the code came from it. The room accepts a Geb pair request
   only while someone's code is waiting. One Geb identity per person, and never the room's own. `end: true` unlinks.
-- **Who is in the Geb room is exactly the room and the linked members.** Leaving, being replaced or unlinking takes a
-  person out. If Geb cannot take someone out, the bridge stops posting until it can, so a line never reaches someone
-  who is no longer in the room.
+- **Who is in the Geb room is exactly the room and the linked members.** It follows who is a current, linked member,
+  decided from the room's state rather than from a list of line kinds: leaving, being replaced, unlinking, or any later
+  way a membership ends takes a person out, and before each line goes out the bridge first makes the Geb room match.
+  If Geb cannot take someone out, the bridge stops posting until it can, so a line never reaches someone who is no
+  longer in the room. Members see one fixed sentence while it is paused; the reason goes to the counts as a code.
+- **What leaves the bridge is content-free.** A failed Geb command is a fixed code and the subcommand's name
+  (`timeout`, `exit-<n>`, `not-json`, `unknown-command`, …): never Geb's stderr, Node's error text or an argument, so a
+  member's words, a Geb identity or the Geb home never reach a log, the counts or a screen.
+- **Every DID and room id is checked before it becomes an argument** (`GEB_DID_RE`, and a room id never starting
+  with `-`), including the ones Geb itself prints; anything else is refused and counted.
+- **The Geb home must be the room's alone:** the listener does not start unless every folder in `GEB_HOME` is 700
+  and every file 600, owned by the room's user. `GEB_ROOM_DID` must be a did:peer:2.
 - **What is refused from Geb, and counted:** a sender not linked to a current member, a line Geb did not verify as
   signed, a line from another Geb room, a line the room's secret guard stops, and the same Geb line twice (Geb replays
   what it queued when its listener starts).

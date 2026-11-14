@@ -6,7 +6,12 @@ import { randomBytes } from 'node:crypto'
 import { after, before, describe, test } from 'node:test'
 import { newIdentity } from '../src/shared/did.js'
 import { State } from '../src/server/state.js'
-import { newLinkCode, outboundText } from '../src/server/geb.js'
+import { newLinkCode, outboundText, PAUSED_TEXT } from '../src/server/geb.js'
+import { GebCli, GebCliError } from '../src/server/geb-cli.js'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { startRoom } from './helpers/room.js'
 
 /** A Geb identity's shape (did:peer:2 with .A, .V and .E keys); `tag` keeps them apart. */
@@ -22,7 +27,7 @@ class FakeGeb {
   async accept (did) { this.accepted.push(did) }
   async groupNew (name, dids) { const id = `room-${this.rooms.size + 1}`; this.rooms.set(id, new Set([this.did, ...dids])); return id }
   async groupAdd (group, dids) { for (const d of dids) this.rooms.get(group).add(d) }
-  async groupRemove (group, dids) { if (this.removeFails) throw new Error('not supported'); for (const d of dids) this.rooms.get(group).delete(d) }
+  async groupRemove (group, dids) { if (this.removeFails) throw new GebCliError('group remove', 'unknown-command'); for (const d of dids) this.rooms.get(group).delete(d) }
   async members (group) { return [...this.rooms.get(group)] }
   /** Geb delivering a line to the room. */
   say (from, text, { group, direct = false, id = randomBytes(16).toString('hex'), signed = true } = {}) { return this.onEvent({ type: 'message', id, group, direct, from, text, at: Date.now(), signed, replay: false }) }
@@ -139,7 +144,10 @@ describe('InWove on Geb (step 0, with a fake Geb node)', () => {
     fake.removeFails = true
     assert.equal((await room.say(member.id, 'leave', {})).status, 201)
     await settle()
-    assert.match(bridge.status().paused, /could not be taken out/)
+    assert.equal(bridge.status().paused, PAUSED_TEXT, 'members see a fixed sentence, never an error\'s text')
+    assert.ok(!bridge.status().paused.includes(memberGeb) && !bridge.status().paused.includes('did:'), 'no Geb identity in what members see')
+    const counts = (await room.call('/api/geb', { cookie: host.cookie })).body.counts
+    assert.ok(counts.some((c) => c.what === 'paused-unknown-command'), 'the reason goes to the counts, as a code')
     fake.posted.length = 0
     await say(host, 'This must not reach someone who left'); await settle()
     assert.equal(fake.posted.length, 0, 'held while paused')
@@ -149,6 +157,82 @@ describe('InWove on Geb (step 0, with a fake Geb node)', () => {
     assert.ok(!(await fake.members(group)).includes(memberGeb), 'taken out once Geb allows it')
     await say(host, 'Back to normal'); await settle()
     assert.deepEqual(fake.posted.map((p) => p.text), ['Host: Back to normal'])
+  })
+
+  test('whoever stops being a current member is out of the Geb room before the next line is posted, whatever ended it', async () => {
+    const linkNew = async (name, tag) => {
+      const who = await room.newMember(host.id, name), did = gebDid(tag)
+      room.config.hosts = [host.id.did, who.id.did]
+      try { assert.equal((await link(who, did)).status, 201) } finally { room.config.hosts = [host.id.did] }
+      await settle()
+      assert.ok((await fake.members(group)).includes(did))
+      return { who, did }
+    }
+    // the fake records, at each post, who was in the Geb room then
+    const seen = []
+    const gsend = fake.gsend.bind(fake)
+    fake.gsend = async (g, text) => { seen.push({ text, members: [...fake.rooms.get(g)] }); return gsend(g, text) }
+    try {
+      // (a) leaving, with the next line said at once, before anything settles
+      const a = await linkNew('Leaver', 'quit')
+      assert.equal((await room.say(a.who.id, 'leave', {})).status, 201)
+      await say(host, 'Said right after a leave')
+      // (b) a way out that is not a line kind the bridge knows (a host removing someone, a membership that lapses): only the state says so
+      const b = await linkNew('Lapsed', 'ended')
+      room.ctx.log.state.participants.get(b.who.id.did).left = true
+      await say(host, 'Said after a membership ended without a leave line')
+      await settle()
+      const post = (text) => seen.find((p) => p.text === `Host: ${text}`)
+      assert.ok(post('Said right after a leave') && !post('Said right after a leave').members.includes(a.did), 'out before the line after their leave')
+      assert.ok(post('Said after a membership ended without a leave line'), 'the line went out')
+      assert.ok(!post('Said after a membership ended without a leave line').members.includes(b.did), 'out before the next line, decided from who is a current member')
+    } finally { fake.gsend = gsend }
+  })
+
+  test('a pair request from something that is not a Geb identity is never accepted, even while a code waits', async () => {
+    await room.call('/api/geb/link-code', { method: 'POST', cookie: host.cookie, body: {} })
+    const before = fake.accepted.length
+    await fake.onEvent({ type: 'request', from: '--home=/elsewhere' })
+    await fake.onEvent({ type: 'request', from: 'did:peer:2.not-a-geb-key' })
+    assert.equal(fake.accepted.length, before)
+    const counts = (await room.call('/api/geb', { cookie: host.cookie })).body.counts
+    assert.ok(counts.some((c) => c.what === 'requests-bad-did' && c.n >= 2))
+  })
+
+  test("a Geb command that times out on a member's words leaves no words and no Geb home in the logs, status() or the counts", async () => {
+    const home = mkdtempSync(join(tmpdir(), 'geb-planted-'))
+    writeFileSync(join(home, 'hang'), '', { mode: 0o600 })
+    const cli = new GebCli({ bin: fileURLToPath(new URL('./fixtures/fake-geb.mjs', import.meta.url)), home, did: fake.did, timeoutMs: 300 })
+    const lines = [], was = console.error, gsend = fake.gsend, groupRemove = fake.groupRemove
+    console.error = (...a) => lines.push(a.map(String).join(' '))
+    fake.gsend = (g, t) => cli.gsend(g, t)
+    try {
+      await say(host, 'planted secret words for the timeout'); await settle()
+      // and a remove that times out: the pause members see is the fixed sentence
+      const other = await room.newMember(host.id, 'Other'), otherDid = gebDid('two')
+      fake.gsend = gsend
+      room.config.hosts = [host.id.did, other.id.did]
+      try { assert.equal((await link(other, otherDid)).status, 201) } finally { room.config.hosts = [host.id.did] }
+      await settle()
+      fake.groupRemove = (g, d) => cli.groupRemove(g, d)
+      fake.gsend = (g, t) => cli.gsend(g, t)
+      assert.equal((await room.say(other.id, 'leave', {})).status, 201)
+      await say(host, 'more planted secret words'); await settle()
+      assert.equal(bridge.status().paused, PAUSED_TEXT)
+      const st = (await room.call('/api/geb', { cookie: member.cookie })).body
+      const counts = (await room.call('/api/geb', { cookie: host.cookie })).body.counts
+      for (const [where, text] of [['console', lines.join('\n')], ['status', JSON.stringify(st) + JSON.stringify(bridge.status())], ['counts', JSON.stringify(counts)]]) {
+        assert.ok(!text.includes('planted secret'), `no words in ${where}`)
+        assert.ok(!text.includes(home), `no Geb home in ${where}`)
+        assert.ok(!text.includes(otherDid), `no member's Geb identity in ${where}`)
+      }
+      assert.ok(counts.some((c) => c.what === 'error-timeout') && counts.some((c) => c.what === 'paused-timeout'), 'the codes are counted')
+    } finally {
+      console.error = was; fake.gsend = gsend; fake.groupRemove = groupRemove
+      await bridge.later(() => bridge.reconcile())
+      rmSync(home, { recursive: true, force: true })
+    }
+    assert.equal(bridge.status().paused, null, 'clears once Geb can take them out')
   })
 
   test('unlinking takes the person out of the Geb room', async () => {

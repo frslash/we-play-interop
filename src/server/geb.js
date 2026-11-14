@@ -13,11 +13,14 @@
 // the linked members: when someone leaves or unlinks, they are taken out, and if that cannot be done the bridge stops
 // posting until it can, so a line never reaches someone who is no longer in the room.
 import { randomBytes } from 'node:crypto'
-import { NAME_OF, GEB_TEXT_MAX } from '../shared/types.js'
+import { NAME_OF, GEB_TEXT_MAX, GEB_DID_RE } from '../shared/types.js'
 import { isPeopleOnly } from './audience.js'
+import { safeReason } from './geb-cli.js'
 
 export const GEB_LINK_HOSTS_ONLY = true // a code change, reviewed, lifts this once Legal's conditions for members are met (docs/geb.md)
 export const LINK_CODE_MINUTES = 10
+/** What every member is shown while the bridge holds lines back. Fixed: the reason's code goes only into the counts. */
+export const PAUSED_TEXT = 'Paused: someone who is no longer in the room is still in the Geb room, so nothing more goes out to Geb until they are taken out.'
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // no 0/O or 1/I: read off a screen and typed
 
 /** A one-time code a person sends from their Geb identity to the room: "INWOVE-" and ten letters and digits. */
@@ -38,7 +41,8 @@ export class GebBridge {
     this.inflight = new Set() // Geb message ids being written right now
     this.counts = new Map() // 'YYYY-MM-DD what' -> n, not yet written to the database
     this.running = false
-    this.paused = null // why the bridge is not posting out, when it is not
+    this.paused = null // PAUSED_TEXT while the bridge is not posting out
+    this.reconciled = null // the linked, current members' Geb DIDs as last made true in the Geb room (null: not yet, or failed)
     this.outbox = Promise.resolve() // lines go out one at a time, in order
   }
 
@@ -51,7 +55,7 @@ export class GebBridge {
   async start () {
     if (!this.node?.did) throw new Error('the Geb node has no identity')
     this.log.gebProof = (member, did) => this.proven(member, did)
-    await this.node.start((ev) => this.onEvent(ev).catch((err) => { this.count('error'); console.error('geb bridge:', err.message) }))
+    await this.node.start((ev) => this.onEvent(ev).catch((err) => this.failed(err)))
     this.running = true
     this.count('started')
     await this.later(() => this.reconcile())
@@ -94,6 +98,7 @@ export class GebBridge {
     if (!ev) return
     if (ev.type === 'request') { // someone asks to talk to the room: only while someone is linking, and only so their code can arrive
       if (!ev.from || !this.waitingCodes()) return this.count('requests-ignored')
+      if (!GEB_DID_RE.test(ev.from)) return this.count('requests-bad-did') // never an argument unless it is a Geb identity
       await this.node.accept(ev.from); return this.count('requests-accepted')
     }
     if (ev.type === 'stopped') { this.count('listener-stopped'); return }
@@ -131,13 +136,16 @@ export class GebBridge {
   onEntry (e) {
     if (!this.running) return
     const name = NAME_OF[e.type]
-    if (name === 'linkGeb') { if (!e.document.payload.end) this.proofs.delete(e.author); this.later(() => this.reconcile()); return }
-    if (name === 'leave' || name === 'replace') { this.later(() => this.reconcile()); return }
+    if (name === 'linkGeb' && !e.document.payload.end) this.proofs.delete(e.author)
+    // Who is in the Geb room follows who is a current, linked member, whatever line changed it (a link, an unlink, a
+    // leave, a host's remove, a replaced key, or anything later): decided from the state, not from a list of kinds.
+    if (this.wanted() !== this.reconciled) this.later(() => this.reconcile())
     if (!this.crosses(e)) return
     const p = e.document.payload, author = e.author === e.onBehalfOf ? this.st.nameOf(e.author) : `${this.st.nameOf(e.author)} (for ${this.st.nameOf(e.onBehalfOf)})`
     const extra = p.media?.length ? ' (a photo, in InWove)' : p.files?.length ? ' (a file, in InWove)' : ''
     const text = outboundText(author, `${p.text ?? ''}${extra}`)
     this.later(async () => {
+      if (this.wanted() !== this.reconciled) await this.reconcile() // never post past a membership change not yet made true
       if (this.paused) return this.count('held-paused')
       if (!this.group) return this.count('held-no-room') // nobody has linked yet, so there is no Geb room to post to
       await this.node.gsend(this.group, text); this.count('out')
@@ -149,31 +157,41 @@ export class GebBridge {
     const skip = this.ctx.check?.dids() ?? []
     return !skip.includes(e.author) && !skip.includes(e.onBehalfOf)
   }
-  later (fn) { this.outbox = this.outbox.then(fn).catch((err) => { this.count('error'); console.error('geb bridge:', err.message) }); return this.outbox }
+  later (fn) { this.outbox = this.outbox.then(fn).catch((err) => this.failed(err)); return this.outbox }
+  /** Counted and logged as a fixed word only: never an error's message, which can carry a line's words or a path. */
+  failed (err) { const why = safeReason(err); this.count(why === 'error' ? 'error' : `error-${why}`); console.error('geb bridge: error,', why) }
+  /** The Geb DIDs that should be in the Geb room besides the room's own: the linked, current members. */
+  linkedDids () { return [...this.st.gebLinks].filter(([m]) => this.st.isCurrentMember(m)).map(([, l]) => l.did) }
+  wanted () { return this.linkedDids().sort().join(' ') }
 
   // ---- who is in the Geb room: exactly the room and the linked members. Geb makes a room with its members named, so the
   // room's Geb room is made at the first link, and the record says which it is.
   async reconcile () {
-    const linked = [...this.st.gebLinks].filter(([m]) => this.st.isCurrentMember(m)).map(([, l]) => l.did)
+    const linked = this.linkedDids()
     if (!this.group) {
-      if (!linked.length) return
+      if (!linked.length) { this.reconciled = ''; this.paused = null; return }
       const group = await this.node.groupNew(this.groupName, linked)
       await this.log.appendAsWorkspace('gebRoom', { did: this.node.did, group, name: this.groupName })
       this.count('room-made'); this.count('added', linked.length)
+      this.reconciled = this.wanted()
       return
     }
+    const target = this.wanted()
     const want = new Set([this.node.did, ...linked])
     const have = new Set(await this.node.members(this.group))
     const add = [...want].filter((d) => !have.has(d)), drop = [...have].filter((d) => !want.has(d))
     if (add.length) { await this.node.groupAdd(this.group, add); this.count('added', add.length) }
     if (drop.length) {
       try { await this.node.groupRemove(this.group, drop); this.count('removed', drop.length) } catch (err) {
-        this.paused = `someone who is no longer linked is still in the Geb room and could not be taken out (${err.message})`
-        this.count('paused'); console.error('geb bridge: paused,', this.paused)
+        const why = safeReason(err)
+        this.paused = PAUSED_TEXT
+        this.reconciled = null // try again before the next line goes out
+        this.count('paused'); this.count(`paused-${why}`); console.error('geb bridge: paused,', why)
         return
       }
     }
     this.paused = null
+    this.reconciled = target
   }
 
   // ---- the measurement path: how many, of what, each day; never what was said
