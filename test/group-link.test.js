@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict'
 import { after, before, describe, test } from 'node:test'
 import { newIdentity } from '../src/shared/did.js'
-import { TYPES, signedDocument } from '../src/shared/types.js'
+import { NAME_OF, TYPES, signedDocument } from '../src/shared/types.js'
 import { hashOf, newCode } from '../src/server/invites.js'
 import { State } from '../src/server/state.js'
 import { startRoom } from './helpers/room.js'
@@ -145,6 +145,22 @@ describe('a link for a group', () => {
       assert.equal((await room.say(leaver.id, 'leave', {})).status, 201)
       assert.deepEqual(await lookup(code), { valid: false, reason: 'inviter-left' })
     } finally { room.config.hosts = [host.id.did] }
+  })
+
+  test('a current member\'s join never carries an invite, so a live code can\'t enter the record unspent', async () => {
+    const { code: way } = await makeLink(host.id, { name: 'Way in', max: 5 }), m = newIdentity()
+    assert.equal((await joinVia(way, 'Member', m)).status, 201)
+    const single = newCode(); await room.say(host.id, 'invite', { codeHash: hashOf(single), expiresAt: days(1) })
+    const r = await room.say(m, 'join', { name: 'Member again', invite: single })
+    assert.equal(r.status, 403); assert.match(r.body.payload.message, /already a member/)
+    assert.deepEqual(await lookup(single), { valid: true }, 'the code stays good for the friend it was made for')
+    const { code } = await makeLink(host.id, { name: 'Members too', max: 5 })
+    assert.equal((await joinVia(code, 'Member again', m)).status, 403)
+    assert.equal(room.ctx.log.state.findInvite(code).joined.length, 0)
+    assert.equal((await room.say(m, 'join', { name: 'Member again' })).status, 201, 'a member\'s plain join still works')
+    const mine = room.ctx.log.entries.filter((e) => e.author === m.did && NAME_OF[e.type] === 'join')
+    assert.equal(mine.length, 2, 'the way-in join and the plain one')
+    assert.ok(mine.every((e) => e.document.payload.invite === undefined), 'no member join line holds a code')
   })
 
   test('the record alone rebuilds every link: who joined, which are full and which are off', async () => {

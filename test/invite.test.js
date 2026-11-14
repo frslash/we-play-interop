@@ -146,7 +146,8 @@ describe('invites', () => {
     const r = await join(b.id, undefined, 'Changed name'); assert.equal(r.status, 201)
     assert.equal(room.ctx.log.state.nameOf(b.id.did), 'Changed name')
     assert.equal((await lookup(code)).valid, true, 'the unspent invite is still good')
-    const again = await join(b.id, code, 'Changed again'); assert.equal(again.status, 201)
+    const again = await join(b.id, code, 'Changed again'); assert.equal(again.status, 403, 'a member\'s join carrying a code is refused, so the live code never enters the record (Security 17716)')
+    assert.equal(room.ctx.log.state.nameOf(b.id.did), 'Changed name')
     assert.equal((await lookup(code)).valid, true, 'a member showing a code does not use it up')
   })
 
