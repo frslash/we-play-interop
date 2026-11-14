@@ -29,7 +29,7 @@ describe('a link for a group', () => {
   const joinVia = (code, name = 'Newcomer', id = newIdentity(), sendCode = code) => room.call('/api/entries', {
     method: 'POST', body: signedDocument(id, { type: TYPES.join, payload: { name, groupInvite: hashOf(code) } }), headers: sendCode ? { 'x-inwove-invite': sendCode } : {},
   })
-  const lookup = async (code) => (await room.call('/api/invite/' + code)).body
+  const lookup = async (code) => (await room.call('/api/invite', { method: 'POST', body: { code } })).body // the page's way: the code in the body
 
   test('the host makes one, and several people join through it, each as their own member', async () => {
     const { code, r } = await makeLink()
@@ -154,4 +154,37 @@ test('a group join line holds the code\'s hash and nothing else about the link',
   const id = newIdentity(), code = newCode()
   const doc = signedDocument(id, { type: TYPES.join, payload: { name: 'X', groupInvite: hashOf(code) } })
   assert.ok(!JSON.stringify(doc).includes(code))
+})
+
+describe('a group link\'s code stays out of every URL, and guessing at codes is slowed and counted (Security 13731)', () => {
+  let room, host
+  before(async () => {
+    room = await startRoom({ extra: { inviteMissesPerMinute: 3 } })
+    host = await room.firstMember('Host')
+    room.config.hosts = [host.id.did]
+  })
+  after(() => room.stop())
+  const make = async () => { const code = newCode(); await room.say(host.id, 'invite', { codeHash: hashOf(code), expiresAt: new Date(Date.now() + 86400000).toISOString(), group: { name: 'Retreat', max: 5 } }); return code }
+
+  test('the lookup by URL never answers for a group code; the page asks with the code in the body', async () => {
+    const code = await make()
+    assert.deepEqual((await room.call('/api/invite/' + code)).body, { valid: false, reason: 'unknown' })
+    assert.deepEqual((await room.call('/api/invite', { method: 'POST', body: { code } })).body, { valid: true, group: true })
+    assert.equal((await room.call('/api/invite', { method: 'POST', body: { code: 'x' } })).status, 400)
+  })
+
+  test('the page the link opens sends no Referer anywhere', async () => {
+    const r = await room.call('/i/')
+    assert.equal(r.headers.get('referrer-policy'), 'no-referrer')
+  })
+
+  test('wrong codes are counted, and an address that keeps guessing is slowed', async () => {
+    const before = { ...room.ctx.inviteMissCount }
+    for (let i = 0; i < 3; i++) assert.equal((await room.call('/api/invite', { method: 'POST', body: { code: newCode() } })).body.valid, false)
+    assert.equal((await room.call('/api/invite', { method: 'POST', body: { code: newCode() } })).status, 429, 'the fourth wrong guess in a minute is slowed')
+    assert.equal(room.ctx.inviteMissCount.lookup, before.lookup + 3)
+    assert.equal(room.ctx.inviteMissCount.slowed, before.slowed + 1)
+    const r = await room.call('/api/group-links', { cookie: host.cookie })
+    assert.equal(r.body.wrongCodes.lookup, room.ctx.inviteMissCount.lookup, 'the host sees the counts, never a code')
+  })
 })

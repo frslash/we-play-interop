@@ -66,6 +66,7 @@ export const config = {
   githubOauthClientSecret: env.GITHUB_OAUTH_CLIENT_SECRET || '', // a secret: only in the environment, never in a file the room serves or a log
   workspaceRepo: env.WORKSPACE_REPO || 'Project-Weave-Tech/we-play-interop',
 
+  inviteMissesPerMinute: int(env.INVITE_MISSES_PER_MINUTE, 10), // wrong invite codes one address may try a minute, looked up or joined with (a group link stays live, so guessing is slowed and counted)
   signInPerMinute: int(env.SIGNIN_PER_MINUTE, 60), // calls to the open sign-in and invite routes one address may make a minute (a person signs in a few times a day; this stops a script guessing)
   maxSkewMinutes: int(env.MAX_SKEW_MINUTES, 10),
   // entries a person (with their agents) may add per minute: enough for a lively chat, not a flood

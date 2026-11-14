@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import { after, before, describe, test } from 'node:test'
 import { verifySignature } from '../src/shared/proof.js'
-import { PUBLIC_RECORD_FORMAT } from '../src/server/views.js'
+import { DOWNLOAD_NOTICE, PUBLIC_RECORD_FORMAT } from '../src/server/views.js'
 import { startRoom } from './helpers/room.js'
 
 describe('the public record, as a file', () => {
@@ -15,13 +15,14 @@ describe('the public record, as a file', () => {
     await room.say(a.id, 'note', { kind: 'message', text: 'Hello everyone' })
     hidden = (await room.say(b.id, 'note', { kind: 'message', text: 'Only for people: the secret plan', audience: 'people' })).body
     await room.say(a.id, 'note', { kind: 'message', text: 'Said right after a people-only line' })
+    await room.ctx.ensureDownloadNotice() // what start-up does: the room's one notice before any download
   })
   after(() => room.stop())
 
   test('a member downloads it as a file, with every line the AIs can read and no People only line', async () => {
     const r = await room.call('/api/export/public', { cookie: a.cookie })
     assert.equal(r.status, 200)
-    assert.match(r.headers.get('content-disposition'), /^attachment; filename="inwove-public-record-\d{4}-\d{2}-\d{2}\.json"$/)
+    assert.match(r.headers.get('content-disposition'), /^attachment; filename="inwove-people-and-ais-record-\d{4}-\d{2}-\d{2}\.json"$/)
     assert.equal(r.headers.get('cache-control'), 'no-store')
     const f = r.body
     assert.equal(f.format, PUBLIC_RECORD_FORMAT); assert.equal(f.version, 1); assert.equal(f.count, f.entries.length)
@@ -31,6 +32,9 @@ describe('the public record, as a file', () => {
     assert.ok(!r.text.includes(hidden.hash), 'nor its hash, so not even a line naming it as the one before')
     const all = room.ctx.log.entries.filter((e) => e.document.payload?.audience !== 'people').length
     assert.equal(f.count, all, 'every other line is there')
+    const last = room.ctx.log.entries.at(-1)
+    assert.equal(last.document.payload.member, a.id.did, 'the download left a line in the record naming who downloaded it')
+    assert.equal(last.author, room.ctx.log.state.workspace)
   })
 
   test('it is what an agent reads, and each line still checks against its author\'s key', async () => {
@@ -45,5 +49,24 @@ describe('the public record, as a file', () => {
 
   test('nobody signed out gets it', async () => {
     assert.equal((await room.call('/api/export/public')).status, 401)
+  })
+})
+
+describe('the room tells everyone once, before the first download works', () => {
+  let room, a
+  before(async () => {
+    room = await startRoom()
+    a = await room.firstMember('Person A')
+    await room.say(a.id, 'note', { kind: 'message', text: 'Said before downloads existed' })
+  })
+  after(() => room.stop())
+
+  test('with lines already said and no notice, the download waits; the notice is written once, then it works', async () => {
+    assert.equal((await room.call('/api/export/public', { cookie: a.cookie })).status, 503)
+    await room.ctx.ensureDownloadNotice(); await room.ctx.ensureDownloadNotice()
+    const notices = room.ctx.log.entries.filter((e) => e.document.payload?.text === DOWNLOAD_NOTICE)
+    assert.equal(notices.length, 1, 'once, however often the room starts')
+    assert.equal(notices[0].author, room.ctx.log.state.workspace)
+    assert.equal((await room.call('/api/export/public', { cookie: a.cookie })).status, 200)
   })
 })

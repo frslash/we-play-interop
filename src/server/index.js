@@ -254,6 +254,8 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
   const redirectOldLink = (res) => { res.writeHead(303, { location: '/', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }); res.end() }
 
   // who is signed in, sign-in with a key or a passkey, invites, the membership pass (access.js); `sessions` is read by the gate
+  /** The room notice about downloads, once: written when someone has posted in People and AIs and it isn't in the record yet. */
+  ctx.ensureDownloadNotice = async () => { if (views.needsDownloadNotice(log)) await log.appendAsWorkspace('note', { kind: 'message', text: views.DOWNLOAD_NOTICE }) }
   const access = ctx.access = await createAccess(ctx, { send, readBody, refuse, ipOf })
   access.sessions.onEnd = (did) => { for (const [res, c] of sse) if (c.did === did) res.end() } // a person's live connections close with their sessions
   ctx.ensureFirstInvite = (opts) => ensureFirstInvite(ctx, opts)
@@ -310,7 +312,14 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
       if (req.method === 'POST') return send(res, 200, ctx.geb.linkCode(me), { 'cache-control': 'no-store' })
       return send(res, 200, ctx.geb.linkStatus(me), { 'cache-control': 'no-store' })
     }
-    if (path === '/api/export/public') { const now = new Date(); return send(res, 200, views.publicRecord(ctx, { now }), { 'content-disposition': `attachment; filename="inwove-public-record-${now.toISOString().slice(0, 10)}.json"`, 'cache-control': 'no-store' }) } // the Log tab's download: what the AIs can read, never a People only line
+    if (path === '/api/export/public') { // the Log tab's download: what the AIs can read, never a People only line
+      const v = req.inwoveViewer
+      if (!openRoom && v?.kind !== 'human') return send(res, 403, { error: 'Only a person in the room can download its record.' })
+      if (views.needsDownloadNotice(log)) return send(res, 503, { error: 'The room has not told everyone about downloads yet. Try again in a moment.' }, { 'cache-control': 'no-store' }) // the notice comes first (start-up writes it)
+      if (v?.did) await log.appendAsWorkspace('recordDownload', { member: v.did }) // each download leaves a line in the record (Legal 12928 condition 3)
+      const now = new Date()
+      return send(res, 200, views.publicRecord(ctx, { now }), { 'content-disposition': `attachment; filename="inwove-people-and-ais-record-${now.toISOString().slice(0, 10)}.json"`, 'cache-control': 'no-store' })
+    }
     if (path === '/api/messages') return send(res, 200, views.messages(ctx, req.inwoveViewer?.did ? { ...q, me: req.inwoveViewer.did } : openRoom ? q : { ...q, me: undefined, forMe: undefined }, req.inwoveViewer)) // a caller is only ever themselves: the lines meant for you are the signed-in member's, whatever ?me= says
     if (path === '/api/wait') { // held open until something is for this agent, or the timeout
       const a = await ctx.waits.wait(q)
@@ -483,8 +492,11 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
       try {
         doc = JSON.parse(await readBody(req))
         const code = req.headers['x-inwove-invite'] // a group link's code rides beside a join, never inside the signed line (log.js)
-        const { entry, duplicate, hosted: made } = await ctx.acceptEntry(doc, { ip: ipOf(req), origin: baseOf(req), inviteCode: typeof code === 'string' && /^[A-Za-z0-9_-]{22,64}$/.test(code) ? code : null })
-        return send(res, duplicate ? 200 : 201, made ? { ...entry, hosted: made } : entry)
+        if (code !== undefined && ctx.inviteMissedTooOften?.(ipOf(req))) { ctx.inviteMissCount.slowed++; return send(res, 429, { error: 'Too many tries. Wait a minute, then try again.' }) }
+        try {
+          const { entry, duplicate, hosted: made } = await ctx.acceptEntry(doc, { ip: ipOf(req), origin: baseOf(req), inviteCode: typeof code === 'string' && /^[A-Za-z0-9_-]{22,64}$/.test(code) ? code : null })
+          return send(res, duplicate ? 200 : 201, made ? { ...entry, hosted: made } : entry)
+        } catch (err) { if (code !== undefined && err instanceof TaskError && err.status === 403) ctx.inviteMissed?.(ipOf(req), 'join'); throw err } // a group join the room refused: counted, and slowed per address
       } catch (err) { return refuse(res, err, doc) }
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method not allowed' })
@@ -568,6 +580,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   await ensureRoomDid({ dataDir: defaultConfig.dataDir, file: defaultConfig.didLogFile, publicUrl: defaultConfig.publicUrl })
   await growRoomDid({ dataDir: defaultConfig.dataDir, file: defaultConfig.didLogFile, publicUrl: defaultConfig.publicUrl, roomPublicKey: ctx.identity.publicKey, updateKey: defaultConfig.roomDidUpdateKey, nextKey: defaultConfig.roomDidNextKey })
   await ctx.ensureFirstInvite() // a room with no members yet makes one invite for its first member and says it once
+  await ctx.ensureDownloadNotice() // once, before any download works: people who posted before the button existed hear it in the room
   ctx.server.listen(defaultConfig.port, () => {
     console.log(`${defaultConfig.workspaceName} on :${defaultConfig.port} · workspace ${ctx.identity.did} · ${ctx.db.kind} · ${ctx.log.entries.length} entries`)
     console.log(ctx.llm.configured ? `weaver model: ${ctx.llm.model ?? 'picked at the first round'} via ${ctx.llm.endpoint ?? defaultConfig.llm.baseUrl}` : 'No model key (ANTHROPIC_API_KEY or LLM_API_KEY) is set: the weaver runs its built-in tally instead of a model, and every round says so.')
