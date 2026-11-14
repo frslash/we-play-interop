@@ -189,6 +189,19 @@ describe('InWove on Geb (step 0, with a fake Geb node)', () => {
     } finally { fake.gsend = gsend }
   })
 
+  test('a Geb home that widens after start stops the bridge, says a fixed sentence and is counted', async () => {
+    const lines = [], error = console.error
+    console.error = (...a) => lines.push(a.join(' '))
+    try {
+      await fake.onEvent({ type: 'home-refused', reason: "GEB_HOME: the room's Geb home must be the room's alone (folders 700, files 600, no links)" })
+    } finally { console.error = error }
+    assert.equal(bridge.status().running, false)
+    assert.deepEqual(lines, ["geb bridge: stopped, GEB_HOME: the room's Geb home must be the room's alone (folders 700, files 600, no links)"])
+    const counts = (await room.call('/api/geb', { cookie: host.cookie })).body.counts
+    assert.ok(counts.some((c) => c.what === 'home-refused' && c.n >= 1))
+    bridge.running = true // the rest of this suite runs on the same bridge
+  })
+
   test('a pair request from something that is not a Geb identity is never accepted, even while a code waits', async () => {
     await room.call('/api/geb/link-code', { method: 'POST', cookie: host.cookie, body: {} })
     const before = fake.accepted.length

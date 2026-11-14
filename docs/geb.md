@@ -31,7 +31,11 @@ node); the tests are `test/geb-bridge.test.js` and `test/geb-cli.test.js`.
 - **Every DID and room id is checked before it becomes an argument** (`GEB_DID_RE`, and a room id never starting
   with `-`), including the ones Geb itself prints; anything else is refused and counted.
 - **The Geb home must be the room's alone:** the listener does not start unless every folder in `GEB_HOME` is 700
-  and every file 600, owned by the room's user. `GEB_ROOM_DID` must be a did:peer:2.
+  and every file 600, owned by the room's user, with no links (never followed) and nothing that is neither a folder nor
+  a plain file. It is checked again before each listener restart; a home that has widened stops the bridge
+  (`home-refused`, and every command after it is refused). What is logged is a fixed line, never a path or Node's own
+  message. `GEB_ROOM_DID` must be a did:peer:2. **At step 1 on the Mac:** set `Umask` 077 in the launchd plist
+  (`<key>Umask</key><integer>63</integer>`); if CLI 0.5.18 makes a socket in its home, allow it by name then.
 - **What is refused from Geb, and counted:** a sender not linked to a current member, a line Geb did not verify as
   signed, a line from another Geb room, a line the room's secret guard stops, and the same Geb line twice (Geb replays
   what it queued when its listener starts).

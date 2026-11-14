@@ -10,7 +10,7 @@ import { createGithubLink } from './github-link.js'
 import { createAgentReads } from './agent-read.js'
 import { clearFirstInvite, ensureFirstInvite } from './invites.js'
 import { GebBridge, GEB_LINK_HOSTS_ONLY } from './geb.js'
-import { GebCli } from './geb-cli.js'
+import { GebCli, startFailure } from './geb-cli.js'
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -550,7 +550,7 @@ export async function createApp (config = defaultConfig, { openRoom = false, res
     timers.push(setInterval(() => executor.tick().catch((e) => console.error('executor:', e)), 30_000))
     if (config.checkEveryMinutes !== 0) ctx.check.start(server.address()?.port)
     await ctx.host.start()
-    if (ctx.geb) await ctx.geb.start().catch((err) => console.error(`Geb: the bridge did not start: ${err.message}`))
+    if (ctx.geb) await ctx.geb.start().catch((err) => console.error(startFailure(err))) // never err.message: it can name GEB_HOME
     ctx.changes.start()
     ctx.workshop.start()
     ctx.sources.start()

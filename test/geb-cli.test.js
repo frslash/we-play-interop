@@ -1,12 +1,12 @@
 // Geb's CLI as the bridge's node (src/server/geb-cli.js): what `geb listen --json` prints in 0.5.18 (lines recorded on
 // throwaway identities), and the commands the adapter runs, against a stand-in program that records each call.
 import assert from 'node:assert/strict'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { GebCli, GebCliError, checkHomeModes, failureCode, parseListenLine, safeReason } from '../src/server/geb-cli.js'
+import { GebCli, GebCliError, GebHomeError, checkHomeModes, failureCode, parseListenLine, safeReason, startFailure } from '../src/server/geb-cli.js'
 
 // Geb identities in their real shape (the stand-in CLI prints the same two)
 const ROOM = 'did:peer:2.Az6Mkroom' + 'x'.repeat(39) + '.Vz6Mkroom' + 'x'.repeat(39)
@@ -118,6 +118,71 @@ test("the bridge's listener does not start unless the Geb home is the room's alo
     assert.throws(() => checkHomeModes(h), /folders 700/)
     await assert.rejects(new GebCli({ bin, home: h, did: ROOM }).start(() => {}), /folders 700/, 'start refuses')
     assert.throws(() => checkHomeModes(join(h, 'missing')), (e) => /cannot be read/.test(e.message) && !e.message.includes(h))
+  } finally { rmSync(h, { recursive: true, force: true }) }
+})
+
+test('the home check refuses links and anything that goes away mid-walk, and what is logged never names the path', async () => {
+  const h = mkdtempSync(join(tmpdir(), 'geb-links-')), out = mkdtempSync(join(tmpdir(), 'geb-outside-'))
+  const logged = []
+  const said = (err) => { logged.push(startFailure(err)); return true }
+  const clean = () => logged.every((l) => !l.includes(h) && !l.includes(out) && !l.includes('ENOENT'))
+  try {
+    chmodSync(h, 0o700)
+    writeFileSync(join(h, 'id.json'), '{}', { mode: 0o600 })
+    checkHomeModes(h)
+    // (a) a dangling link: lstat never follows it, so Node's ENOENT (which names the path) is never thrown
+    symlinkSync(join(h, 'gone'), join(h, 'x'))
+    assert.throws(() => checkHomeModes(h), (e) => e instanceof GebHomeError && /no links/.test(e.message) && said(e))
+    await assert.rejects(new GebCli({ bin, home: h, did: ROOM }).start(() => {}), (e) => e instanceof GebHomeError && said(e), 'start refuses')
+    rmSync(join(h, 'x'))
+    // (b) a link to a file outside the home, even one that is 600 and the room's own: refused, not followed
+    writeFileSync(join(out, 'key.json'), '{}', { mode: 0o600 })
+    symlinkSync(join(out, 'key.json'), join(h, 'key.json'))
+    assert.throws(() => checkHomeModes(h), (e) => e instanceof GebHomeError && said(e))
+    rmSync(join(h, 'key.json'))
+    // and a home that is itself a link to a folder
+    symlinkSync(h, join(out, 'home-link'))
+    assert.throws(() => checkHomeModes(join(out, 'home-link')), (e) => e instanceof GebHomeError && /not a folder/.test(e.message) && said(e))
+    // (c) a file the CLI removes between the folder's listing and its stat
+    checkHomeModes(h)
+    const racing = { readdirSync: (d) => [...readdirSync(d), 'removed-mid-walk'], lstatSync }
+    assert.throws(() => checkHomeModes(h, { fs: racing }), (e) => e instanceof GebHomeError && said(e))
+    const unlistable = { readdirSync: (d) => { throw Object.assign(new Error(`EACCES: permission denied, scandir '${d}'`), { code: 'EACCES' }) }, lstatSync }
+    assert.throws(() => checkHomeModes(h, { fs: unlistable }), (e) => e instanceof GebHomeError && said(e))
+    // anything else that fails at start is logged as a fixed code only
+    logged.push(startFailure(new Error(`ENOENT: no such file or directory, stat '${h}/x'`)))
+    assert.equal(logged.at(-1), 'Geb: the bridge did not start, error')
+    assert.equal(logged.length, 7)
+    assert.ok(logged.slice(0, 6).every((l) => l.startsWith('Geb: the bridge did not start, GEB_HOME: ')))
+    assert.ok(clean(), 'no path, and no Node message, in anything logged')
+  } finally { rmSync(h, { recursive: true, force: true }); rmSync(out, { recursive: true, force: true }) }
+})
+
+test('a run that prints too much is counted as too-big, not as a timeout', () => {
+  assert.equal(failureCode({ code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER', killed: true, signal: 'SIGTERM' }), 'too-big')
+  assert.equal(safeReason(new GebCliError('groups', 'too-big')), 'too-big')
+  assert.equal(failureCode({ killed: true, signal: 'SIGTERM' }), 'timeout')
+})
+
+test('the home is checked again before the listener comes back: a file widened since start stops the bridge', async () => {
+  const h = mkdtempSync(join(tmpdir(), 'geb-drift-'))
+  try {
+    chmodSync(h, 0o700)
+    writeFileSync(join(h, 'listen.txt'), '', { mode: 0o600 })
+    writeFileSync(join(h, 'exit-after'), '', { mode: 0o600 })
+    const cli = new GebCli({ bin, home: h, did: ROOM, restartMs: [50] })
+    const events = []
+    await cli.start((ev) => events.push(ev))
+    writeFileSync(join(h, 'widened.json'), '{}', { mode: 0o644 }); chmodSync(join(h, 'widened.json'), 0o644)
+    const deadline = Date.now() + 5000
+    while (!events.some((e) => e.type === 'home-refused') && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25))
+    const refused = events.find((e) => e.type === 'home-refused')
+    assert.ok(refused, 'the bridge is told')
+    assert.ok(!refused.reason.includes(h) && /room's alone/.test(refused.reason))
+    await new Promise((r) => setTimeout(r, 200))
+    assert.equal(events.filter((e) => e.type === 'home-refused').length, 1, 'the listener did not come back')
+    await assert.rejects(cli.gsend(GROUP, 'planted words'), (e) => e instanceof GebCliError && e.code === 'home-refused' && !e.message.includes('planted'), 'and nothing more goes out')
+    await cli.stop()
   } finally { rmSync(h, { recursive: true, force: true }) }
 })
 

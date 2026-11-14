@@ -102,6 +102,7 @@ export class GebBridge {
       await this.node.accept(ev.from); return this.count('requests-accepted')
     }
     if (ev.type === 'stopped') { this.count('listener-stopped'); return }
+    if (ev.type === 'home-refused') { this.running = false; this.count('home-refused'); console.error('geb bridge: stopped,', ev.reason); return }
     if (ev.type !== 'message') return
     if (!ev.signed) return this.count('refused-unsigned') // Geb checked the sender's signature, or it does not count
     if (ev.from === this.node.did) return // the room's own line, coming back

@@ -5,7 +5,7 @@
 // identities (docs/geb.md lists each fact and the ones still to confirm).
 import { spawn as spawnDefault, execFile as execFileDefault } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import { readdirSync, statSync } from 'node:fs'
+import { readdirSync, lstatSync } from 'node:fs'
 import { join } from 'node:path'
 import { GEB_DID_RE } from '../shared/types.js'
 
@@ -22,9 +22,10 @@ export const GEB_GROUP_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/
 export class GebCliError extends Error {
   constructor (sub, code) { super(`geb ${sub}: ${code}`); this.name = 'GebCliError'; this.sub = sub; this.code = code }
 }
-const CODES = new Set(['timeout', 'not-json', 'not-a-list', 'unknown-command', 'not-found', 'bad-did', 'bad-room', 'no-room', 'failed'])
+const CODES = new Set(['timeout', 'too-big', 'home-refused', 'not-json', 'not-a-list', 'unknown-command', 'not-found', 'bad-did', 'bad-room', 'no-room', 'failed'])
 /** The fixed word for a failed run. stderr is read only to tell "this CLI has no such command", and never kept. */
 export function failureCode (err, stderr) {
+  if (err?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return 'too-big' // also `killed`, so it is told apart first
   if (err?.killed || err?.signal === 'SIGTERM' || /ETIMEDOUT/.test(String(err?.code ?? ''))) return 'timeout'
   if (err?.code === 'ENOENT') return 'not-found'
   if (/unknown command/i.test(String(stderr ?? ''))) return 'unknown-command'
@@ -34,25 +35,39 @@ export function failureCode (err, stderr) {
 /** A fixed, content-free reason for any error the bridge meets: a Geb code, or the error's kind. */
 export const safeReason = (err) => err instanceof GebCliError && (CODES.has(err.code) || /^exit-\d{1,3}$/.test(err.code)) ? err.code : 'error'
 
+/** The fixed sentences the home check refuses with. They never name a path, so they may be logged as they are. */
+export const HOME_UNREADABLE = 'GEB_HOME: the room\'s Geb home cannot be read'
+export const HOME_NOT_FOLDER = 'GEB_HOME: the room\'s Geb home is not a folder'
+export const HOME_NOT_ALONE = 'GEB_HOME: the room\'s Geb home must be the room\'s alone (folders 700, files 600, no links)'
+/** The home check's own refusal: its message is always one of the fixed sentences above. */
+export class GebHomeError extends Error {
+  constructor (sentence) { super(sentence); this.name = 'GebHomeError' }
+}
+
 /**
  * The room's Geb home holds its keys: it must be readable by the room's own user only (folders 700, files 600), or the
- * bridge does not start. Says what is wrong in a fixed sentence, never the path.
+ * bridge does not start. Links are refused (never followed, so nothing outside the home can pass for part of it), and
+ * so is anything that is neither a folder nor a plain file. Every read is wrapped: a file that goes away mid-walk, or
+ * any other throw, becomes the fixed sentence, never Node's own message (which names the path; Security, 2026-11-14).
  */
-export function checkHomeModes (home, { uid = process.getuid?.() } = {}) {
-  const bad = (p, st) => (st.mode & 0o077) !== 0 || (uid !== undefined && st.uid !== uid)
-  let top
-  try { top = statSync(home) } catch { throw new Error('GEB_HOME: the room\'s Geb home cannot be read') }
-  if (!top.isDirectory()) throw new Error('GEB_HOME: the room\'s Geb home is not a folder')
+export function checkHomeModes (home, { uid = process.getuid?.(), fs = { readdirSync, lstatSync } } = {}) {
+  const bad = (st) => (st.mode & 0o077) !== 0 || (uid !== undefined && st.uid !== uid)
+  const stat = (p, sentence) => { try { return fs.lstatSync(p) } catch { throw new GebHomeError(sentence) } }
+  const list = (dir) => { try { return fs.readdirSync(dir) } catch { throw new GebHomeError(HOME_NOT_ALONE) } }
+  const top = stat(home, HOME_UNREADABLE)
+  if (!top.isDirectory()) throw new GebHomeError(HOME_NOT_FOLDER) // a link to a folder is refused here too
   const walk = (dir, st) => {
-    if (bad(dir, st)) throw new Error('GEB_HOME: the room\'s Geb home must be the room\'s alone (folders 700, files 600)')
-    for (const name of readdirSync(dir)) {
-      const p = join(dir, name), s = statSync(p)
-      if (s.isDirectory()) walk(p, s)
-      else if (bad(p, s)) throw new Error('GEB_HOME: the room\'s Geb home must be the room\'s alone (folders 700, files 600)')
+    if (bad(st)) throw new GebHomeError(HOME_NOT_ALONE)
+    for (const name of list(dir)) {
+      const s = stat(join(dir, name), HOME_NOT_ALONE)
+      if (s.isDirectory()) walk(join(dir, name), s)
+      else if (!s.isFile() || bad(s)) throw new GebHomeError(HOME_NOT_ALONE) // a link, a socket, a pipe, a device
     }
   }
   walk(home, top)
 }
+/** What may be logged when the bridge does not start: a fixed line, and the home check's sentence or a fixed code. */
+export const startFailure = (err) => `Geb: the bridge did not start, ${err instanceof GebHomeError ? err.message : safeReason(err)}`
 const did = (sub, d) => { if (typeof d !== 'string' || !GEB_DID_RE.test(d)) throw new GebCliError(sub, 'bad-did'); return d }
 const dids = (sub, list) => { if (!Array.isArray(list) || !list.length) throw new GebCliError(sub, 'bad-did'); return list.map((d) => did(sub, d)) }
 const room = (sub, g) => { if (typeof g !== 'string' || !GEB_GROUP_RE.test(g)) throw new GebCliError(sub, 'bad-room'); return g }
@@ -96,6 +111,7 @@ export class GebCli {
   /** One command; its standard output. Arguments go as an array, never through a shell. A failure is a fixed code. */
   run (...a) {
     const sub = a[0] === 'group' ? `group ${a[1]}` : a[0]
+    if (this.homeRefused) return Promise.reject(new GebCliError(sub, 'home-refused'))
     return new Promise((resolve, reject) => this.execFile(this.cmd, this.args(...a), { timeout: this.timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) return reject(new GebCliError(sub, failureCode(err, stderr)))
       resolve(String(stdout))
@@ -106,6 +122,7 @@ export class GebCli {
   /** The listener: every line it prints becomes an event; if it stops, it is started again, and the bridge is told. */
   async start (onEvent) {
     checkHomeModes(this.home)
+    this.homeRefused = false
     this.onEvent = onEvent
     this.stopping = false
     this.listen()
@@ -119,7 +136,16 @@ export class GebCli {
       if (this.stopping) return
       this.onEvent({ type: 'stopped', code })
       const wait = this.restartMs[Math.min(this.restarts++, this.restartMs.length - 1)]
-      this.timer = setTimeout(() => { if (!this.stopping) this.listen() }, wait)
+      this.timer = setTimeout(() => {
+        if (this.stopping) return
+        // The home is checked again before each restart: a file widened since start stops the bridge, not just a start.
+        try { checkHomeModes(this.home) } catch (err) {
+          this.homeRefused = true // and every command after it is refused too, so nothing more goes out
+          this.onEvent({ type: 'home-refused', reason: err instanceof GebHomeError ? err.message : HOME_NOT_ALONE })
+          return
+        }
+        this.listen()
+      }, wait)
       this.timer.unref?.()
     })
   }
